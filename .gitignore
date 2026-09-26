@@ -1,0 +1,48 @@
+# Dependencies and build output
+**/node_modules/
+**/dist/
+**/coverage/
+**/.nyc_output/
+**/*.tsbuildinfo
+
+# Environment variables and secrets
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+
+# Runtime databases and generated data
+backend/data/*.sqlite
+backend/data/*.sqlite-shm
+backend/data/*.sqlite-wal
+backend/uploads/resources/*
+!backend/uploads/resources/.gitkeep
+
+# Logs and test output
+**/*.log
+frontend/playwright-report/
+frontend/test-results/
+frontend/.tmp/
+
+# Local media and temporary working files
+test-resources/*
+!test-resources/.gitkeep
+temp-audio-work/
+.tools/
+.ppt-build/
+.codex-finalizer/
+output/
+Java对象引用工作原理图*.png
+local_audio_transcribe.ps1
+local_wav_recognize.ps1
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+**/.vscode/*
+!**/.vscode/extensions.json
+!**/.vscode/settings.json
+!**/.vscode/tasks.json
+!**/.vscode/launch.json
+
