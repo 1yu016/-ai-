@@ -218,7 +218,7 @@ describe('lesson components', () => {
   it('edits lesson steps and previews AI output locally', async () => {
     let resolveResources!: (value: { data: { items: never[]; total: number } }) => void
     const get = vi.spyOn(http, 'get').mockImplementation(() => new Promise((resolve) => { resolveResources = resolve }))
-    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { title: 'AI春天教案', theme: '春天', ageGroup: '4-5', estimatedMinutes: 20, objectives: '观察颜色', steps: [{ title: 'AI观察', stepType: 'question', instruction: '你看到了什么？', durationSeconds: 120 }] } })
+    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { id: 8, output: { title: 'AI春天教案', theme: '春天', ageGroup: '4-5', domain: '科学', estimatedMinutes: 20, teachingObjectives: ['观察颜色'], teachingProcess: [{ title: 'AI观察', stepType: 'question', content: '你看到了什么？', durationSeconds: 120 }] } } })
     const router = await routerFor('/lesson-plans/new')
     const wrapper = mount(LessonPlanEditorView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true, LessonResourceSelector: true } } })
     await flushPromises()
@@ -243,7 +243,7 @@ describe('lesson components', () => {
     await confirm!.trigger('click')
     await flushPromises()
     await vi.waitFor(() => expect(lessonStore.steps[0]?.title).toBe('AI观察'))
-    expect(post).toHaveBeenCalledWith('/ai/lesson-plan-draft', expect.objectContaining({ theme: '春天' }))
+    expect(post).toHaveBeenCalledWith('/lesson-plans/ai-drafts', expect.objectContaining({ theme: '春天', teachingObjectives: '春天' }))
     expect(lessonStore.current).toBeNull()
     wrapper.unmount()
   })

@@ -23,14 +23,14 @@ describe('lesson plan store', () => {
   })
 
   it('keeps AI output as an unsaved editable draft', async () => {
-    vi.spyOn(http, 'post').mockResolvedValue({ data: { title: 'AI春天', theme: '春天', ageGroup: '4-5', estimatedMinutes: 20, objectives: '观察', steps: [{ title: '观察', stepType: 'question', instruction: '你看到了什么？', durationSeconds: 120 }] } })
+    vi.spyOn(http, 'post').mockResolvedValue({ data: { id: 7, output: { title: 'AI春天', theme: '春天', ageGroup: '4-5', domain: '科学', estimatedMinutes: 20, teachingObjectives: ['观察'], teachingProcess: [{ title: '观察', stepType: 'question', content: '你看到了什么？', durationSeconds: 120 }] } } })
     const store = useLessonPlanStore()
     store.draft.estimatedMinutes = 20
     await store.generateDraft([], { theme: '春天' })
     expect(store.current).toBeNull()
     expect(store.draft.title).toBe('AI春天')
     expect(store.dirty).toBe(true)
-    expect(http.post).toHaveBeenCalledWith('/ai/lesson-plan-draft', expect.objectContaining({ theme: '春天', objectives: undefined }))
+    expect(http.post).toHaveBeenCalledWith('/lesson-plans/ai-drafts', expect.objectContaining({ theme: '春天', domain: '综合', teachingObjectives: '春天' }))
   })
 
   it('prevents duplicate save submissions', async () => {

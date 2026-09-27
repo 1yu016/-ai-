@@ -15,6 +15,7 @@ export type LessonStep = {
   title: string
   stepType: LessonStepType
   instruction: string
+  content?: string | null
   expectedResponse?: string | null
   teacherTip?: string | null
   resourceId?: number | null
@@ -26,6 +27,8 @@ export type LessonPlan = {
   teacherId: number
   title: string
   theme: string
+  lessonType?: 'normal' | 'review' | 'activity' | 'break'
+  domain?: string | null
   ageGroup: LessonAgeGroup
   objectives: string
   estimatedMinutes: number
@@ -40,7 +43,7 @@ export type LessonPlan = {
 export type LessonDraft = Omit<LessonPlan, 'id' | 'teacherId' | 'createdAt' | 'updatedAt'>
 
 function emptyDraft(): LessonDraft {
-  return { title: '', theme: '', ageGroup: '4-5', objectives: '', estimatedMinutes: 25, status: 'draft', version: 1, steps: [] }
+  return { title: '', theme: '', lessonType: 'normal', domain: '', ageGroup: '4-5', objectives: '', estimatedMinutes: 25, status: 'draft', version: 1, steps: [] }
 }
 
 export const useLessonPlanStore = defineStore('lessonPlan', () => {
@@ -57,6 +60,7 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
   const current = ref<LessonPlan | null>(null)
   const draft = ref<LessonDraft>(emptyDraft())
   const dirty = ref(false)
+  const aiDraftId = ref<number | null>(null)
   const steps = computed(() => draft.value.steps ?? [])
 
   async function fetchList() {
@@ -68,10 +72,10 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
     finally { loading.value = false }
   }
 
-  function newDraft() { current.value = null; draft.value = emptyDraft(); dirty.value = false }
+  function newDraft() { current.value = null; aiDraftId.value = null; draft.value = emptyDraft(); dirty.value = false }
   async function load(id: number) {
     loading.value = true; error.value = ''
-    try { const { data } = await http.get<LessonPlan>(`/lesson-plans/${id}`); current.value = data; draft.value = { title: data.title, theme: data.theme, ageGroup: data.ageGroup, objectives: data.objectives, estimatedMinutes: data.estimatedMinutes, status: data.status, version: data.version, steps: (data.steps ?? []).map((step) => ({ ...step })) }; dirty.value = false }
+    try { const { data } = await http.get<LessonPlan>(`/lesson-plans/${id}`); current.value = data; aiDraftId.value = null; draft.value = { title: data.title, theme: data.theme, lessonType: data.lessonType ?? 'normal', domain: data.domain ?? '', ageGroup: data.ageGroup, objectives: data.objectives, estimatedMinutes: data.estimatedMinutes, status: data.status, version: data.version, steps: (data.steps ?? []).map((step) => ({ ...step, instruction: step.instruction || step.content || '' })) }; dirty.value = false }
     catch (cause) { error.value = apiErrorMessage(cause, '教案加载失败，请稍后重试。'); throw cause }
     finally { loading.value = false }
   }
@@ -87,8 +91,14 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
     saving.value = true
     try {
       let plan: LessonPlan
-      const metadata = { title: draft.value.title.trim(), theme: draft.value.theme.trim(), ageGroup: draft.value.ageGroup, objectives: draft.value.objectives.trim(), estimatedMinutes: draft.value.estimatedMinutes, status: draft.value.status }
+      const metadata = { title: draft.value.title.trim(), theme: draft.value.theme.trim(), lessonType: draft.value.lessonType ?? 'normal', domain: draft.value.domain?.trim() || '综合', ageGroup: draft.value.ageGroup, objectives: draft.value.objectives.trim(), estimatedMinutes: draft.value.estimatedMinutes, status: draft.value.status }
       if (current.value) { const { data } = await http.patch<LessonPlan>(`/lesson-plans/${current.value.id}`, { ...metadata, version: draft.value.version }); plan = data }
+      else if (aiDraftId.value) {
+        const { data } = await http.post<LessonPlan>(`/lesson-plans/ai-drafts/${aiDraftId.value}/confirm`, { title: metadata.title, lessonType: metadata.lessonType, changeSummary: '教师确认并保存AI备课草稿' })
+        plan = data
+        const { data: updated } = await http.patch<LessonPlan>(`/lesson-plans/${plan.id}`, { ...metadata, version: plan.version })
+        plan = updated
+      }
       else { const { data } = await http.post<LessonPlan>('/lesson-plans', metadata); plan = data }
       const { data: savedSteps } = await http.put<{ version: number; steps: LessonStep[] }>(`/lesson-plans/${plan.id}/steps`, {
         version: plan.version,
@@ -96,6 +106,7 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
           sortOrder: step.sortOrder,
           title: step.title,
           stepType: step.stepType,
+          content: step.instruction,
           instruction: step.instruction,
           expectedResponse: step.expectedResponse,
           teacherTip: step.teacherTip,
@@ -104,20 +115,21 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
         })),
       })
       plan = { ...plan, version: savedSteps.version, steps: savedSteps.steps }
-      current.value = plan; draft.value.version = plan.version; draft.value.steps = savedSteps.steps.map((step) => ({ ...step })); dirty.value = false
+      current.value = plan; aiDraftId.value = null; draft.value.version = plan.version; draft.value.steps = savedSteps.steps.map((step) => ({ ...step, instruction: step.instruction || step.content || '' })); dirty.value = false
       return plan
     } catch (cause) { throw new Error(apiErrorMessage(cause, '教案保存失败，请稍后重试。'), { cause }) }
     finally { saving.value = false }
   }
   async function remove(id: number) { await http.delete(`/lesson-plans/${id}`); await fetchList() }
   async function copy(id: number) { await http.post(`/lesson-plans/${id}/copy`); await fetchList() }
-  async function generateDraft(resourceIds: number[], input?: { theme: string; objectives?: string }) {
+  async function generateDraft(resourceIds: number[], input?: { theme: string; objectives?: string; domain?: string }) {
     loading.value = true
     try {
       const theme = input?.theme.trim() ?? draft.value.theme.trim()
       const objectives = input?.objectives?.trim() ?? draft.value.objectives.trim()
-      const { data } = await http.post<LessonDraft>('/ai/lesson-plan-draft', { theme, ageGroup: draft.value.ageGroup, durationMinutes: draft.value.estimatedMinutes, objectives: objectives || undefined, resourceIds })
-      draft.value = { ...data, status: draft.value.status, version: current.value?.version ?? 1, steps: (data.steps ?? []).map((step, index) => ({ ...step, sortOrder: index + 1 })) }; dirty.value = true
+      const { data } = await http.post<{ id: number; output: { title: string; theme: string; ageGroup: LessonAgeGroup; domain: string; estimatedMinutes: number; teachingObjectives: string[]; teachingProcess: Array<{ title: string; stepType: LessonStepType; content: string; durationSeconds: number; resourceId?: number }> } }>('/lesson-plans/ai-drafts', { theme, ageGroup: draft.value.ageGroup, domain: input?.domain?.trim() || draft.value.domain?.trim() || '综合', durationMinutes: draft.value.estimatedMinutes, teachingObjectives: objectives || theme, resourceIds })
+      aiDraftId.value = data.id
+      draft.value = { ...draft.value, title: data.output.title, theme: data.output.theme, ageGroup: data.output.ageGroup, domain: data.output.domain, estimatedMinutes: data.output.estimatedMinutes, objectives: data.output.teachingObjectives.join('\n'), status: draft.value.status, version: current.value?.version ?? 1, steps: data.output.teachingProcess.map((step, index) => ({ title: step.title, stepType: step.stepType, content: step.content, instruction: step.content, resourceId: step.resourceId ?? null, durationSeconds: step.durationSeconds, sortOrder: index + 1 })) }; dirty.value = true
     } catch (cause) { throw new Error(apiErrorMessage(cause, 'AI 暂时无法生成草稿，仍可手动备课。'), { cause }) }
     finally { loading.value = false }
   }
