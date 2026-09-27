@@ -7,6 +7,8 @@ import type { App } from 'supertest/types';
 import type { Repository } from 'typeorm';
 import { AuthModule } from '../src/auth/auth.module';
 import { Teacher } from '../src/auth/entities/teacher.entity';
+import { Administrator } from '../src/auth/entities/administrator.entity';
+import { RefreshTokenSession } from '../src/auth/entities/refresh-token-session.entity';
 import { DataModule, DATA_ENTITIES } from '../src/data/data.module';
 import {
   ChatMessage,
@@ -51,7 +53,12 @@ describe('Visitor migration (e2e)', () => {
         TypeOrmModule.forRoot({
           type: 'better-sqlite3',
           database: ':memory:',
-          entities: [Teacher, ...DATA_ENTITIES],
+          entities: [
+            Teacher,
+            Administrator,
+            RefreshTokenSession,
+            ...DATA_ENTITIES,
+          ],
           synchronize: true,
         }),
         AuthModule,

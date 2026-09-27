@@ -9,6 +9,8 @@ import { basename, join, resolve } from 'node:path';
 import request from 'supertest';
 import { AuthModule } from '../src/auth/auth.module';
 import { Teacher } from '../src/auth/entities/teacher.entity';
+import { Administrator } from '../src/auth/entities/administrator.entity';
+import { RefreshTokenSession } from '../src/auth/entities/refresh-token-session.entity';
 import { TeachingResource } from '../src/data/entities/teaching-resource.entity';
 import { RESOURCE_UPLOAD_DIRECTORY } from '../src/resources/resource-file.validation';
 import { ResourceModule } from '../src/resources/resource.module';
@@ -46,7 +48,12 @@ describe('Resources (e2e)', () => {
         TypeOrmModule.forRoot({
           type: 'better-sqlite3',
           database: ':memory:',
-          entities: [Teacher, TeachingResource],
+          entities: [
+            Teacher,
+            Administrator,
+            RefreshTokenSession,
+            TeachingResource,
+          ],
           synchronize: true,
         }),
         AuthModule,

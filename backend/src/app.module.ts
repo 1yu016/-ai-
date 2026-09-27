@@ -12,6 +12,9 @@ import { AuthModule } from './auth/auth.module';
 import { DataModule } from './data/data.module';
 import { ResourceModule } from './resources/resource.module';
 import { LessonPlanModule } from './lesson-plans/lesson-plan.module';
+import { PlatformModule } from './platform/platform.module';
+import { StageOnePlatformFoundation2026092700001 } from './migrations/202609270001-StageOnePlatformFoundation';
+import { RefreshSessionTokenVersion2026092700002 } from './migrations/202609270002-RefreshSessionTokenVersion';
 
 @Module({
   imports: [
@@ -49,7 +52,13 @@ import { LessonPlanModule } from './lesson-plans/lesson-plan.module';
           type: 'better-sqlite3' as const,
           database,
           autoLoadEntities: true,
-          synchronize: true,
+          synchronize: configService.get<string>('DB_SYNCHRONIZE') !== 'false',
+          migrations: [
+            StageOnePlatformFoundation2026092700001,
+            RefreshSessionTokenVersion2026092700002,
+          ],
+          migrationsRun:
+            configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',
         };
       },
     }),
@@ -58,6 +67,7 @@ import { LessonPlanModule } from './lesson-plans/lesson-plan.module';
     ResourceModule,
     AiModule,
     LessonPlanModule,
+    PlatformModule,
   ],
   controllers: [AppController],
   providers: [AppService],

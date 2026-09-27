@@ -2,23 +2,13 @@ import {
   Column,
   CreateDateColumn,
   Entity,
-  Index,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { AccountStatus } from './teacher.entity';
 
-export enum TeacherRole {
-  Teacher = 'teacher',
-  Admin = 'admin',
-}
-
-export enum AccountStatus {
-  Active = 'active',
-  Disabled = 'disabled',
-}
-
-@Entity({ name: 'teachers' })
-export class Teacher {
+@Entity({ name: 'administrator' })
+export class Administrator {
   @PrimaryGeneratedColumn()
   id: number;
 
@@ -33,13 +23,6 @@ export class Teacher {
 
   @Column({
     type: 'simple-enum',
-    enum: TeacherRole,
-    default: TeacherRole.Teacher,
-  })
-  role: TeacherRole;
-
-  @Column({
-    type: 'simple-enum',
     enum: AccountStatus,
     default: AccountStatus.Active,
   })
@@ -48,7 +31,6 @@ export class Teacher {
   @Column({ name: 'token_version', type: 'integer', default: 0 })
   tokenVersion: number;
 
-  @Index()
   @Column({ name: 'school_id', type: 'varchar', length: 64, nullable: true })
   schoolId: string | null;
 
