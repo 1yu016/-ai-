@@ -19,6 +19,7 @@ import { ClassroomTicketForeignKeys2026092700003 } from './migrations/2026092700
 import { ResourceLibraryStageTwo2026092700004 } from './migrations/202609270004-ResourceLibraryStageTwo';
 import { LessonPreparationStageThree2026092700005 } from './migrations/202609270005-LessonPreparationStageThree';
 import { ClassroomRunStateMachine2026092700006 } from './migrations/202609270006-ClassroomRunStateMachine';
+import { ClassroomSnapshotRecovery2026092700007 } from './migrations/202609270007-ClassroomSnapshotRecovery';
 import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
 
 @Module({
@@ -65,6 +66,7 @@ import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
             ResourceLibraryStageTwo2026092700004,
             LessonPreparationStageThree2026092700005,
             ClassroomRunStateMachine2026092700006,
+            ClassroomSnapshotRecovery2026092700007,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',

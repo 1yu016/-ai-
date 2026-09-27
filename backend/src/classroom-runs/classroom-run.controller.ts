@@ -5,6 +5,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -13,8 +14,13 @@ import type { AuthenticatedRequest } from '../auth/auth.types';
 import { ClassroomRunService } from './classroom-run.service';
 import {
   ChangeClassroomStepDto,
+  ActiveClassroomRunsQueryDto,
+  ClassroomCheckpointDto,
   ClassroomRunOperationDto,
+  RecoverClassroomRunDto,
+  RestoreClassroomRunQueryDto,
   StartClassroomRunDto,
+  TakeoverClassroomRunDto,
 } from './dto/classroom-run.dto';
 
 @Controller('classroom-runs')
@@ -31,8 +37,20 @@ export class ClassroomRunController {
   }
 
   @Get('active')
-  active(@Req() request: AuthenticatedRequest) {
-    return this.service.active(request.user);
+  active(
+    @Query() query: ActiveClassroomRunsQueryDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.active(request.user, query.deviceId);
+  }
+
+  @Get(':id/restore')
+  restore(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: RestoreClassroomRunQueryDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.restore(request.user, id, query.deviceId);
   }
 
   @Get(':id')
@@ -90,5 +108,32 @@ export class ClassroomRunController {
       stepIndex,
     });
     return this.service.changeStep(request.user, id, input);
+  }
+
+  @Post(':id/takeover')
+  takeover(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: TakeoverClassroomRunDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.takeover(request.user, id, dto);
+  }
+
+  @Post(':id/recover')
+  recover(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RecoverClassroomRunDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.recover(request.user, id, dto);
+  }
+
+  @Post(':id/checkpoints')
+  checkpoint(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ClassroomCheckpointDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.checkpoint(request.user, id, dto);
   }
 }

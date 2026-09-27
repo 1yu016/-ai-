@@ -12,11 +12,16 @@ import { ClassroomRunService } from './classroom-run.service';
 import { ClassroomEvent } from './entities/classroom-event.entity';
 import { ClassroomRunStepSnapshot } from './entities/classroom-run-step-snapshot.entity';
 import { ClassroomRun } from './entities/classroom-run.entity';
+import { ClassroomSnapshot } from './entities/classroom-snapshot.entity';
+import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.entity';
+import { ClassroomSnapshotService } from './classroom-snapshot.service';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
   ClassroomRunStepSnapshot,
   ClassroomEvent,
+  ClassroomSnapshot,
+  ClassroomDeviceTransfer,
 ];
 
 @Module({
@@ -33,7 +38,7 @@ export const CLASSROOM_RUN_ENTITIES = [
     ResourceModule,
   ],
   controllers: [ClassroomRunController],
-  providers: [ClassroomRunService],
-  exports: [ClassroomRunService],
+  providers: [ClassroomRunService, ClassroomSnapshotService],
+  exports: [ClassroomRunService, ClassroomSnapshotService],
 })
 export class ClassroomRunModule {}

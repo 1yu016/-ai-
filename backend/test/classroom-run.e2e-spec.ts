@@ -417,7 +417,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/complete`)
       .set(auth())
-      .send({ version: 1, requestId: requestId('complete') })
+      .send({ version: 1, deviceId, requestId: requestId('complete') })
       .expect(201);
   });
 
@@ -471,7 +471,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/classroom-runs/${first.body.id}/cancel`)
       .set(auth())
-      .send({ version: 1, requestId: requestId('cancel') })
+      .send({ version: 1, deviceId, requestId: requestId('cancel') })
       .expect(201);
   });
 
@@ -486,47 +486,51 @@ describe('Task four classroom run state machine (e2e)', () => {
     const paused = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/pause`)
       .set(auth())
-      .send({ version: 1, requestId: pauseRequestId })
+      .send({ version: 1, deviceId, requestId: pauseRequestId })
       .expect(201);
     expect(paused.body).toMatchObject({ status: 'paused', version: 2 });
     const repeated = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/pause`)
       .set(auth())
-      .send({ version: 1, requestId: pauseRequestId })
+      .send({ version: 1, deviceId, requestId: pauseRequestId })
       .expect(201);
     expect(repeated.body.version).toBe(2);
     expect(await events.countBy({ requestId: pauseRequestId })).toBe(1);
     await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/steps/1`)
       .set(auth())
-      .send({ version: 2, requestId: requestId('step-paused') })
+      .send({ version: 2, deviceId, requestId: requestId('step-paused') })
       .expect(409);
     const resumed = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/resume`)
       .set(auth())
-      .send({ version: 2, requestId: requestId('resume') })
+      .send({ version: 2, deviceId, requestId: requestId('resume') })
       .expect(201);
     const stepped = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/steps/1`)
       .set(auth())
-      .send({ version: resumed.body.version, requestId: requestId('step') })
+      .send({
+        version: resumed.body.version,
+        deviceId,
+        requestId: requestId('step'),
+      })
       .expect(201);
     expect(stepped.body).toMatchObject({ currentStepIndex: 1, version: 4 });
     await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/steps/9`)
       .set(auth())
-      .send({ version: 4, requestId: requestId('bad-step') })
+      .send({ version: 4, deviceId, requestId: requestId('bad-step') })
       .expect(400);
     const completed = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/complete`)
       .set(auth())
-      .send({ version: 4, requestId: requestId('complete') })
+      .send({ version: 4, deviceId, requestId: requestId('complete') })
       .expect(201);
     expect(completed.body).toMatchObject({ status: 'completed', version: 5 });
     await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/pause`)
       .set(auth())
-      .send({ version: 5, requestId: requestId('terminal') })
+      .send({ version: 5, deviceId, requestId: requestId('terminal') })
       .expect(409);
   });
 
@@ -543,11 +547,19 @@ describe('Task four classroom run state machine (e2e)', () => {
       request(app.getHttpServer())
         .post(`/classroom-runs/${started.body.id}/pause`)
         .set(auth())
-        .send({ version: 1, requestId: requestId('concurrent-pause') }),
+        .send({
+          version: 1,
+          deviceId: device2Id,
+          requestId: requestId('concurrent-pause'),
+        }),
       request(app.getHttpServer())
         .post(`/classroom-runs/${started.body.id}/complete`)
         .set(auth())
-        .send({ version: 1, requestId: requestId('concurrent-complete') }),
+        .send({
+          version: 1,
+          deviceId: device2Id,
+          requestId: requestId('concurrent-complete'),
+        }),
     ]);
     expect([pause.status, complete.status].sort()).toEqual([201, 409]);
     const current = await request(app.getHttpServer())
@@ -558,7 +570,11 @@ describe('Task four classroom run state machine (e2e)', () => {
       await request(app.getHttpServer())
         .post(`/classroom-runs/${started.body.id}/complete`)
         .set(auth())
-        .send({ version: 2, requestId: requestId('cleanup-complete') })
+        .send({
+          version: 2,
+          deviceId: device2Id,
+          requestId: requestId('cleanup-complete'),
+        })
         .expect(201);
     const active = await request(app.getHttpServer())
       .get('/classroom-runs/active')

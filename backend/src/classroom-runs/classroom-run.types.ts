@@ -15,6 +15,10 @@ export enum ClassroomEventType {
   Cancel = 'cancel',
   ChangeStep = 'change_step',
   Fail = 'fail',
+  Checkpoint = 'checkpoint',
+  Takeover = 'takeover',
+  Recover = 'recover',
+  SnapshotFailed = 'snapshot_failed',
 }
 
 export enum ClassroomEventResult {
@@ -33,3 +37,27 @@ export const TERMINAL_CLASSROOM_RUN_STATUSES = [
   ClassroomRunStatus.Cancelled,
   ClassroomRunStatus.Failed,
 ] as const;
+
+export enum ClassroomSnapshotReason {
+  Start = 'start',
+  ChangeStep = 'change_step',
+  Pause = 'pause',
+  Resume = 'resume',
+  Complete = 'complete',
+  Cancel = 'cancel',
+  ResourceCompleted = 'resource_completed',
+  RollCall = 'roll_call',
+  Reward = 'reward',
+  RecoverableError = 'recoverable_error',
+  Timed = 'timed',
+  Takeover = 'takeover',
+  Recover = 'recover',
+}
+
+export enum ClassroomCheckpointType {
+  ResourceCompleted = 'resource_completed',
+  RollCall = 'roll_call',
+  Reward = 'reward',
+  RecoverableError = 'recoverable_error',
+  Timed = 'timed',
+}

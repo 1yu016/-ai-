@@ -42,6 +42,7 @@
 ```json
 {
   "version": 2,
+  "deviceId": 5,
   "requestId": "pause-20260927-0001"
 }
 ```
@@ -55,6 +56,7 @@
 ```json
 {
   "version": 3,
+  "deviceId": 5,
   "requestId": "step-20260927-0002"
 }
 ```

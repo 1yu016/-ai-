@@ -26,18 +26,33 @@ import {
   RecordStatus,
 } from '../platform/platform.types';
 import { ResourceService } from '../resources/resource.service';
-import { assertClassroomRunTransition } from './classroom-run.state-machine';
+import {
+  allowedClassroomRunTransitions,
+  assertClassroomRunTransition,
+} from './classroom-run.state-machine';
+import {
+  ClassroomSnapshotService,
+  type ClassroomSnapshotPatch,
+  type ValidClassroomSnapshot,
+} from './classroom-snapshot.service';
 import {
   ACTIVE_CLASSROOM_RUN_STATUSES,
+  ClassroomCheckpointType,
   ClassroomEventResult,
   ClassroomEventType,
   ClassroomRunStatus,
+  ClassroomSnapshotReason,
+  TERMINAL_CLASSROOM_RUN_STATUSES,
 } from './classroom-run.types';
 import {
+  ClassroomCheckpointDto,
   ChangeClassroomStepDto,
   ClassroomRunOperationDto,
+  RecoverClassroomRunDto,
   StartClassroomRunDto,
+  TakeoverClassroomRunDto,
 } from './dto/classroom-run.dto';
+import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.entity';
 import { ClassroomEvent } from './entities/classroom-event.entity';
 import { ClassroomRunStepSnapshot } from './entities/classroom-run-step-snapshot.entity';
 import { ClassroomRun } from './entities/classroom-run.entity';
@@ -56,6 +71,8 @@ export class ClassroomRunService {
     private readonly snapshots: Repository<ClassroomRunStepSnapshot>,
     @InjectRepository(ClassroomEvent)
     private readonly events: Repository<ClassroomEvent>,
+    @InjectRepository(ClassroomDeviceTransfer)
+    private readonly transfers: Repository<ClassroomDeviceTransfer>,
     @InjectRepository(DeviceBinding)
     private readonly bindings: Repository<DeviceBinding>,
     @InjectRepository(Classroom)
@@ -65,6 +82,7 @@ export class ClassroomRunService {
     private readonly access: PlatformAccessService,
     private readonly lessonPlans: LessonPlanService,
     private readonly resources: ResourceService,
+    private readonly snapshotService: ClassroomSnapshotService,
   ) {}
 
   async start(actor: JwtTeacherPayload, dto: StartClassroomRunDto) {
@@ -178,6 +196,11 @@ export class ClassroomRunService {
         );
         return run.id;
       });
+      await this.snapshotService.capture(
+        runId,
+        ClassroomSnapshotReason.Start,
+        true,
+      );
       return this.get(actor, runId);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -260,7 +283,11 @@ export class ClassroomRunService {
       ClassroomEventType.ChangeStep,
       id,
     );
-    if (duplicate) return this.get(actor, id);
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      this.assertCurrentDevice(current, dto.deviceId);
+      return this.get(actor, id);
+    }
     await this.ownedRun(actor, id);
     try {
       await this.dataSource.transaction(async (manager) => {
@@ -268,6 +295,7 @@ export class ClassroomRunService {
         const run = await runRepo.findOne({ where: { id } });
         if (!run) throw new NotFoundException('课堂运行不存在');
         this.assertOwner(actor, run);
+        this.assertCurrentDevice(run, dto.deviceId);
         if (run.version !== dto.version) throw this.versionConflict();
         if (run.status === ClassroomRunStatus.Paused)
           throw new ConflictException('课堂暂停时不能切换步骤');
@@ -296,6 +324,11 @@ export class ClassroomRunService {
           dto.requestId,
         );
       });
+      await this.snapshotService.capture(
+        id,
+        ClassroomSnapshotReason.ChangeStep,
+        false,
+      );
       return this.get(actor, id);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -319,12 +352,13 @@ export class ClassroomRunService {
     return this.response(run, steps);
   }
 
-  async active(actor: JwtTeacherPayload) {
+  async active(actor: JwtTeacherPayload, deviceId?: number) {
     this.requireTeacher(actor);
     const runs = await this.runs.find({
       where: {
         teacherId: actor.sub,
         status: In([...ACTIVE_CLASSROOM_RUN_STATUSES]),
+        ...(deviceId ? { deviceId } : {}),
       },
       order: { updatedAt: 'DESC' },
     });
@@ -334,6 +368,290 @@ export class ClassroomRunService {
         return this.response(run);
       }),
     );
+  }
+
+  async restore(actor: JwtTeacherPayload, id: number, deviceId: number) {
+    this.requireTeacher(actor);
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, deviceId);
+    const steps = await this.snapshots.find({
+      where: { classroomRunId: id },
+      order: { stepIndex: 'ASC' },
+    });
+    const valid = await this.snapshotService.loadLatestValid(id);
+    const elapsedSeconds = this.snapshotService.currentElapsed(run);
+    const base = this.response(run, steps);
+    if (!valid)
+      return {
+        ...base,
+        latestSnapshotVersion: null,
+        playedResourceIds: [],
+        attendanceState: {},
+        rollCallState: {},
+        rewardState: {},
+        interactionState: {},
+        playerRecoverySuggestion: {
+          autoPlay: false,
+          message: '没有可用快照，请教师人工确认课堂状态',
+        },
+        timing: this.timing(run, elapsedSeconds),
+        allowedActions: this.allowedActions(run.status),
+        manualInterventionRequired: true,
+      };
+    const currentStep = steps.find(
+      (step) => step.stepIndex === valid.entity.currentStepIndex,
+    );
+    return {
+      ...base,
+      status: run.status,
+      currentStepIndex: valid.entity.currentStepIndex,
+      currentStep: currentStep
+        ? {
+            ...currentStep,
+            actionConfig: this.parseJson(currentStep.actionConfig),
+            recoveryPointConfig: this.parseJson(
+              currentStep.recoveryPointConfig,
+            ),
+          }
+        : null,
+      latestSnapshotVersion: valid.entity.snapshotVersion,
+      snapshotReason: valid.entity.reason,
+      playedResourceIds: valid.playedResourceIds,
+      attendanceState: valid.attendanceState,
+      rollCallState: valid.rollCallState,
+      rewardState: valid.rewardState,
+      interactionState: valid.interactionState,
+      playerRecoverySuggestion: {
+        ...valid.playerState,
+        autoPlay: false,
+        completedResourceIds: valid.playedResourceIds,
+      },
+      timing: this.timing(run, elapsedSeconds),
+      allowedActions: this.allowedActions(run.status),
+      manualInterventionRequired: false,
+    };
+  }
+
+  async takeover(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: TakeoverClassroomRunDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.Takeover,
+      id,
+    );
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      return this.restore(actor, id, current.deviceId);
+    }
+    const run = await this.ownedRun(actor, id);
+    this.assertActive(run);
+    if (run.deviceId !== dto.oldDeviceId)
+      throw new ConflictException('旧设备已不再拥有课堂控制权');
+    await this.requireTakeoverDevice(actor, run, dto);
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const runRepo = manager.getRepository(ClassroomRun);
+        const current = await runRepo.findOne({ where: { id } });
+        if (!current) throw new NotFoundException('课堂运行不存在');
+        this.assertOwner(actor, current);
+        this.assertActive(current);
+        if (current.deviceId !== dto.oldDeviceId)
+          throw new ConflictException('旧设备已不再拥有课堂控制权');
+        if (current.version !== dto.version) throw this.versionConflict();
+        const update = await runRepo.update(
+          { id, version: dto.version, deviceId: dto.oldDeviceId },
+          { deviceId: dto.newDeviceId, version: dto.version + 1 },
+        );
+        if (update.affected !== 1) throw this.versionConflict();
+        const updated = await runRepo.findOneByOrFail({ id });
+        await manager.getRepository(ClassroomDeviceTransfer).save(
+          manager.getRepository(ClassroomDeviceTransfer).create({
+            classroomRunId: id,
+            oldDeviceId: dto.oldDeviceId,
+            newDeviceId: dto.newDeviceId,
+            operatorId: actor.sub,
+            reason: dto.reason.trim(),
+          }),
+        );
+        await this.writeEvent(
+          manager,
+          actor,
+          updated,
+          ClassroomEventType.Takeover,
+          {
+            oldDeviceId: dto.oldDeviceId,
+            newDeviceId: dto.newDeviceId,
+            reason: dto.reason.trim(),
+            version: updated.version,
+          },
+          dto.requestId,
+        );
+      });
+      await this.snapshotService.capture(
+        id,
+        ClassroomSnapshotReason.Takeover,
+        true,
+      );
+      return this.restore(actor, id, dto.newDeviceId);
+    } catch (error) {
+      const repeated = await this.findDuplicate(
+        actor,
+        dto.requestId,
+        ClassroomEventType.Takeover,
+        id,
+      );
+      if (repeated) {
+        const current = await this.ownedRun(actor, id);
+        return this.restore(actor, id, current.deviceId);
+      }
+      throw error;
+    }
+  }
+
+  async recover(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: RecoverClassroomRunDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.Recover,
+      id,
+    );
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      this.assertCurrentDevice(current, dto.deviceId);
+      return this.restore(actor, id, dto.deviceId);
+    }
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, dto.deviceId);
+    this.assertActive(run);
+    const valid = await this.snapshotService.loadLatestValid(id);
+    if (!valid) return this.restore(actor, id, dto.deviceId);
+    await this.dataSource.transaction(async (manager) => {
+      const runRepo = manager.getRepository(ClassroomRun);
+      const current = await runRepo.findOne({ where: { id } });
+      if (!current) throw new NotFoundException('课堂运行不存在');
+      this.assertOwner(actor, current);
+      this.assertCurrentDevice(current, dto.deviceId);
+      this.assertActive(current);
+      if (current.version !== dto.version) throw this.versionConflict();
+      const elapsedSeconds = Math.max(
+        valid.entity.elapsedSeconds,
+        this.snapshotService.currentElapsed(current),
+      );
+      const now = new Date();
+      const update = await runRepo.update(
+        { id, version: dto.version, deviceId: dto.deviceId },
+        {
+          currentStepIndex: valid.entity.currentStepIndex,
+          elapsedSeconds,
+          resumedAt: current.status === ClassroomRunStatus.Running ? now : null,
+          version: dto.version + 1,
+        },
+      );
+      if (update.affected !== 1) throw this.versionConflict();
+      const updated = await runRepo.findOneByOrFail({ id });
+      await this.writeEvent(
+        manager,
+        actor,
+        updated,
+        ClassroomEventType.Recover,
+        {
+          restoredSnapshotVersion: valid.entity.snapshotVersion,
+          version: updated.version,
+        },
+        dto.requestId,
+      );
+    });
+    await this.snapshotService.capture(
+      id,
+      ClassroomSnapshotReason.Recover,
+      true,
+      this.patchFromSnapshot(valid),
+    );
+    return this.restore(actor, id, dto.deviceId);
+  }
+
+  async checkpoint(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: ClassroomCheckpointDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.Checkpoint,
+      id,
+    );
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      this.assertCurrentDevice(current, dto.deviceId);
+      return this.restore(actor, id, dto.deviceId);
+    }
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, dto.deviceId);
+    this.assertActive(run);
+    if (
+      dto.checkpointType === ClassroomCheckpointType.ResourceCompleted &&
+      !dto.resourceId
+    )
+      throw new BadRequestException('资源播放完成必须提供resourceId');
+    if (dto.resourceId) {
+      const belongs = await this.snapshots.exists({
+        where: { classroomRunId: id, resourceId: dto.resourceId },
+      });
+      if (!belongs) throw new BadRequestException('资源不属于当前课堂快照');
+    }
+    await this.dataSource.transaction(async (manager) => {
+      const runRepo = manager.getRepository(ClassroomRun);
+      const current = await runRepo.findOne({ where: { id } });
+      if (!current) throw new NotFoundException('课堂运行不存在');
+      this.assertOwner(actor, current);
+      this.assertCurrentDevice(current, dto.deviceId);
+      this.assertActive(current);
+      if (current.version !== dto.version) throw this.versionConflict();
+      const update = await runRepo.update(
+        { id, version: dto.version, deviceId: dto.deviceId },
+        { version: dto.version + 1 },
+      );
+      if (update.affected !== 1) throw this.versionConflict();
+      const updated = await runRepo.findOneByOrFail({ id });
+      await this.writeEvent(
+        manager,
+        actor,
+        updated,
+        ClassroomEventType.Checkpoint,
+        {
+          checkpointType: dto.checkpointType,
+          resourceId: dto.resourceId ?? null,
+          version: updated.version,
+        },
+        dto.requestId,
+      );
+    });
+    await this.snapshotService.capture(
+      id,
+      this.checkpointReason(dto.checkpointType),
+      dto.checkpointType === ClassroomCheckpointType.RecoverableError,
+      {
+        playedResourceId: dto.resourceId,
+        attendanceState: dto.attendanceState,
+        rollCallState: dto.rollCallState,
+        rewardState: dto.rewardState,
+        interactionState: dto.interactionState,
+        playerState: dto.playerState,
+      },
+    );
+    return this.restore(actor, id, dto.deviceId);
   }
 
   private async transition(
@@ -350,7 +668,11 @@ export class ClassroomRunService {
       eventType,
       id,
     );
-    if (duplicate) return this.get(actor, id);
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      this.assertCurrentDevice(current, dto.deviceId);
+      return this.get(actor, id);
+    }
     await this.ownedRun(actor, id);
     try {
       await this.dataSource.transaction(async (manager) => {
@@ -358,6 +680,7 @@ export class ClassroomRunService {
         const run = await runRepo.findOne({ where: { id } });
         if (!run) throw new NotFoundException('课堂运行不存在');
         this.assertOwner(actor, run);
+        this.assertCurrentDevice(run, dto.deviceId);
         if (run.version !== dto.version) throw this.versionConflict();
         assertClassroomRunTransition(run.status, target);
         const now = new Date();
@@ -406,6 +729,11 @@ export class ClassroomRunService {
           dto.requestId,
         );
       });
+      await this.snapshotService.capture(
+        id,
+        this.transitionSnapshotReason(eventType),
+        true,
+      );
       return this.get(actor, id);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -436,6 +764,45 @@ export class ClassroomRunService {
         throw new ConflictException(
           `资源 ${resourceId} 未审核通过，不能用于正式课堂`,
         );
+    }
+  }
+
+  private async requireTakeoverDevice(
+    actor: JwtTeacherPayload,
+    run: ClassroomRun,
+    dto: TakeoverClassroomRunDto,
+  ) {
+    if (dto.newDeviceId === dto.oldDeviceId)
+      throw new ConflictException('新设备与当前设备相同');
+    const [device, binding, occupied] = await Promise.all([
+      this.devices.findOne({ where: { id: dto.newDeviceId } }),
+      this.bindings.findOne({
+        where: {
+          deviceId: dto.newDeviceId,
+          classroomId: run.classroomId,
+          classId: run.classId,
+          status: BindingStatus.Active,
+        },
+      }),
+      this.runs.findOne({
+        where: {
+          deviceId: dto.newDeviceId,
+          status: In([...ACTIVE_CLASSROOM_RUN_STATUSES]),
+        },
+      }),
+    ]);
+    if (!device) throw new NotFoundException('新设备不存在');
+    if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+      throw new ConflictException('新设备当前不可用于课堂');
+    if (occupied && occupied.id !== run.id)
+      throw new ConflictException('新设备已经存在进行中的课堂');
+    if (actor.schoolId && device.schoolId && actor.schoolId !== device.schoolId)
+      throw new ForbiddenException('新设备不属于当前园所');
+    if (!binding) {
+      if (!dto.teacherConfirmed)
+        throw new ForbiddenException('新设备未经当前课堂授权');
+      if (!actor.schoolId || device.schoolId !== actor.schoolId)
+        throw new ForbiddenException('新设备未经当前课堂授权');
     }
   }
 
@@ -511,6 +878,20 @@ export class ClassroomRunService {
       throw new ForbiddenException('无权操作其他教师的课堂');
   }
 
+  private assertCurrentDevice(run: ClassroomRun, deviceId: number) {
+    if (run.deviceId !== deviceId)
+      throw new ForbiddenException('当前设备已失去课堂控制权');
+  }
+
+  private assertActive(run: ClassroomRun) {
+    if (
+      TERMINAL_CLASSROOM_RUN_STATUSES.includes(
+        run.status as (typeof TERMINAL_CLASSROOM_RUN_STATUSES)[number],
+      )
+    )
+      throw new ConflictException('已结束课堂不能继续恢复或接管');
+  }
+
   private requireTeacher(actor: JwtTeacherPayload) {
     if (actor.userType !== AuthUserType.Teacher)
       throw new ForbiddenException('课堂运行只能由教师操作');
@@ -578,6 +959,69 @@ export class ClassroomRunService {
             })),
           }
         : {}),
+    };
+  }
+
+  private timing(run: ClassroomRun, elapsedSeconds: number) {
+    return {
+      elapsedSeconds,
+      isRunning: run.status === ClassroomRunStatus.Running,
+      resumedAt: run.resumedAt,
+      pausedAt: run.pausedAt,
+      startedAt: run.startedAt,
+    };
+  }
+
+  private allowedActions(status: ClassroomRunStatus): string[] {
+    const actionName: Record<ClassroomRunStatus, string> = {
+      [ClassroomRunStatus.Prepared]: 'start',
+      [ClassroomRunStatus.Running]: 'resume',
+      [ClassroomRunStatus.Paused]: 'pause',
+      [ClassroomRunStatus.Completed]: 'complete',
+      [ClassroomRunStatus.Cancelled]: 'cancel',
+      [ClassroomRunStatus.Failed]: 'fail',
+    };
+    const actions: string[] = allowedClassroomRunTransitions(status).map(
+      (value) => actionName[value],
+    );
+    if (status === ClassroomRunStatus.Running)
+      actions.push('change_step', 'checkpoint');
+    if (
+      [ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(status)
+    )
+      actions.push('takeover', 'recover');
+    return actions;
+  }
+
+  private transitionSnapshotReason(
+    eventType: ClassroomEventType,
+  ): ClassroomSnapshotReason {
+    const reasons: Partial<
+      Record<ClassroomEventType, ClassroomSnapshotReason>
+    > = {
+      [ClassroomEventType.Pause]: ClassroomSnapshotReason.Pause,
+      [ClassroomEventType.Resume]: ClassroomSnapshotReason.Resume,
+      [ClassroomEventType.Complete]: ClassroomSnapshotReason.Complete,
+      [ClassroomEventType.Cancel]: ClassroomSnapshotReason.Cancel,
+    };
+    return reasons[eventType] ?? ClassroomSnapshotReason.RecoverableError;
+  }
+
+  private checkpointReason(
+    type: ClassroomCheckpointType,
+  ): ClassroomSnapshotReason {
+    return type as unknown as ClassroomSnapshotReason;
+  }
+
+  private patchFromSnapshot(
+    snapshot: ValidClassroomSnapshot,
+  ): ClassroomSnapshotPatch {
+    return {
+      attendanceState: snapshot.attendanceState,
+      rollCallState: snapshot.rollCallState,
+      rewardState: snapshot.rewardState,
+      interactionState: snapshot.interactionState,
+      playerState: snapshot.playerState,
     };
   }
 
