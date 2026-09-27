@@ -429,12 +429,13 @@ export class PlatformService {
     );
     this.requireSameSchool(actor, device.schoolId);
     this.requireSameSchool(actor, classroom.schoolId);
-    if (
-      schoolClass.schoolId &&
-      device.schoolId &&
-      schoolClass.schoolId !== device.schoolId
-    )
-      throw new ConflictException('设备与班级不属于同一园所');
+    const schoolIds = [
+      schoolClass.schoolId,
+      device.schoolId,
+      classroom.schoolId,
+    ].filter((schoolId): schoolId is string => Boolean(schoolId));
+    if (new Set(schoolIds).size > 1)
+      throw new ConflictException('设备、教室与班级不属于同一园所');
     const active = await this.bindings.findOne({
       where: { deviceId: dto.deviceId, status: BindingStatus.Active },
     });
@@ -466,6 +467,15 @@ export class PlatformService {
       where: { id: bindingId, status: BindingStatus.Active },
     });
     if (!binding) throw new NotFoundException('有效设备绑定不存在');
+    await this.access.requireClassAccess(actor, binding.classId);
+    const [device, classroom] = await Promise.all([
+      this.devices.findOne({ where: { id: binding.deviceId } }),
+      this.classrooms.findOne({ where: { id: binding.classroomId } }),
+    ]);
+    if (!device) throw new NotFoundException('设备不存在');
+    if (!classroom) throw new NotFoundException('教室不存在');
+    this.requireSameSchool(actor, device.schoolId);
+    this.requireSameSchool(actor, classroom.schoolId);
     binding.status = BindingStatus.Unbound;
     binding.unboundAt = new Date();
     await this.bindings.save(binding);
@@ -554,16 +564,14 @@ export class PlatformService {
         .execute();
       if (updated.affected !== 1)
         throw new BadRequestException('课堂凭证无效或已过期');
-      const binding = await manager
-        .getRepository(DeviceBinding)
-        .findOne({
-          where: {
-            deviceId: device.id,
-            classroomId: entity.classroomId,
-            classId: entity.classId,
-            status: BindingStatus.Active,
-          },
-        });
+      const binding = await manager.getRepository(DeviceBinding).findOne({
+        where: {
+          deviceId: device.id,
+          classroomId: entity.classroomId,
+          classId: entity.classId,
+          status: BindingStatus.Active,
+        },
+      });
       if (!binding) throw new BadRequestException('课堂凭证无效或已过期');
       return {
         classId: entity.classId,

@@ -31,9 +31,11 @@ describe('Member A stage one platform (e2e)', () => {
   let tickets: Repository<ClassroomTicket>;
   let jwt: JwtService;
   let adminToken: string;
+  let globalAdminToken: string;
   let teacherToken: string;
   let otherToken: string;
   let teacherId: number;
+  let otherTeacherId: number;
   let classId: number;
   let classroomId: number;
   let deviceId: number;
@@ -99,7 +101,7 @@ describe('Member A stage one platform (e2e)', () => {
     teacher.schoolId = 'garden-1';
     await teachers.save(teacher);
     teacherId = teacher.id;
-    await teachers.save(
+    const otherTeacher = await teachers.save(
       teachers.create({
         account: 'other_stage_teacher',
         passwordHash: await bcrypt.hash('Teacher123!', 4),
@@ -108,6 +110,7 @@ describe('Member A stage one platform (e2e)', () => {
         schoolId: 'garden-1',
       }),
     );
+    otherTeacherId = otherTeacher.id;
     await teachers.save(
       teachers.create({
         account: 'disabled_teacher',
@@ -117,12 +120,25 @@ describe('Member A stage one platform (e2e)', () => {
         status: AccountStatus.Disabled,
       }),
     );
+    await administrators.save(
+      administrators.create({
+        account: 'global_stage_admin',
+        passwordHash: await bcrypt.hash('GlobalAdmin123!', 4),
+        name: '全局测试管理员',
+        schoolId: null,
+      }),
+    );
 
     const adminLogin = await request(app.getHttpServer())
       .post('/auth/admin/login')
       .send({ account: 'stage_admin', password: 'Admin123!' })
       .expect(200);
     adminToken = adminLogin.body.access_token;
+    const globalAdminLogin = await request(app.getHttpServer())
+      .post('/auth/admin/login')
+      .send({ account: 'global_stage_admin', password: 'GlobalAdmin123!' })
+      .expect(200);
+    globalAdminToken = globalAdminLogin.body.access_token;
     const login = await request(app.getHttpServer())
       .post('/auth/login')
       .send({ account: 'stage_teacher', password: 'Teacher123!' })
@@ -212,6 +228,33 @@ describe('Member A stage one platform (e2e)', () => {
       .expect(401);
   });
 
+  it('rejects refresh and access tokens after the account is disabled', async () => {
+    const account = 'disabled_after_login';
+    const teacher = await teachers.save(
+      teachers.create({
+        account,
+        passwordHash: await bcrypt.hash('Teacher123!', 4),
+        name: '登录后停用教师',
+        role: TeacherRole.Teacher,
+        schoolId: 'garden-1',
+      }),
+    );
+    const login = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ account, password: 'Teacher123!' })
+      .expect(200);
+    teacher.status = AccountStatus.Disabled;
+    await teachers.save(teacher);
+    await request(app.getHttpServer())
+      .post('/auth/refresh')
+      .send({ refreshToken: login.body.refresh_token })
+      .expect(401);
+    await request(app.getHttpServer())
+      .get('/auth/profile')
+      .set('Authorization', `Bearer ${login.body.access_token}`)
+      .expect(401);
+  });
+
   it('creates classes as admin and enforces teacher-class isolation', async () => {
     const created = await request(app.getHttpServer())
       .post('/classes')
@@ -240,6 +283,30 @@ describe('Member A stage one platform (e2e)', () => {
     await request(app.getHttpServer())
       .get(`/students?classId=${classId}`)
       .set('Authorization', `Bearer ${otherToken}`)
+      .expect(403);
+
+    const otherClass = await request(app.getHttpServer())
+      .post('/classes')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: '中二班',
+        grade: '中班',
+        ageRange: '4-5岁',
+        schoolYear: '2026-2027',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/classes/${otherClass.body.id}/teachers`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ teacherId: otherTeacherId, role: 'lead' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .get(`/classes/${otherClass.body.id}`)
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`/students?classId=${otherClass.body.id}`)
+      .set('Authorization', `Bearer ${teacherToken}`)
       .expect(403);
   });
 
@@ -289,7 +356,7 @@ describe('Member A stage one platform (e2e)', () => {
       .send({ deviceCode, name: '一号大屏', type: 'classroom_screen' })
       .expect(201);
     deviceId = device.body.id;
-    await request(app.getHttpServer())
+    const binding = await request(app.getHttpServer())
       .post('/device-bindings')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ deviceId, classroomId, classId })
@@ -299,6 +366,64 @@ describe('Member A stage one platform (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ deviceId, classroomId, classId })
       .expect(409);
+    await request(app.getHttpServer())
+      .delete(`/device-bindings/${binding.body.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(204);
+    await request(app.getHttpServer())
+      .post('/device-bindings')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ deviceId, classroomId, classId })
+      .expect(201);
+  });
+
+  it('rejects cross-school bindings and cross-school unbinding', async () => {
+    const foreignClass = await request(app.getHttpServer())
+      .post('/classes')
+      .set('Authorization', `Bearer ${globalAdminToken}`)
+      .send({
+        name: '外园班级',
+        schoolYear: '2026-2027',
+        schoolId: 'garden-2',
+      })
+      .expect(201);
+    const foreignRoom = await request(app.getHttpServer())
+      .post('/classrooms')
+      .set('Authorization', `Bearer ${globalAdminToken}`)
+      .send({ name: '外园教室', schoolId: 'garden-2' })
+      .expect(201);
+    const foreignDevice = await request(app.getHttpServer())
+      .post('/devices')
+      .set('Authorization', `Bearer ${globalAdminToken}`)
+      .send({
+        deviceCode: 'SCREEN-E2E-FOREIGN',
+        name: '外园大屏',
+        type: 'classroom_screen',
+        schoolId: 'garden-2',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/device-bindings')
+      .set('Authorization', `Bearer ${globalAdminToken}`)
+      .send({
+        deviceId: foreignDevice.body.id,
+        classroomId,
+        classId: foreignClass.body.id,
+      })
+      .expect(409);
+    const foreignBinding = await request(app.getHttpServer())
+      .post('/device-bindings')
+      .set('Authorization', `Bearer ${globalAdminToken}`)
+      .send({
+        deviceId: foreignDevice.body.id,
+        classroomId: foreignRoom.body.id,
+        classId: foreignClass.body.id,
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .delete(`/device-bindings/${foreignBinding.body.id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(403);
   });
 
   it('enforces ticket expiry, one-time use and device matching', async () => {
@@ -341,31 +466,60 @@ describe('Member A stage one platform (e2e)', () => {
       .expect(400);
   });
 
-  it('stores and revokes guardian consent after class permission checks', async () => {
+  it('stores and revokes photo, voice and artwork consent after class permission checks', async () => {
     const students = await request(app.getHttpServer())
       .get(`/students?classId=${classId}`)
       .set('Authorization', `Bearer ${teacherToken}`)
       .expect(200);
     const studentId = students.body.items[0].id;
-    await request(app.getHttpServer())
-      .post('/guardian-consents')
+    for (const consentType of ['photo', 'voice', 'artwork']) {
+      await request(app.getHttpServer())
+        .post('/guardian-consents')
+        .set('Authorization', `Bearer ${teacherToken}`)
+        .send({
+          studentId,
+          consentType,
+          status: 'granted',
+          note: '纸质授权已核对',
+        })
+        .expect(201);
+      const revoked = await request(app.getHttpServer())
+        .post('/guardian-consents')
+        .set('Authorization', `Bearer ${teacherToken}`)
+        .send({ studentId, consentType, status: 'revoked' })
+        .expect(201);
+      expect(revoked.body.revokedAt).toBeTruthy();
+    }
+    const list = await request(app.getHttpServer())
+      .get(`/guardian-consents?studentId=${studentId}`)
       .set('Authorization', `Bearer ${teacherToken}`)
-      .send({
-        studentId,
-        consentType: 'photo',
-        status: 'granted',
-        note: '纸质授权已核对',
-      })
-      .expect(201);
-    const revoked = await request(app.getHttpServer())
-      .post('/guardian-consents')
-      .set('Authorization', `Bearer ${teacherToken}`)
-      .send({ studentId, consentType: 'photo', status: 'revoked' })
-      .expect(201);
-    expect(revoked.body.revokedAt).toBeTruthy();
+      .expect(200);
+    expect(list.body).toHaveLength(3);
+    expect(
+      list.body.map((item: { consentType: string }) => item.consentType),
+    ).toEqual(['artwork', 'photo', 'voice']);
+    expect(
+      list.body.every(
+        (item: { status: string; revokedAt: string | null }) =>
+          item.status === 'revoked' && Boolean(item.revokedAt),
+      ),
+    ).toBe(true);
     await request(app.getHttpServer())
       .get(`/guardian-consents?studentId=${studentId}`)
       .set('Authorization', `Bearer ${otherToken}`)
       .expect(403);
+  });
+
+  it('keeps credentials and tokens out of operation logs', async () => {
+    const logs = await request(app.getHttpServer())
+      .get('/audit-logs?page=1&pageSize=100')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    const serialized = JSON.stringify(logs.body);
+    expect(serialized).not.toContain('Teacher123!');
+    expect(serialized).not.toContain('Admin123!');
+    expect(serialized).not.toContain('GlobalAdmin123!');
+    expect(serialized).not.toContain('access_token');
+    expect(serialized).not.toContain('refresh_token');
   });
 });
