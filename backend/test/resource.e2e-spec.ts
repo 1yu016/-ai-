@@ -6,7 +6,7 @@ import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'node:crypto';
-import { readdir, unlink } from 'node:fs/promises';
+import { access, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import request from 'supertest';
 import { Repository } from 'typeorm';
@@ -16,12 +16,22 @@ import { RefreshTokenSession } from '../src/auth/entities/refresh-token-session.
 import { Teacher, TeacherRole } from '../src/auth/entities/teacher.entity';
 import { TeachingResource } from '../src/data/entities/teaching-resource.entity';
 import { PLATFORM_ENTITIES } from '../src/platform/platform.module';
-import { RESOURCE_UPLOAD_DIRECTORY } from '../src/resources/resource-file.validation';
+import { ResourceVersion } from '../src/resources/entities/resource-version.entity';
+import {
+  UploadChunk,
+  UploadSession,
+  UploadSessionStatus,
+} from '../src/resources/entities/upload-session.entity';
+import {
+  RESOURCE_CHUNK_DIRECTORY,
+  RESOURCE_UPLOAD_DIRECTORY,
+} from '../src/resources/resource-file.validation';
 import { ResourceAiService } from '../src/resources/resource-ai.service';
 import {
   RESOURCE_ENTITIES,
   ResourceModule,
 } from '../src/resources/resource.module';
+import { ResourceService } from '../src/resources/resource.service';
 
 type UploadedResource = {
   id: number;
@@ -38,6 +48,12 @@ const FILES: Record<string, Buffer> = {
   ]),
   png: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]),
   mp3: Buffer.from('ID3\u0004\u0000\u0000sample-audio'),
+  wav: Buffer.concat([
+    Buffer.from('RIFF'),
+    Buffer.from([20, 0, 0, 0]),
+    Buffer.from('WAVEfmt '),
+    Buffer.alloc(16),
+  ]),
   mp4: Buffer.concat([
     Buffer.from([0, 0, 0, 24]),
     Buffer.from('ftypisom'),
@@ -60,6 +76,11 @@ describe('Stage two resource library (e2e)', () => {
   let otherToken: string;
   let adminToken: string;
   let ai: ResourceAiService;
+  let resourceService: ResourceService;
+  let resources: Repository<TeachingResource>;
+  let versions: Repository<ResourceVersion>;
+  let uploadSessions: Repository<UploadSession>;
+  let uploadChunks: Repository<UploadChunk>;
   let initialFiles: Set<string>;
 
   beforeAll(async () => {
@@ -153,6 +174,11 @@ describe('Stage two resource library (e2e)', () => {
         .expect(200)
     ).body.access_token;
     ai = app.get(ResourceAiService);
+    resourceService = app.get(ResourceService);
+    resources = app.get(getRepositoryToken(TeachingResource));
+    versions = app.get(getRepositoryToken(ResourceVersion));
+    uploadSessions = app.get(getRepositoryToken(UploadSession));
+    uploadChunks = app.get(getRepositoryToken(UploadChunk));
   });
 
   afterAll(async () => {
@@ -210,6 +236,16 @@ describe('Stage two resource library (e2e)', () => {
       .field('ageGroup', 'all')
       .attach('file', FILES.jpg, 'shell.exe.jpg')
       .expect(400);
+    for (const filename of ['payload.exe', 'payload.js', 'payload.html']) {
+      await request(app.getHttpServer())
+        .post('/resources/upload')
+        .set('Authorization', `Bearer ${token}`)
+        .field('title', '禁止格式')
+        .field('category', 'x')
+        .field('ageGroup', 'all')
+        .attach('file', Buffer.from('not allowed'), filename)
+        .expect(400);
+    }
     await request(app.getHttpServer())
       .post('/resources/upload-sessions')
       .set('Authorization', `Bearer ${token}`)
@@ -244,16 +280,31 @@ describe('Stage two resource library (e2e)', () => {
       resourceType: 'audio',
       category: '歌曲音乐',
     });
+    const wav = await upload('recording.wav', {
+      resourceType: 'audio',
+      category: '课堂录音',
+    });
     const video = await upload('movie.mp4', { resourceType: 'video' });
     const pdf = await upload('book.pdf', { resourceType: 'picture_book' });
+    const legacyPpt = await upload('lesson.ppt', { resourceType: 'ppt' });
     const ppt = await upload('lesson.pptx', { resourceType: 'ppt' });
     expect([
       image.resourceType,
       audio.resourceType,
+      wav.resourceType,
       video.resourceType,
       pdf.resourceType,
+      legacyPpt.resourceType,
       ppt.resourceType,
-    ]).toEqual(['image', 'audio', 'video', 'picture_book', 'ppt']);
+    ]).toEqual([
+      'image',
+      'audio',
+      'audio',
+      'video',
+      'picture_book',
+      'ppt',
+      'ppt',
+    ]);
     expect(image.sha256).toBe(SHA(FILES.jpg));
     await request(app.getHttpServer())
       .get(`/resources/${image.id}/download`)
@@ -266,6 +317,10 @@ describe('Stage two resource library (e2e)', () => {
       .get(`/resources/${image.id}/download`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
+    await request(app.getHttpServer())
+      .get('/resources/%2e%2e%2f.env/download')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(({ status }) => expect([400, 404]).toContain(status));
   });
 
   it('provides stable filtered search, favorites and safe metadata editing', async () => {
@@ -336,7 +391,19 @@ describe('Stage two resource library (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .attach('file', FILES.pdf, 'review-v2.pdf')
       .expect(201)
-      .expect(({ body }) => expect(body.reviewStatus).toBe('draft'));
+      .expect(({ body }) => {
+        expect(body.reviewStatus).toBe('draft');
+        expect(body.currentVersionId).not.toBe(resource.currentVersionId);
+      });
+    const storedVersions = await versions.find({
+      where: { resourceId: resource.id },
+      order: { versionNo: 'ASC' },
+    });
+    expect(storedVersions.map((version) => version.versionNo)).toEqual([1, 2]);
+    const updatedResource = await resources.findOneByOrFail({
+      id: resource.id,
+    });
+    expect(updatedResource.currentVersionId).toBe(storedVersions[1].id);
   });
 
   it('protects referenced resources and deletes unreferenced physical files safely', async () => {
@@ -346,7 +413,7 @@ describe('Stage two resource library (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/resources/${protectedResource.id}/references`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ referenceType: 'classroom', referenceId: 'run-1' })
+      .send({ referenceType: 'lesson_plan', referenceId: 'plan-1' })
       .expect(201);
     await request(app.getHttpServer())
       .delete(`/resources/${protectedResource.id}`)
@@ -356,8 +423,16 @@ describe('Stage two resource library (e2e)', () => {
     await request(app.getHttpServer())
       .delete(`/resources/${protectedResource.id}/references`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ referenceType: 'classroom', referenceId: 'run-1' })
+      .send({ referenceType: 'lesson_plan', referenceId: 'plan-1' })
       .expect(204);
+    const storedVersion = await versions.findOneByOrFail({
+      resourceId: protectedResource.id,
+    });
+    const storedPath = join(
+      RESOURCE_UPLOAD_DIRECTORY,
+      storedVersion.storagePath,
+    );
+    await expect(access(storedPath)).resolves.toBeUndefined();
     await request(app.getHttpServer())
       .delete(`/resources/${protectedResource.id}`)
       .set('Authorization', `Bearer ${token}`)
@@ -366,6 +441,12 @@ describe('Stage two resource library (e2e)', () => {
       .get(`/resources/${protectedResource.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(404);
+    await expect(access(storedPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    const deleted = await resources.findOneByOrFail({
+      id: protectedResource.id,
+    });
+    expect(deleted.deletedAt).toBeInstanceOf(Date);
+    expect(deleted.reviewStatus).toBe('disabled');
   });
 
   it('supports resumable chunks, idempotent duplicates, missing chunks and ownership isolation', async () => {
@@ -484,6 +565,57 @@ describe('Stage two resource library (e2e)', () => {
       .expect(200);
     expect(state.body.status).toBe('failed');
     expect(state.body.uploadedChunks).toEqual([]);
+    await expect(
+      access(join(RESOURCE_UPLOAD_DIRECTORY, `${session.id}.pdf`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      access(join(RESOURCE_CHUNK_DIRECTORY, session.id)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('cleans expired resumable upload sessions and their physical chunks', async () => {
+    const payload = Buffer.concat([
+      Buffer.from('%PDF-1.7\n'),
+      Buffer.alloc(64 * 1024 - 9, 5),
+    ]);
+    const session = (
+      await request(app.getHttpServer())
+        .post('/resources/upload-sessions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          title: '过期分片',
+          resourceType: 'pdf',
+          category: '课件',
+          ageGroup: 'all',
+          originalName: 'expired.pdf',
+          declaredMime: 'application/pdf',
+          totalSize: payload.length,
+          chunkSize: 64 * 1024,
+          expectedSha256: SHA(payload),
+        })
+        .expect(201)
+    ).body;
+    await request(app.getHttpServer())
+      .post(`/resources/upload-sessions/${session.id}/chunks/0`)
+      .set('Authorization', `Bearer ${token}`)
+      .field('sha256', SHA(payload))
+      .attach('file', payload, 'chunk.part')
+      .expect(201);
+    await expect(
+      access(join(RESOURCE_CHUNK_DIRECTORY, session.id, '0.part')),
+    ).resolves.toBeUndefined();
+    await uploadSessions.update(session.id, {
+      expiresAt: new Date(Date.now() - 1000),
+    });
+    await expect(resourceService.cleanupExpiredUploads()).resolves.toBe(1);
+    const expired = await uploadSessions.findOneByOrFail({ id: session.id });
+    expect(expired.status).toBe(UploadSessionStatus.Expired);
+    await expect(
+      uploadChunks.count({ where: { sessionId: session.id } }),
+    ).resolves.toBe(0);
+    await expect(
+      access(join(RESOURCE_CHUNK_DIRECTORY, session.id)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('does not persist malformed AI suggestions or affect the resource', async () => {
@@ -503,6 +635,10 @@ describe('Stage two resource library (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
     expect(detail.body.tags).toEqual([]);
+    const stored = await resources.findOneByOrFail({ id: resource.id });
+    expect(stored.ageGroup).toBe('all');
+    expect(stored.aiTeachingGoals).toBeNull();
+    expect(stored.aiActivitySuggestions).toBeNull();
     spy.mockRestore();
   });
 });

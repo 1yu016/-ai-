@@ -65,6 +65,48 @@ describe('Stage two resource migration (e2e)', () => {
     ]) {
       await expect(runner.hasTable(table)).resolves.toBe(true);
     }
+    const resourceTable = await runner.getTable('teaching_resource');
+    expect(resourceTable?.foreignKeys.map((key) => key.columnNames)).toEqual(
+      expect.arrayContaining([['category_id'], ['current_version_id']]),
+    );
+    const versionTable = await runner.getTable('resource_version');
+    expect(versionTable?.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        'resource_id',
+        'version_no',
+        'sha256',
+        'mime_type',
+        'file_size',
+        'storage_path',
+        'created_by',
+        'created_by_type',
+      ]),
+    );
+    expect(
+      versionTable?.uniques.some(
+        (unique) =>
+          unique.columnNames.includes('resource_id') &&
+          unique.columnNames.includes('version_no'),
+      ),
+    ).toBe(true);
+    const favoriteTable = await runner.getTable('resource_favorite');
+    expect(
+      favoriteTable?.uniques.some(
+        (unique) =>
+          unique.columnNames.includes('teacher_id') &&
+          unique.columnNames.includes('resource_id'),
+      ),
+    ).toBe(true);
+    const reviewTable = await runner.getTable('resource_review');
+    expect(reviewTable?.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        'resource_id',
+        'reviewer_id',
+        'status',
+        'comment',
+        'reviewed_at',
+      ]),
+    );
     await runner.release();
     await dataSource.destroy();
   });

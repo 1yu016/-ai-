@@ -191,9 +191,11 @@ export function validateDeclaredFile(
   const extension = validateSafeFileName(file.originalname);
   const rule = RULES[extension];
   const accepted =
-    extension === '.json'
-      ? ['application/json', 'model/gltf+json']
-      : [rule.mime];
+    extension === '.wav'
+      ? ['audio/wav', 'audio/x-wav', 'audio/wave']
+      : extension === '.json'
+        ? ['application/json', 'model/gltf+json']
+        : [rule.mime];
   if (!accepted.includes(file.mimetype))
     throw new BadRequestException('文件扩展名与声明 MIME 不匹配');
   const resourceType = requestedType ?? rule.defaultType;
