@@ -20,7 +20,7 @@ import type { LessonRun } from '@/stores/lessonRun'
 
 const resource: ServerResource = { id: 12, title: '春天图片', aliases: [], description: '观察春天', resourceType: 'image', category: '图片卡片', ageGroup: 'middle', tags: ['春天'], fileUrl: '/uploads/resources/spring.jpg', coverUrl: null, fileName: 'spring.jpg', mimeType: 'image/jpeg', fileSize: 10, duration: null, reviewStatus: 'approved', createdAt: '2026-01-01' }
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天课堂', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'ready', version: 2, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
-const run: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, status: 'running', currentStepOrder: 1, lessonTitle: '春天课堂', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ sortOrder: 1, title: '看一看', stepType: 'question', instruction: '你发现了什么？', durationSeconds: 60 }, { sortOrder: 2, title: '总结', stepType: 'summary', instruction: '说说发现', durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
+const run: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, version: 1, status: 'running', currentStepIndex: 0, lessonTitle: '春天课堂', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ stepIndex: 0, title: '看一看', type: 'question', content: '你发现了什么？', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '总结', type: 'summary', content: '说说发现', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
 
 function routerFor(path: string, routes?: RouteRecordRaw[]) {
   const router = createRouter({ history: createMemoryHistory(), routes: routes ?? [
@@ -251,16 +251,16 @@ describe('lesson components', () => {
   it('starts a lesson from the list with one click', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [plan], total: 1 } })
     vi.spyOn(http, 'post').mockResolvedValue({ data: { runId: 9 } })
-    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/lesson/:runId/check', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
+    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/preflight/:planId', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
     const wrapper = mount(LessonPlanListView, { global: { plugins: [router, ElementPlus] } })
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text().includes('开始上课'))!.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/classroom/lesson/9/check')
+    expect(router.currentRoute.value.path).toBe('/classroom/preflight/3')
   })
 
   it('offers the guided classroom assistant during a non-question step', async () => {
-    const introductionRun: LessonRun = { ...run, steps: [{ ...run.steps[0]!, stepType: 'introduction' }] }
+    const introductionRun: LessonRun = { ...run, steps: [{ ...run.steps[0]!, type: 'introduction' }] }
     vi.spyOn(http, 'get').mockResolvedValue({ data: introductionRun })
     const post = vi.spyOn(http, 'post').mockImplementation(async (url) => url === '/ai/tts'
       ? { data: { audioUrl: 'data:audio/mpeg;base64,AAAA' } }
@@ -305,7 +305,7 @@ describe('lesson components', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('结束课堂'))!.trigger('click')
     await flushPromises()
     expect(ElMessageBox.confirm).toHaveBeenCalled()
-    expect(post).toHaveBeenCalledWith('/lesson-runs/9/complete')
+    expect(post).toHaveBeenCalledWith('/classroom-runs/9/complete', expect.objectContaining({ version: 1, requestId: expect.any(String) }))
   })
 
   it('renders a read-only page after the run has ended', async () => {

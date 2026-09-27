@@ -133,14 +133,5 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
     } catch (cause) { throw new Error(apiErrorMessage(cause, 'AI 暂时无法生成草稿，仍可手动备课。'), { cause }) }
     finally { loading.value = false }
   }
-  async function start(id: number) {
-    try {
-      const { data } = await http.post<{ runId: number }>(`/lesson-plans/${id}/start`)
-      return data.runId
-    } catch (cause) {
-      throw new Error(apiErrorMessage(cause, '无法开始课堂，请检查教案步骤后重试。'), { cause })
-    }
-  }
-
-  return { items, total, page, pageSize, keyword, ageGroup, status, loading, saving, error, current, draft, dirty, steps, fetchList, newDraft, load, markDirty, addStep, removeStep, copyStep, moveStep, save, remove, copy, generateDraft, start }
+  return { items, total, page, pageSize, keyword, ageGroup, status, loading, saving, error, current, draft, dirty, steps, fetchList, newDraft, load, markDirty, addStep, removeStep, copyStep, moveStep, save, remove, copy, generateDraft }
 })

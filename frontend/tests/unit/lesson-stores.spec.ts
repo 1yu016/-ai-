@@ -6,7 +6,7 @@ import { useLessonRunStore, type LessonRun } from '@/stores/lessonRun'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'draft', version: 1, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
-const running: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, status: 'running', currentStepOrder: 1, lessonTitle: '春天', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ sortOrder: 1, title: '导入', stepType: 'introduction', instruction: '看一看', durationSeconds: 60 }, { sortOrder: 2, title: '提问', stepType: 'question', instruction: '什么颜色？', durationSeconds: 60 }], elapsedSeconds: 5, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
+const running: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, version: 1, status: 'running', currentStepIndex: 0, lessonTitle: '春天', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '看一看', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '提问', type: 'question', content: '什么颜色？', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 5, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
 
 describe('lesson plan store', () => {
   beforeEach(() => setActivePinia(createPinia()))
@@ -45,14 +45,6 @@ describe('lesson plan store', () => {
     await first
   })
 
-  it('surfaces the backend reason when a lesson cannot start', async () => {
-    vi.spyOn(http, 'post').mockRejectedValue({
-      isAxiosError: true,
-      response: { status: 400, data: { message: '教案还没有课堂步骤，无法开始上课' } },
-    })
-    const store = useLessonPlanStore()
-    await expect(store.start(3)).rejects.toThrow('教案还没有课堂步骤，无法开始上课')
-  })
 })
 
 describe('lesson run state flow', () => {
@@ -60,15 +52,12 @@ describe('lesson run state flow', () => {
 
   it('loads, advances, pauses, resumes, and completes from backend truth', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: running })
-    vi.spyOn(http, 'patch').mockResolvedValue({ data: { ...running, currentStepOrder: 2 } })
-    vi.spyOn(http, 'post')
-      .mockResolvedValueOnce({ data: { ...running, currentStepOrder: 2, status: 'paused' } })
-      .mockResolvedValueOnce({ data: { ...running, currentStepOrder: 2, status: 'running' } })
-      .mockResolvedValueOnce({ data: { ...running, currentStepOrder: 2, status: 'completed' } })
+    const post = vi.spyOn(http, 'post').mockResolvedValueOnce({ data: { ...running, currentStepIndex: 1, version: 2 } }).mockResolvedValueOnce({ data: { ...running, currentStepIndex: 1, status: 'paused', version: 3 } }).mockResolvedValueOnce({ data: { ...running, currentStepIndex: 1, status: 'running', version: 4 } }).mockResolvedValueOnce({ data: { ...running, currentStepIndex: 1, status: 'completed', version: 5 } })
     const store = useLessonRunStore()
     await store.load(9)
     await store.next()
-    expect(store.run?.currentStepOrder).toBe(2)
+    expect(store.run?.currentStepIndex).toBe(1)
+    expect(post).toHaveBeenNthCalledWith(1, '/classroom-runs/9/steps/1', expect.objectContaining({ version: 1, requestId: expect.any(String) }))
     expect(useResourcePlayerStore().controlRequest?.action).toBe('stop')
     await store.pause(); expect(store.run?.status).toBe('paused')
     await store.resume(); expect(store.run?.status).toBe('running')
@@ -76,17 +65,30 @@ describe('lesson run state flow', () => {
   })
 
   it('does not move past the final step', async () => {
-    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, currentStepOrder: 2 } })
-    const patch = vi.spyOn(http, 'patch')
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, currentStepIndex: 1 } })
+    const patch = vi.spyOn(http, 'post')
     const store = useLessonRunStore()
     await store.load(9)
     await store.next()
     expect(patch).not.toHaveBeenCalled()
   })
 
+  it('blocks prepared and failed runs from classroom actions', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, status: 'prepared' } })
+    const post = vi.spyOn(http, 'post')
+    const store = useLessonRunStore()
+    await store.load(9)
+    await store.next(); await store.pause(); await store.complete()
+    expect(post).not.toHaveBeenCalled()
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, status: 'failed' } })
+    await store.load(9)
+    await store.next(); await store.resume(); await store.cancel()
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('blocks step navigation and every action after the run has ended', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, status: 'cancelled' } })
-    const patch = vi.spyOn(http, 'patch')
+    const patch = vi.spyOn(http, 'post')
     const post = vi.spyOn(http, 'post')
     const store = useLessonRunStore()
     await store.load(9)

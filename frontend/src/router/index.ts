@@ -44,8 +44,8 @@ const router = createRouter({
       component: () => import('../views/LessonPlanEditorView.vue'),
     },
     {
-      path: '/classroom/lesson/:runId/check',
-      name: 'lesson-classroom-check',
+      path: '/classroom/preflight/:planId',
+      name: 'lesson-classroom-preflight',
       meta: { requiresAuth: true },
       component: () => import('../views/ClassroomPreflightView.vue'),
     },

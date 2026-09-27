@@ -10,11 +10,14 @@ export type Consent = { id: number; studentId: number; consentType: string; stat
 
 export const platformApi = {
   classes: (page = 1) => http.get<Page<SchoolClass>>('/classes', { params: { page, pageSize: 50 } }),
+  listClasses: (page = 1) => http.get<Page<SchoolClass>>('/classes', { params: { page, pageSize: 50 } }),
   students: (classId: number, page = 1) => http.get<Page<Student>>('/students', { params: { classId, page, pageSize: 100 } }),
   updateStudent: (id: number, data: Partial<Pick<Student, 'name' | 'nickname'>>) => http.patch<Student>(`/students/${id}`, data),
   consents: (studentId: number) => http.get<Consent[]>('/guardian-consents', { params: { studentId } }),
   classrooms: () => http.get<Classroom[]>('/classrooms'),
+  listClassrooms: () => http.get<Classroom[]>('/classrooms'),
   devices: () => http.get<Device[]>('/devices'),
+  listDevices: () => http.get<Device[]>('/devices'),
   bindDevice: (data: { deviceId: number; classroomId: number; classId: number }) => http.post<DeviceBinding>('/device-bindings', data),
   unbindDevice: (id: number) => http.delete(`/device-bindings/${id}`),
   createTicket: (data: { deviceId: number; classId: number; classroomId: number; expiresInSeconds?: number }) => http.post<{ ticket: string; expiresAt: string }>('/classroom-tickets', data),

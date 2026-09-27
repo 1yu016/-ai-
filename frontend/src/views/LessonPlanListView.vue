@@ -9,7 +9,7 @@ const router = useRouter(); const store = useLessonPlanStore()
 const { items, keyword, ageGroup, status, loading, error } = storeToRefs(store)
 const statusText = { draft: '草稿', ready: '可上课', archived: '已归档' }
 async function remove(id: number) { try { await ElMessageBox.confirm('删除教案后课堂步骤也会删除，课程资源不受影响。确定删除吗？', '删除教案', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }) } catch { return } try { await store.remove(id); ElMessage.success('教案已删除') } catch (e) { ElMessage.error(e instanceof Error ? e.message : '删除失败') } }
-async function start(id: number) { try { const runId = await store.start(id); await router.push(`/classroom/lesson/${runId}/check`) } catch (e) { ElMessage.error(e instanceof Error ? e.message : '无法开始课堂') } }
+async function start(id: number) { await router.push(`/classroom/preflight/${id}`) }
 async function copy(id: number) { try { await store.copy(id); ElMessage.success('已复制教案') } catch { ElMessage.error('复制失败') } }
 onMounted(store.fetchList)
 </script>
