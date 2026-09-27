@@ -251,12 +251,12 @@ describe('lesson components', () => {
   it('starts a lesson from the list with one click', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [plan], total: 1 } })
     vi.spyOn(http, 'post').mockResolvedValue({ data: { runId: 9 } })
-    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
+    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/lesson/:runId/check', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
     const wrapper = mount(LessonPlanListView, { global: { plugins: [router, ElementPlus] } })
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text().includes('开始上课'))!.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/classroom/lesson/9')
+    expect(router.currentRoute.value.path).toBe('/classroom/lesson/9/check')
   })
 
   it('offers the guided classroom assistant during a non-question step', async () => {
@@ -306,5 +306,14 @@ describe('lesson components', () => {
     await flushPromises()
     expect(ElMessageBox.confirm).toHaveBeenCalled()
     expect(post).toHaveBeenCalledWith('/lesson-runs/9/complete')
+  })
+
+  it('renders a read-only page after the run has ended', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...run, status: 'cancelled' } })
+    const router = await routerFor('/classroom/lesson/9')
+    const wrapper = mount(LessonClassroomView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('本节课堂已中止')
+    expect(wrapper.text()).not.toContain('下一步')
   })
 })

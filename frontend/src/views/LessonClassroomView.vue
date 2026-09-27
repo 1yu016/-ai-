@@ -57,7 +57,7 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
 <template>
   <main class="classroom">
     <div v-if="loading" class="center">正在恢复课堂…</div><div v-else-if="error" class="center error">{{ error }}<ElButton @click="router.push('/lesson-plans')">返回教案列表</ElButton></div>
-    <template v-else-if="run && currentStep"><header><div><small>正在上课</small><h1>{{ run.lessonTitle }}</h1></div><div class="metrics"><span>第 <b>{{ run.currentStepOrder }}</b> / {{ run.steps.length }} 环节</span><span>已上课 <b>{{ formatTime(elapsedSeconds) }}</b></span><span>本环节 {{ Math.ceil(currentStep.durationSeconds / 60) }} 分钟</span></div></header><ElProgress :percentage="progress" :show-text="false" :stroke-width="10" />
+    <template v-else-if="run && currentStep && isActive"><header><div><small>正在上课</small><h1>{{ run.lessonTitle }}</h1></div><div class="metrics"><span>第 <b>{{ run.currentStepOrder }}</b> / {{ run.steps.length }} 环节</span><span>已上课 <b>{{ formatTime(elapsedSeconds) }}</b></span><span>本环节 {{ Math.ceil(currentStep.durationSeconds / 60) }} 分钟</span></div></header><ElProgress :percentage="progress" :show-text="false" :stroke-width="10" />
       <section class="stage"><aside><button v-for="step in run.steps" :key="step.sortOrder" :class="{active: step.sortOrder === run.currentStepOrder}" :disabled="paused" @click="goToStep(step.sortOrder)"><span>{{ step.sortOrder }}</span>{{ step.title }}</button></aside>
         <article class="content"><div class="step-title"><ElTag effect="dark">{{ typeText[currentStep.stepType] }}</ElTag><h2>{{ currentStep.title }}</h2></div><p class="instruction">{{ currentStep.instruction }}</p><div v-if="currentStep.expectedResponse" class="teacher-card"><small>预期回答</small><p>{{ currentStep.expectedResponse }}</p></div><div v-if="currentStep.teacherTip" class="teacher-card tip"><small>教师提示</small><p>{{ currentStep.teacherTip }}</p></div>
           <div v-if="currentStep.stepType === 'resource'" class="resource-card"><div><strong>{{ currentResource?.title ?? '资源已失效' }}</strong><p>{{ currentResource ? '点击后打开现有统一播放器，不会自动播放。' : '该资源已删除或无权访问，可继续切换其他环节。' }}</p></div><ElButton type="primary" size="large" :disabled="!currentResource" @click="store.openResource">打开资源</ElButton></div>
@@ -66,6 +66,11 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
       <footer><ElButton size="large" :disabled="paused || run.currentStepOrder <= 1" @click="safe(store.previous)">上一步</ElButton><ElButton size="large" :disabled="paused" @click="store.repeat">重复本环节</ElButton><ElButton size="large" type="primary" :disabled="paused || run.currentStepOrder >= run.steps.length" @click="safe(store.next)">下一步</ElButton><ElButton v-if="!paused" size="large" type="warning" @click="safe(store.pause)">暂停课堂</ElButton><ElButton v-else size="large" type="success" @click="safe(store.resume)">继续课堂</ElButton><ElButton size="large" type="danger" @click="finish('complete')">结束课堂</ElButton><ElButton size="large" plain @click="finish('cancel')">中止</ElButton></footer>
       <ResourcePlayer :resources="currentResource ? [currentResource] : resources.sortedResources" />
     </template>
+    <div v-else-if="run" class="center ended">
+      <h1>{{ run.status === 'completed' ? '本节课堂已完成' : '本节课堂已中止' }}</h1>
+      <p>课堂记录已保存，当前页面为只读状态。</p>
+      <ElButton type="primary" @click="router.push('/lesson-plans')">返回教案列表</ElButton>
+    </div>
   </main>
 </template>
 
