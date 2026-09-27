@@ -19,6 +19,12 @@ const router = createRouter({
       name: 'login',
       component: () => import('../views/LoginView.vue'),
     },
+    { path: '/classes', name: 'classes', meta: { requiresAuth: true }, component: () => import('../views/ClassesView.vue') },
+    { path: '/classes/:classId/students', name: 'students', meta: { requiresAuth: true }, component: () => import('../views/StudentsView.vue') },
+    { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true }, component: () => import('../views/StudentProfileView.vue') },
+    { path: '/devices', name: 'devices', meta: { requiresAuth: true }, component: () => import('../views/DevicesView.vue') },
+    { path: '/classroom/scan', name: 'classroom-scan', meta: { requiresAuth: true }, component: () => import('../views/ClassroomScanView.vue') },
+    { path: '/forbidden', name: 'forbidden', component: () => import('../views/ForbiddenView.vue') },
     {
       path: '/lesson-plans',
       name: 'lesson-plans',
@@ -43,6 +49,13 @@ const router = createRouter({
       meta: { requiresAuth: true },
       component: () => import('../views/LessonClassroomView.vue'),
     },
+    // 资源库（静态路由在前，动态 :id 在后，避免抢先匹配 upload/preview/edit/review）
+    { path: '/resources', name: 'resources', meta: { requiresAuth: true }, component: () => import('../views/resources/ResourceLibraryView.vue') },
+    { path: '/resources/upload', name: 'resource-upload', meta: { requiresAuth: true }, component: () => import('../views/resources/UploadView.vue') },
+    { path: '/resources/:id/preview', name: 'resource-preview', meta: { requiresAuth: true }, props: true, component: () => import('../views/resources/ResourcePreviewView.vue') },
+    { path: '/resources/:id/edit', name: 'resource-edit', meta: { requiresAuth: true }, props: true, component: () => import('../views/resources/ResourceEditView.vue') },
+    { path: '/resources/:id/review', name: 'resource-review', meta: { requiresAuth: true }, props: true, component: () => import('../views/resources/ResourceReviewView.vue') },
+    { path: '/resources/:id', name: 'resource-detail', meta: { requiresAuth: true }, props: true, component: () => import('../views/resources/ResourceDetailView.vue') },
   ],
 })
 

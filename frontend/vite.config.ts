@@ -13,6 +13,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     proxy: {
       '/ai': {
         target: 'http://localhost:3001',
@@ -33,6 +34,10 @@ export default defineConfig({
       '/resources': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        bypass: (request) =>
+          request.headers.accept?.includes('text/html')
+            ? '/index.html'
+            : undefined,
       },
       '/lesson-plans': {
         target: 'http://localhost:3001',

@@ -1,10 +1,15 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 export type TeacherInfo = {
-  teacherId: number
+  userId?: number
+  teacherId?: number
+  administratorId?: number
   account: string
   name: string
+  role?: string
+  userType?: 'teacher' | 'administrator'
+  schoolId?: string | null
 }
 
 const STORAGE_KEYS = {
@@ -33,7 +38,6 @@ function isTeacherInfo(value: unknown): value is TeacherInfo {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<TeacherInfo>
   return (
-    Number.isInteger(candidate.teacherId) &&
     typeof candidate.account === 'string' &&
     candidate.account.length > 0 &&
     typeof candidate.name === 'string' &&
@@ -57,6 +61,12 @@ export const useUserStore = defineStore('user', () => {
   const teacherInfo = ref<TeacherInfo | null>(null)
   const accessToken = ref('')
   const visitorId = ref('')
+
+  const isAdmin = computed(
+    () =>
+      teacherInfo.value?.userType === 'administrator' ||
+      teacherInfo.value?.role === 'admin',
+  )
   let initialized = false
 
   function initialize() {
@@ -104,6 +114,7 @@ export const useUserStore = defineStore('user', () => {
     teacherInfo,
     accessToken,
     visitorId,
+    isAdmin,
     initialize,
     setLogin,
     logout,
