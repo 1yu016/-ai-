@@ -4,6 +4,7 @@ import type { JwtTeacherPayload } from '../auth/auth.types';
 export enum OwnerType {
   Visitor = 'visitor',
   Teacher = 'teacher',
+  Administrator = 'administrator',
 }
 
 export type DataOwner = {

@@ -16,6 +16,7 @@ import { PlatformModule } from './platform/platform.module';
 import { StageOnePlatformFoundation2026092700001 } from './migrations/202609270001-StageOnePlatformFoundation';
 import { RefreshSessionTokenVersion2026092700002 } from './migrations/202609270002-RefreshSessionTokenVersion';
 import { ClassroomTicketForeignKeys2026092700003 } from './migrations/202609270003-ClassroomTicketForeignKeys';
+import { ResourceLibraryStageTwo2026092700004 } from './migrations/202609270004-ResourceLibraryStageTwo';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { ClassroomTicketForeignKeys2026092700003 } from './migrations/2026092700
             StageOnePlatformFoundation2026092700001,
             RefreshSessionTokenVersion2026092700002,
             ClassroomTicketForeignKeys2026092700003,
+            ResourceLibraryStageTwo2026092700004,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',

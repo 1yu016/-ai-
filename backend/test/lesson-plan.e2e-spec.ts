@@ -20,7 +20,11 @@ import { LessonPlan } from '../src/lesson-plans/entities/lesson-plan.entity';
 import { LessonRun } from '../src/lesson-plans/entities/lesson-run.entity';
 import { LessonStep } from '../src/lesson-plans/entities/lesson-step.entity';
 import { LessonPlanModule } from '../src/lesson-plans/lesson-plan.module';
-import { ResourceModule } from '../src/resources/resource.module';
+import { PLATFORM_ENTITIES } from '../src/platform/platform.module';
+import {
+  RESOURCE_ENTITIES,
+  ResourceModule,
+} from '../src/resources/resource.module';
 
 describe('Lesson plans and runs (e2e)', () => {
   let app: INestApplication;
@@ -54,6 +58,8 @@ describe('Lesson plans and runs (e2e)', () => {
             Administrator,
             RefreshTokenSession,
             TeachingResource,
+            ...RESOURCE_ENTITIES,
+            ...PLATFORM_ENTITIES,
             LessonPlan,
             LessonStep,
             LessonRun,
