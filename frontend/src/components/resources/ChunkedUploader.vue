@@ -109,6 +109,8 @@ const stateLabel = computed<string>(() => {
       return '已完成'
     case 'error':
       return '出错'
+    default:
+      return '等待开始'
   }
 })
 
@@ -124,7 +126,7 @@ function isBusy(s: TaskState) {
   return s === 'starting' || s === 'uploading' || s === 'merging'
 }
 
-let taking = new Set<number>() // 已被 worker 领取的分片
+const taking = new Set<number>() // 已被 worker 领取的分片
 let stopped = false // 出错/取消后阻止分发
 
 onMounted(() => {

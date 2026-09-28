@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import { platformApi, type SchoolClass, type TeacherItem } from '@/api/platform'
@@ -127,8 +127,6 @@ async function saveBind() {
 onMounted(async () => {
   await Promise.all([loadTeachers(), loadClasses()])
 })
-
-const classCount = computed(() => teachers.value.length)
 </script>
 
 <template>

@@ -269,7 +269,7 @@ describe('lesson components', () => {
       : { data: { mode: 'guided_dialogue', ability: 'guided_question', reply: '你的小手指像数字几呀？', teacherTip: '等待幼儿观察手指后再回答。', suggestedAction: null, requiresTeacherConfirmation: false } })
     vi.stubGlobal('Audio', class {
       src = ''
-      constructor(_source?: string) {}
+      constructor() {}
       addEventListener() {}
       async play() {}
       pause() {}

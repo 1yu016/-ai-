@@ -4,13 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElButton, ElMessage, ElOption, ElSelect } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useLessonPlanStore } from '@/stores/lessonPlan'
-import { useLessonRunStore } from '@/stores/lessonRun'
 import { platformApi, type Classroom, type Device, type SchoolClass } from '@/api/platform'
 import { apiErrorMessage, http } from '@/api/http'
 
 type CheckStatus = 'checking' | 'ok' | 'degraded' | 'failed'
 type CheckItem = { key: string; label: string; detail: string; status: CheckStatus }
-const route = useRoute(); const router = useRouter(); const planStore = useLessonPlanStore(); const runStore = useLessonRunStore()
+const route = useRoute(); const router = useRouter(); const planStore = useLessonPlanStore()
 const { current: plan, loading: planLoading, error: planError } = storeToRefs(planStore)
 const classes = ref<SchoolClass[]>([]); const classrooms = ref<Classroom[]>([]); const devices = ref<Device[]>([])
 const classId = ref<number | null>(null); const classroomId = ref<number | null>(null); const deviceId = ref<number | null>(null); const checking = ref(false); const starting = ref(false); const checks = ref<CheckItem[]>([])
