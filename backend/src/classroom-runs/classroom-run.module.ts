@@ -15,6 +15,7 @@ import { ClassroomRun } from './entities/classroom-run.entity';
 import { ClassroomSnapshot } from './entities/classroom-snapshot.entity';
 import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.entity';
 import { ClassroomSnapshotService } from './classroom-snapshot.service';
+import { AvatarModule } from '../avatars/avatar.module';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
@@ -36,6 +37,7 @@ export const CLASSROOM_RUN_ENTITIES = [
     PlatformModule,
     LessonPlanModule,
     ResourceModule,
+    AvatarModule,
   ],
   controllers: [ClassroomRunController],
   providers: [ClassroomRunService, ClassroomSnapshotService],

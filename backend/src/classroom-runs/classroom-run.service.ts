@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
+import { AvatarService } from '../avatars/avatar.service';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import {
   ResourceReviewStatus,
@@ -83,6 +84,7 @@ export class ClassroomRunService {
     private readonly lessonPlans: LessonPlanService,
     private readonly resources: ResourceService,
     private readonly snapshotService: ClassroomSnapshotService,
+    private readonly avatars: AvatarService,
   ) {}
 
   async start(actor: JwtTeacherPayload, dto: StartClassroomRunDto) {
@@ -104,6 +106,8 @@ export class ClassroomRunService {
     if (!plan.steps.length) throw new BadRequestException('空教案不能开始课堂');
     await this.validateResources(actor, plan.steps);
     await this.requireValidBinding(dto);
+    if (dto.avatarVersionId)
+      await this.avatars.requireReadyForClassroom(actor, dto.avatarVersionId);
 
     try {
       const runId = await this.dataSource.transaction(async (manager) => {
@@ -127,6 +131,12 @@ export class ClassroomRunService {
             .map((step) => step.resourceId)
             .filter((value): value is number => value != null),
         );
+        if (dto.avatarVersionId)
+          await this.avatars.requireReadyForClassroom(
+            actor,
+            dto.avatarVersionId,
+            manager,
+          );
         await this.ensureNoActiveConflict(manager, dto.classId, dto.deviceId);
         const now = new Date();
         const runRepo = manager.getRepository(ClassroomRun);
@@ -138,6 +148,7 @@ export class ClassroomRunService {
             classId: dto.classId,
             classroomId: dto.classroomId,
             deviceId: dto.deviceId,
+            avatarVersionId: dto.avatarVersionId ?? null,
             title: plan.title,
             status: ClassroomRunStatus.Prepared,
             currentStepIndex: 0,

@@ -21,6 +21,8 @@ import { LessonPreparationStageThree2026092700005 } from './migrations/202609270
 import { ClassroomRunStateMachine2026092700006 } from './migrations/202609270006-ClassroomRunStateMachine';
 import { ClassroomSnapshotRecovery2026092700007 } from './migrations/202609270007-ClassroomSnapshotRecovery';
 import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
+import { AvatarCharacterAssets2026092700008 } from './migrations/202609270008-AvatarCharacterAssets';
+import { AvatarModule } from './avatars/avatar.module';
 
 @Module({
   imports: [
@@ -67,6 +69,7 @@ import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
             LessonPreparationStageThree2026092700005,
             ClassroomRunStateMachine2026092700006,
             ClassroomSnapshotRecovery2026092700007,
+            AvatarCharacterAssets2026092700008,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',
@@ -80,6 +83,7 @@ import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
     LessonPlanModule,
     PlatformModule,
     ClassroomRunModule,
+    AvatarModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -39,6 +39,9 @@ export class ClassroomSnapshot {
   @Column({ name: 'player_state', type: 'text', default: '{}' })
   playerState: string;
   @Column({ name: 'device_id', type: 'integer' }) deviceId: number;
+  @Index()
+  @Column({ name: 'avatar_version_id', type: 'integer', nullable: true })
+  avatarVersionId: number | null;
   @Column({ type: 'simple-enum', enum: ClassroomSnapshotReason })
   reason: ClassroomSnapshotReason;
   @Column({ name: 'is_key', type: 'boolean', default: false }) isKey: boolean;

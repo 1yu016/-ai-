@@ -26,6 +26,7 @@ export class StartClassroomRunDto extends RequestIdDto {
   @Type(() => Number) @IsInt() @Min(1) classId: number;
   @Type(() => Number) @IsInt() @Min(1) classroomId: number;
   @Type(() => Number) @IsInt() @Min(1) deviceId: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) avatarVersionId?: number;
 }
 
 export class ClassroomRunOperationDto extends RequestIdDto {

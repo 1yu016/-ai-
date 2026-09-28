@@ -30,6 +30,9 @@ export class ClassroomRun {
   @Column({ name: 'classroom_id', type: 'integer' })
   classroomId: number;
   @Index() @Column({ name: 'device_id', type: 'integer' }) deviceId: number;
+  @Index()
+  @Column({ name: 'avatar_version_id', type: 'integer', nullable: true })
+  avatarVersionId: number | null;
   @Column({ type: 'varchar', length: 200 }) title: string;
   @Column({
     type: 'simple-enum',

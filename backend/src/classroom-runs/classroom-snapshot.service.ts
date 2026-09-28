@@ -89,6 +89,7 @@ export class ClassroomSnapshotService {
             patch.interactionState ?? previous?.interactionState ?? {},
           playerState: patch.playerState ?? previous?.playerState ?? {},
           deviceId: run.deviceId,
+          avatarVersionId: run.avatarVersionId,
           reason,
           isKey,
         };
@@ -174,10 +175,15 @@ export class ClassroomSnapshotService {
         interactionState: this.jsonMap(snapshot.interactionState),
         playerState: this.jsonMap(snapshot.playerState),
         deviceId: snapshot.deviceId,
+        avatarVersionId: snapshot.avatarVersionId,
         reason: snapshot.reason,
         isKey: snapshot.isKey,
       };
-      if (this.checksum(state) !== snapshot.checksum) return null;
+      if (this.checksum(state) !== snapshot.checksum) {
+        // 任务5生成的历史快照尚无avatarVersionId，升级后仍需可以恢复。
+        const { avatarVersionId: _avatarVersionId, ...legacyState } = state;
+        if (this.checksum(legacyState) !== snapshot.checksum) return null;
+      }
       return { entity: snapshot, ...this.stateFromValues(state) };
     } catch {
       return null;
