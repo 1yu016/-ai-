@@ -3,17 +3,37 @@ import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomUUID } from 'node:crypto';
+import { unlink, writeFile } from 'node:fs/promises';
 import request from 'supertest';
 import { Repository } from 'typeorm';
 import { AuthModule } from '../src/auth/auth.module';
 import { Administrator } from '../src/auth/entities/administrator.entity';
 import { RefreshTokenSession } from '../src/auth/entities/refresh-token-session.entity';
 import { Teacher, TeacherRole } from '../src/auth/entities/teacher.entity';
+import { AuthUserType } from '../src/auth/entities/refresh-token-session.entity';
+import { AVATAR_ENTITIES } from '../src/avatars/avatar.module';
+import { AVATAR_UPLOAD_DIRECTORY } from '../src/avatars/avatar-file.validation';
+import {
+  AvatarActionName,
+  AvatarAssetType,
+  AvatarBindingScope,
+  AvatarBindingStatus,
+  AvatarCategory,
+  AvatarCharacterStatus,
+  AvatarModelFormat,
+  AvatarVersionStatus,
+} from '../src/avatars/avatar.types';
+import { AvatarAsset } from '../src/avatars/entities/avatar-asset.entity';
+import { AvatarBinding } from '../src/avatars/entities/avatar-binding.entity';
+import { AvatarCharacter } from '../src/avatars/entities/avatar-character.entity';
+import { AvatarVersion } from '../src/avatars/entities/avatar-version.entity';
 import {
   CLASSROOM_RUN_ENTITIES,
   ClassroomRunModule,
 } from '../src/classroom-runs/classroom-run.module';
 import { ClassroomEvent } from '../src/classroom-runs/entities/classroom-event.entity';
+import { ClassroomSnapshot } from '../src/classroom-runs/entities/classroom-snapshot.entity';
 import {
   ResourceAgeGroup,
   ResourceReviewStatus,
@@ -62,6 +82,7 @@ describe('Task four classroom run state machine (e2e)', () => {
   let approvedResourceId: number;
   let draftResourceId: number;
   let events: Repository<ClassroomEvent>;
+  const avatarFiles: string[] = [];
 
   const auth = () => ({ Authorization: `Bearer ${token}` });
   const requestId = (label: string) =>
@@ -98,6 +119,7 @@ describe('Task four classroom run state machine (e2e)', () => {
             ...RESOURCE_ENTITIES,
             ...LESSON_PLAN_ENTITIES,
             ...CLASSROOM_RUN_ENTITIES,
+            ...AVATAR_ENTITIES,
           ],
           synchronize: true,
         }),
@@ -304,7 +326,86 @@ describe('Task four classroom run state machine (e2e)', () => {
     events = app.get(getRepositoryToken(ClassroomEvent));
   });
 
-  afterAll(() => app.close());
+  afterAll(async () => {
+    for (const path of avatarFiles) await unlink(path).catch(() => undefined);
+    await app.close();
+  });
+
+  async function seedReadyAvatar(name: string) {
+    const characterRepo = app.get<Repository<AvatarCharacter>>(
+      getRepositoryToken(AvatarCharacter),
+    );
+    const versionRepo = app.get<Repository<AvatarVersion>>(
+      getRepositoryToken(AvatarVersion),
+    );
+    const assetRepo = app.get<Repository<AvatarAsset>>(
+      getRepositoryToken(AvatarAsset),
+    );
+    const character = await characterRepo.save(
+      characterRepo.create({
+        name,
+        category: AvatarCategory.TeacherAssistant,
+        description: null,
+        ownerType: AuthUserType.Teacher,
+        ownerId: teacherId,
+        schoolId: 'garden-run',
+        status: AvatarCharacterStatus.Approved,
+        currentVersionId: null,
+      }),
+    );
+    const version = await versionRepo.save(
+      versionRepo.create({
+        characterId: character.id,
+        version: 1,
+        engineVersion: 'avatar-engine-1',
+        modelFormat: AvatarModelFormat.Glb,
+        checksum: 'a'.repeat(64),
+        status: AvatarVersionStatus.Ready,
+        compatibility: '{}',
+      }),
+    );
+    character.currentVersionId = version.id;
+    await characterRepo.save(character);
+    const makeAsset = async (
+      assetType: AvatarAssetType,
+      actionName: AvatarActionName | null,
+      suffix: string,
+    ) => {
+      const filename = `${randomUUID()}-${suffix}`;
+      const path = `${AVATAR_UPLOAD_DIRECTORY}/${filename}`;
+      const data = Buffer.from(`${name}-${assetType}-${actionName ?? ''}`);
+      await writeFile(path, data);
+      avatarFiles.push(path);
+      return assetRepo.save(
+        assetRepo.create({
+          versionId: version.id,
+          assetType,
+          actionName,
+          originalName: suffix,
+          filePath: filename,
+          mimeType:
+            assetType === AvatarAssetType.Fallback2d
+              ? 'image/png'
+              : 'model/gltf-binary',
+          fileSize: data.length,
+          checksum: createHash('sha256').update(data).digest('hex'),
+          metadata: '{}',
+        }),
+      );
+    };
+    const model = await makeAsset(AvatarAssetType.Model, null, 'model.glb');
+    const fallback = await makeAsset(
+      AvatarAssetType.Fallback2d,
+      null,
+      'fallback.png',
+    );
+    await makeAsset(
+      AvatarAssetType.Animation,
+      AvatarActionName.Idle,
+      'idle.glb',
+    );
+    return { character, version, model, fallback };
+  }
 
   async function createPlan(
     withSteps = true,
@@ -581,5 +682,178 @@ describe('Task four classroom run state machine (e2e)', () => {
       .set(auth())
       .expect(200);
     expect(active.body).toEqual([]);
+  });
+
+  it('applies avatar binding priority, validates voice, snapshots temporary roles and falls back safely', async () => {
+    const [systemAvatar, classAvatar, lessonAvatar, temporaryAvatar] =
+      await Promise.all([
+        seedReadyAvatar('系统角色'),
+        seedReadyAvatar('班级角色'),
+        seedReadyAvatar('教案角色'),
+        seedReadyAvatar('课堂角色'),
+      ]);
+    await app
+      .get<Repository<AvatarBinding>>(getRepositoryToken(AvatarBinding))
+      .save({
+        scopeType: AvatarBindingScope.System,
+        scopeId: 0,
+        characterId: systemAvatar.character.id,
+        versionId: systemAvatar.version.id,
+        createdBy: teacherId,
+        status: AvatarBindingStatus.Active,
+        cancelledAt: null,
+      });
+
+    await request(app.getHttpServer())
+      .patch(`/avatars/characters/${classAvatar.character.id}/voice-profile`)
+      .set(auth())
+      .send({
+        provider: 'demo',
+        voiceId: 'child-1',
+        language: 'zh-CN',
+        speed: 2.5,
+        volume: 1,
+        pitch: 0,
+        status: 'active',
+        reason: '范围验证',
+      })
+      .expect(400);
+    await request(app.getHttpServer())
+      .patch(`/avatars/characters/${classAvatar.character.id}/voice-profile`)
+      .set(auth())
+      .send({
+        provider: 'demo',
+        voiceId: 'child-1',
+        language: 'zh-CN',
+        speed: 1.1,
+        volume: 0.8,
+        pitch: 2,
+        status: 'active',
+        reason: '设置班级音色',
+      })
+      .expect(200);
+
+    const plan = await createPlan();
+    await request(app.getHttpServer())
+      .post(`/avatars/bindings/classes/${classId}`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({
+        characterId: classAvatar.character.id,
+        versionId: classAvatar.version.id,
+        reason: '越权测试',
+      })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/avatars/bindings/classes/${classId}`)
+      .set(auth())
+      .send({
+        characterId: classAvatar.character.id,
+        versionId: classAvatar.version.id,
+        reason: '班级默认角色',
+      })
+      .expect(201);
+    const classResolved = await request(app.getHttpServer())
+      .get(`/avatars/resolve?classId=${classId}`)
+      .set(auth())
+      .expect(200);
+    expect(classResolved.body.character.id).toBe(classAvatar.character.id);
+
+    await request(app.getHttpServer())
+      .post(`/avatars/bindings/lesson-plans/${plan.id}`)
+      .set(auth())
+      .send({
+        characterId: lessonAvatar.character.id,
+        versionId: lessonAvatar.version.id,
+        reason: '教案指定角色',
+      })
+      .expect(201);
+    const lessonResolved = await request(app.getHttpServer())
+      .get(`/avatars/resolve?classId=${classId}&lessonPlanId=${plan.id}`)
+      .set(auth())
+      .expect(200);
+    expect(lessonResolved.body.character.id).toBe(lessonAvatar.character.id);
+
+    const started = await request(app.getHttpServer())
+      .post('/classroom-runs/start')
+      .set(auth())
+      .send(startBody(plan.id))
+      .expect(201);
+    expect(started.body.avatarCharacterId).toBe(lessonAvatar.character.id);
+    const pinnedAtStart = await request(app.getHttpServer())
+      .get(
+        `/avatars/resolve?classroomRunId=${started.body.id}&deviceId=${deviceId}`,
+      )
+      .set(auth())
+      .expect(200);
+    expect(pinnedAtStart.body).toMatchObject({
+      sourceScope: 'classroom_run',
+      character: { id: lessonAvatar.character.id },
+      version: { id: lessonAvatar.version.id },
+    });
+    const changed = await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/avatar-binding`)
+      .set(auth())
+      .send({
+        characterId: temporaryAvatar.character.id,
+        versionId: temporaryAvatar.version.id,
+        reason: '课堂临时互动',
+        requestId: requestId('avatar-set'),
+        deviceId,
+        version: 1,
+      })
+      .expect(201);
+    expect(changed.body).toMatchObject({
+      avatarCharacterId: temporaryAvatar.character.id,
+      avatarVersionId: temporaryAvatar.version.id,
+      version: 2,
+    });
+    const latestSnapshot = await app
+      .get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot))
+      .findOneOrFail({
+        where: { classroomRunId: started.body.id },
+        order: { snapshotVersion: 'DESC' },
+      });
+    expect(latestSnapshot.avatarCharacterId).toBe(temporaryAvatar.character.id);
+
+    await unlink(
+      `${AVATAR_UPLOAD_DIRECTORY}/${temporaryAvatar.model.filePath}`,
+    );
+    const twoDimensional = await request(app.getHttpServer())
+      .get(
+        `/avatars/resolve?classroomRunId=${started.body.id}&deviceId=${deviceId}&actionName=question`,
+      )
+      .set(auth())
+      .expect(200);
+    expect(twoDimensional.body).toMatchObject({
+      fallbackLevel: 'model_2d',
+      renderAsset: { assetType: 'fallback_2d' },
+      action: { requested: 'question', effective: 'idle' },
+    });
+
+    await unlink(
+      `${AVATAR_UPLOAD_DIRECTORY}/${temporaryAvatar.fallback.filePath}`,
+    );
+    const versionRepo = app.get<Repository<AvatarVersion>>(
+      getRepositoryToken(AvatarVersion),
+    );
+    classAvatar.version.status = AvatarVersionStatus.Disabled;
+    lessonAvatar.version.status = AvatarVersionStatus.Disabled;
+    await versionRepo.save([classAvatar.version, lessonAvatar.version]);
+    const systemFallback = await request(app.getHttpServer())
+      .get(
+        `/avatars/resolve?classroomRunId=${started.body.id}&deviceId=${deviceId}`,
+      )
+      .set(auth())
+      .expect(200);
+    expect(systemFallback.body).toMatchObject({
+      fallbackLevel: 'system_character',
+      character: { id: systemAvatar.character.id },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/complete`)
+      .set(auth())
+      .send({ version: 2, deviceId, requestId: requestId('avatar-complete') })
+      .expect(201);
   });
 });

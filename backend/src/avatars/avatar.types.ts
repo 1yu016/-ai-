@@ -45,6 +45,33 @@ export enum AvatarActionName {
   Goodbye = 'goodbye',
 }
 
+export enum AvatarVoiceStatus {
+  Active = 'active',
+  Disabled = 'disabled',
+  Unavailable = 'unavailable',
+}
+
+export enum AvatarBindingScope {
+  System = 'system',
+  Class = 'class',
+  LessonPlan = 'lesson_plan',
+  ClassroomRun = 'classroom_run',
+}
+
+export enum AvatarBindingStatus {
+  Active = 'active',
+  Cancelled = 'cancelled',
+}
+
+export enum AvatarFallbackLevel {
+  None = 'none',
+  Action = 'action',
+  Voice = 'voice',
+  Model2d = 'model_2d',
+  SystemCharacter = 'system_character',
+  SafeMode = 'safe_mode',
+}
+
 export const REQUIRED_AVATAR_ACTIONS = [
   AvatarActionName.Idle,
   AvatarActionName.Speak,

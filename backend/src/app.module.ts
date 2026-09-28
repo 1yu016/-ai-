@@ -23,6 +23,7 @@ import { ClassroomSnapshotRecovery2026092700007 } from './migrations/20260927000
 import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
 import { AvatarCharacterAssets2026092700008 } from './migrations/202609270008-AvatarCharacterAssets';
 import { AvatarModule } from './avatars/avatar.module';
+import { AvatarConfigurationBindings2026092700009 } from './migrations/202609270009-AvatarConfigurationBindings';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { AvatarModule } from './avatars/avatar.module';
             ClassroomRunStateMachine2026092700006,
             ClassroomSnapshotRecovery2026092700007,
             AvatarCharacterAssets2026092700008,
+            AvatarConfigurationBindings2026092700009,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',

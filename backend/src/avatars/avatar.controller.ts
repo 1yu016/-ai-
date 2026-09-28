@@ -24,6 +24,14 @@ import type { AuthenticatedRequest } from '../auth/auth.types';
 import { avatarMulterOptions } from './avatar-file.validation';
 import { AvatarUploadExceptionFilter } from './avatar-upload-exception.filter';
 import { AvatarService } from './avatar.service';
+import { AvatarConfigurationService } from './avatar-configuration.service';
+import {
+  ConfigurationReasonDto,
+  ResolveAvatarQueryDto,
+  SetAvatarBindingDto,
+  UpsertAvatarPersonalityDto,
+  UpsertAvatarVoiceProfileDto,
+} from './dto/avatar-config.dto';
 import {
   CreateAvatarCharacterDto,
   CreateAvatarVersionDto,
@@ -37,7 +45,88 @@ import {
 @Controller('avatars')
 @UseGuards(AuthGuard)
 export class AvatarController {
-  constructor(private readonly avatars: AvatarService) {}
+  constructor(
+    private readonly avatars: AvatarService,
+    private readonly configuration: AvatarConfigurationService,
+  ) {}
+
+  @Get('resolve')
+  resolve(
+    @Query() query: ResolveAvatarQueryDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.resolve(request.user, query);
+  }
+
+  @Patch('characters/:id/voice-profile')
+  voiceProfile(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpsertAvatarVoiceProfileDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.upsertVoice(request.user, id, dto);
+  }
+
+  @Patch('characters/:id/personality')
+  personality(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpsertAvatarPersonalityDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.upsertPersonality(request.user, id, dto);
+  }
+
+  @Post('bindings/classes/:id')
+  setClassBinding(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetAvatarBindingDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.setClassBinding(request.user, id, dto);
+  }
+
+  @Delete('bindings/classes/:id')
+  cancelClassBinding(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ConfigurationReasonDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.cancelClassBinding(request.user, id, dto.reason);
+  }
+
+  @Post('bindings/lesson-plans/:id')
+  setLessonBinding(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetAvatarBindingDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.setLessonBinding(request.user, id, dto);
+  }
+
+  @Delete('bindings/lesson-plans/:id')
+  cancelLessonBinding(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ConfigurationReasonDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.cancelLessonBinding(request.user, id, dto.reason);
+  }
+
+  @Post('bindings/system-default')
+  setSystemBinding(
+    @Body() dto: SetAvatarBindingDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.setSystemBinding(request.user, dto);
+  }
+
+  @Delete('bindings/system-default')
+  cancelSystemBinding(
+    @Body() dto: ConfigurationReasonDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.configuration.cancelSystemBinding(request.user, dto.reason);
+  }
 
   @Post('characters')
   createCharacter(

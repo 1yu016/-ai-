@@ -539,6 +539,13 @@ export class AvatarService {
     return { character, version };
   }
 
+  async requireManageableCharacter(
+    actor: JwtTeacherPayload,
+    characterId: number,
+  ) {
+    return this.findManageable(actor, characterId);
+  }
+
   private async performIntegrityCheck(
     versionId: number,
   ): Promise<AvatarIntegrityResult> {

@@ -12,6 +12,12 @@ import {
   MinLength,
 } from 'class-validator';
 import { ClassroomCheckpointType } from '../classroom-run.types';
+import {
+  CancelClassroomAvatarBindingDto,
+  SetClassroomAvatarBindingDto,
+} from '../../avatars/dto/avatar-config.dto';
+
+export { CancelClassroomAvatarBindingDto, SetClassroomAvatarBindingDto };
 
 export class RequestIdDto {
   @IsString()

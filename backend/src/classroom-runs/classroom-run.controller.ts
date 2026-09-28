@@ -21,6 +21,8 @@ import {
   RestoreClassroomRunQueryDto,
   StartClassroomRunDto,
   TakeoverClassroomRunDto,
+  SetClassroomAvatarBindingDto,
+  CancelClassroomAvatarBindingDto,
 } from './dto/classroom-run.dto';
 
 @Controller('classroom-runs')
@@ -135,5 +137,23 @@ export class ClassroomRunController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.service.checkpoint(request.user, id, dto);
+  }
+
+  @Post(':id/avatar-binding')
+  setAvatarBinding(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetClassroomAvatarBindingDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.setAvatarBinding(request.user, id, dto);
+  }
+
+  @Post(':id/avatar-binding/cancel')
+  cancelAvatarBinding(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelClassroomAvatarBindingDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.cancelAvatarBinding(request.user, id, dto);
   }
 }

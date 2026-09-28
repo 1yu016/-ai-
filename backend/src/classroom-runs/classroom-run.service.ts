@@ -9,6 +9,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AvatarService } from '../avatars/avatar.service';
+import { AvatarConfigurationService } from '../avatars/avatar-configuration.service';
+import {
+  CancelClassroomAvatarBindingDto,
+  SetClassroomAvatarBindingDto,
+} from '../avatars/dto/avatar-config.dto';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import {
   ResourceReviewStatus,
@@ -85,6 +90,7 @@ export class ClassroomRunService {
     private readonly resources: ResourceService,
     private readonly snapshotService: ClassroomSnapshotService,
     private readonly avatars: AvatarService,
+    private readonly avatarConfiguration: AvatarConfigurationService,
   ) {}
 
   async start(actor: JwtTeacherPayload, dto: StartClassroomRunDto) {
@@ -108,6 +114,11 @@ export class ClassroomRunService {
     await this.requireValidBinding(dto);
     if (dto.avatarVersionId)
       await this.avatars.requireReadyForClassroom(actor, dto.avatarVersionId);
+    else
+      await this.avatarConfiguration.resolveVersionReference(actor, {
+        classId: dto.classId,
+        lessonPlanId: dto.lessonPlanId,
+      });
 
     try {
       const runId = await this.dataSource.transaction(async (manager) => {
@@ -131,12 +142,25 @@ export class ClassroomRunService {
             .map((step) => step.resourceId)
             .filter((value): value is number => value != null),
         );
-        if (dto.avatarVersionId)
-          await this.avatars.requireReadyForClassroom(
-            actor,
-            dto.avatarVersionId,
-            manager,
-          );
+        const effectiveAvatar = dto.avatarVersionId
+          ? await this.avatars.requireReadyForClassroom(
+              actor,
+              dto.avatarVersionId,
+              manager,
+            )
+          : await this.avatarConfiguration.resolveVersionReference(
+              actor,
+              { classId: dto.classId, lessonPlanId: dto.lessonPlanId },
+              manager,
+            );
+        const effectiveAvatarReference = effectiveAvatar
+          ? 'character' in effectiveAvatar
+            ? {
+                characterId: effectiveAvatar.character.id,
+                versionId: effectiveAvatar.version.id,
+              }
+            : effectiveAvatar
+          : null;
         await this.ensureNoActiveConflict(manager, dto.classId, dto.deviceId);
         const now = new Date();
         const runRepo = manager.getRepository(ClassroomRun);
@@ -148,7 +172,8 @@ export class ClassroomRunService {
             classId: dto.classId,
             classroomId: dto.classroomId,
             deviceId: dto.deviceId,
-            avatarVersionId: dto.avatarVersionId ?? null,
+            avatarCharacterId: effectiveAvatarReference?.characterId ?? null,
+            avatarVersionId: effectiveAvatarReference?.versionId ?? null,
             title: plan.title,
             status: ClassroomRunStatus.Prepared,
             currentStepIndex: 0,
@@ -665,6 +690,140 @@ export class ClassroomRunService {
     return this.restore(actor, id, dto.deviceId);
   }
 
+  async setAvatarBinding(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: SetClassroomAvatarBindingDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.AvatarBinding,
+      id,
+    );
+    if (duplicate) return this.get(actor, id);
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, dto.deviceId);
+    this.assertActive(run);
+    await this.avatarConfiguration.validateBindingTarget(
+      actor,
+      dto.characterId,
+      dto.versionId,
+    );
+    await this.dataSource.transaction(async (manager) => {
+      const runRepo = manager.getRepository(ClassroomRun);
+      const current = await runRepo.findOne({ where: { id } });
+      if (!current) throw new NotFoundException('课堂运行不存在');
+      this.assertOwner(actor, current);
+      this.assertCurrentDevice(current, dto.deviceId);
+      this.assertActive(current);
+      if (current.version !== dto.version) throw this.versionConflict();
+      await this.avatarConfiguration.upsertClassroomBinding(
+        manager,
+        actor,
+        current,
+        dto,
+      );
+      const update = await runRepo.update(
+        { id, version: dto.version, deviceId: dto.deviceId },
+        {
+          avatarCharacterId: dto.characterId,
+          avatarVersionId: dto.versionId,
+          version: dto.version + 1,
+        },
+      );
+      if (update.affected !== 1) throw this.versionConflict();
+      const updated = await runRepo.findOneByOrFail({ id });
+      await this.writeEvent(
+        manager,
+        actor,
+        updated,
+        ClassroomEventType.AvatarBinding,
+        {
+          operation: 'set',
+          characterId: dto.characterId,
+          avatarVersionId: dto.versionId,
+          version: updated.version,
+        },
+        dto.requestId,
+      );
+    });
+    await this.snapshotService.capture(
+      id,
+      ClassroomSnapshotReason.AvatarBinding,
+      true,
+    );
+    return this.get(actor, id);
+  }
+
+  async cancelAvatarBinding(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: CancelClassroomAvatarBindingDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.AvatarBinding,
+      id,
+    );
+    if (duplicate) return this.get(actor, id);
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, dto.deviceId);
+    this.assertActive(run);
+    await this.dataSource.transaction(async (manager) => {
+      const runRepo = manager.getRepository(ClassroomRun);
+      const current = await runRepo.findOne({ where: { id } });
+      if (!current) throw new NotFoundException('课堂运行不存在');
+      this.assertOwner(actor, current);
+      this.assertCurrentDevice(current, dto.deviceId);
+      this.assertActive(current);
+      if (current.version !== dto.version) throw this.versionConflict();
+      await this.avatarConfiguration.cancelClassroomBinding(
+        manager,
+        actor,
+        current,
+        dto.reason,
+      );
+      const fallback = await this.avatarConfiguration.resolveVersionReference(
+        actor,
+        { classId: current.classId, lessonPlanId: current.lessonPlanId },
+        manager,
+      );
+      const update = await runRepo.update(
+        { id, version: dto.version, deviceId: dto.deviceId },
+        {
+          avatarCharacterId: fallback?.characterId ?? null,
+          avatarVersionId: fallback?.versionId ?? null,
+          version: dto.version + 1,
+        },
+      );
+      if (update.affected !== 1) throw this.versionConflict();
+      const updated = await runRepo.findOneByOrFail({ id });
+      await this.writeEvent(
+        manager,
+        actor,
+        updated,
+        ClassroomEventType.AvatarBinding,
+        {
+          operation: 'cancel',
+          fallbackCharacterId: fallback?.characterId ?? null,
+          fallbackVersionId: fallback?.versionId ?? null,
+          version: updated.version,
+        },
+        dto.requestId,
+      );
+    });
+    await this.snapshotService.capture(
+      id,
+      ClassroomSnapshotReason.AvatarBinding,
+      true,
+    );
+    return this.get(actor, id);
+  }
+
   private async transition(
     actor: JwtTeacherPayload,
     id: number,
@@ -1000,7 +1159,7 @@ export class ClassroomRunService {
     if (
       [ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(status)
     )
-      actions.push('takeover', 'recover');
+      actions.push('takeover', 'recover', 'avatar_binding');
     return actions;
   }
 

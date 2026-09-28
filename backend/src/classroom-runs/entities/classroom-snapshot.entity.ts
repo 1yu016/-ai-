@@ -42,6 +42,9 @@ export class ClassroomSnapshot {
   @Index()
   @Column({ name: 'avatar_version_id', type: 'integer', nullable: true })
   avatarVersionId: number | null;
+  @Index()
+  @Column({ name: 'avatar_character_id', type: 'integer', nullable: true })
+  avatarCharacterId: number | null;
   @Column({ type: 'simple-enum', enum: ClassroomSnapshotReason })
   reason: ClassroomSnapshotReason;
   @Column({ name: 'is_key', type: 'boolean', default: false }) isKey: boolean;

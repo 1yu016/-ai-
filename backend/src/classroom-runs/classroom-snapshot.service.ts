@@ -90,6 +90,7 @@ export class ClassroomSnapshotService {
           playerState: patch.playerState ?? previous?.playerState ?? {},
           deviceId: run.deviceId,
           avatarVersionId: run.avatarVersionId,
+          avatarCharacterId: run.avatarCharacterId,
           reason,
           isKey,
         };
@@ -176,13 +177,18 @@ export class ClassroomSnapshotService {
         playerState: this.jsonMap(snapshot.playerState),
         deviceId: snapshot.deviceId,
         avatarVersionId: snapshot.avatarVersionId,
+        avatarCharacterId: snapshot.avatarCharacterId,
         reason: snapshot.reason,
         isKey: snapshot.isKey,
       };
       if (this.checksum(state) !== snapshot.checksum) {
-        // 任务5生成的历史快照尚无avatarVersionId，升级后仍需可以恢复。
-        const { avatarVersionId: _avatarVersionId, ...legacyState } = state;
-        if (this.checksum(legacyState) !== snapshot.checksum) return null;
+        // 任务6快照尚无avatarCharacterId，任务5快照还没有avatarVersionId。
+        const { avatarCharacterId: _avatarCharacterId, ...task6State } = state;
+        if (this.checksum(task6State) !== snapshot.checksum) {
+          const { avatarVersionId: _avatarVersionId, ...task5State } =
+            task6State;
+          if (this.checksum(task5State) !== snapshot.checksum) return null;
+        }
       }
       return { entity: snapshot, ...this.stateFromValues(state) };
     } catch {

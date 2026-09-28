@@ -33,6 +33,9 @@ export class ClassroomRun {
   @Index()
   @Column({ name: 'avatar_version_id', type: 'integer', nullable: true })
   avatarVersionId: number | null;
+  @Index()
+  @Column({ name: 'avatar_character_id', type: 'integer', nullable: true })
+  avatarCharacterId: number | null;
   @Column({ type: 'varchar', length: 200 }) title: string;
   @Column({
     type: 'simple-enum',

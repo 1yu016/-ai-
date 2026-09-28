@@ -19,6 +19,7 @@ export enum ClassroomEventType {
   Takeover = 'takeover',
   Recover = 'recover',
   SnapshotFailed = 'snapshot_failed',
+  AvatarBinding = 'avatar_binding',
 }
 
 export enum ClassroomEventResult {
@@ -52,6 +53,7 @@ export enum ClassroomSnapshotReason {
   Timed = 'timed',
   Takeover = 'takeover',
   Recover = 'recover',
+  AvatarBinding = 'avatar_binding',
 }
 
 export enum ClassroomCheckpointType {
