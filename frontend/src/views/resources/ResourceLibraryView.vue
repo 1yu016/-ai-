@@ -134,6 +134,7 @@ function goReview(): void {
 </script>
 <template>
   <ManagementLayout>
+    <div class="resource-library">
     <div class="head">
       <div>
         <h1>课程资源库</h1>
@@ -187,13 +188,14 @@ function goReview(): void {
       <span class="page-info">第 {{ store.page }} / {{ totalPages || 1 }} 页 · 共 {{ store.total }} 条</span>
       <button class="ghost" :disabled="store.page >= totalPages" @click="goPage(store.page + 1)">下一页</button>
     </div>
+    </div>
   </ManagementLayout>
 </template>
 <style scoped>
 .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .head h1 { margin: 0 0 6px; font-size: 28px; }
 .head-actions { display: flex; gap: 10px; }
-.muted { color: #8191a2; }
+.muted { color: #9a7e6e; }
 .stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -201,16 +203,16 @@ function goReview(): void {
   margin: 20px 0;
 }
 .stat {
-  background: #fff;
-  border: 1px solid #e7edf3;
-  border-radius: 12px;
+  background: #fffdf9;
+  border: 1px solid #f0ddce;
+  border-radius: 16px;
   padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
 }
-.stat .num { font-size: 26px; font-weight: 700; color: #229a7d; }
+.stat .num { font-size: 26px; font-weight: 700; color: #d67b59; }
 .stat .num.warn { color: #b77d20; }
 .stat .label { font-size: 12px; color: #8191a2; }
 .stat.wide .value { font-size: 15px; font-weight: 600; color: #26364a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -221,7 +223,7 @@ function goReview(): void {
 .admin-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #eef2f5; }
 .admin-row:last-child { border-bottom: 0; }
 .admin-title { font-size: 14px; color: #26364a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.panel { background: #fff; border: 1px solid #e7edf3; border-radius: 12px; padding: 18px; }
+.panel { background: #fffdf9; border: 1px solid #f0ddce; border-radius: 16px; padding: 18px; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -231,24 +233,24 @@ function goReview(): void {
 .retry { border: 0; background: #c64e4e; color: #fff; border-radius: 7px; padding: 6px 12px; cursor: pointer; }
 .button {
   border: 0;
-  background: #36aa89;
+  background: #e99168;
   color: #fff;
   border-radius: 8px;
   padding: 10px 18px;
   cursor: pointer;
 }
-.button:hover { background: #229a7d; }
+.button:hover { background: #d67b59; }
 .ghost {
-  border: 1px solid #dce5ed;
-  background: #fff;
-  color: #66788c;
+  border: 1px solid #efd9c8;
+  background: #fffdf9;
+  color: #876b5d;
   border-radius: 8px;
   padding: 10px 14px;
   cursor: pointer;
 }
-.ghost:hover:not(:disabled) { color: #229a7d; border-color: #229a7d; }
+.ghost:hover:not(:disabled) { color: #d67b59; border-color: #e99168; }
 .ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 .danger { border: 1px solid #ffd7d7; background: #fff; color: #c64e4e; border-radius: 8px; padding: 8px 12px; cursor: pointer; margin: 4px; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 26px 0; }
-.page-info { font-size: 13px; color: #8191a2; }
+.page-info { font-size: 13px; color: #9a7e6e; }
 </style>

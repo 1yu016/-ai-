@@ -95,7 +95,7 @@ function preview(): void { emit('preview', props.resource) }
 <style scoped>
 .card {
   background: #fff;
-  border: 1px solid #e7edf3;
+  border: 1px solid #f0ddce;
   border-radius: 12px;
   overflow: hidden;
   display: flex;
@@ -103,7 +103,7 @@ function preview(): void { emit('preview', props.resource) }
   cursor: pointer;
   transition: box-shadow 0.18s ease;
 }
-.card:hover { box-shadow: 0 6px 18px rgba(34, 154, 125, 0.14); }
+.card:hover { box-shadow: 0 6px 18px rgba(201, 110, 69, 0.14); }
 .cover {
   position: relative;
   height: 140px;
@@ -116,7 +116,7 @@ function preview(): void { emit('preview', props.resource) }
 .cover-fallback {
   font-size: 26px;
   font-weight: 700;
-  color: #229a7d;
+  color: #d67b59;
 }
 .status-badge {
   position: absolute;
@@ -131,22 +131,22 @@ function preview(): void { emit('preview', props.resource) }
 .bad { background: #ffebeb; color: #c64e4e; }
 .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .title { margin: 0; font-size: 15px; font-weight: 600; color: #26364a; line-height: 1.4; }
-.meta { margin: 0; font-size: 13px; color: #8191a2; display: flex; gap: 5px; flex-wrap: wrap; }
+.meta { margin: 0; font-size: 13px; color: #9a7e6e; display: flex; gap: 5px; flex-wrap: wrap; }
 .tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .tag {
   background: #f0f6f4;
-  color: #229a7d;
+  color: #b9684d;
   border-radius: 6px;
   padding: 2px 7px;
   font-size: 12px;
 }
 .foot { display: flex; justify-content: space-between; align-items: center; margin-top: auto; }
-.time { font-size: 12px; color: #8191a2; }
+.time { font-size: 12px; color: #9a7e6e; }
 .fav { border: 0; background: none; color: #cbd6dd; font-size: 20px; line-height: 1; cursor: pointer; }
 .fav.on { color: #f0a020; }
 .actions { display: flex; gap: 8px; }
-.link { flex: 1; border: 1px solid #e0e9ee; background: #fff; color: #66788c; border-radius: 8px; padding: 6px 0; font-size: 13px; cursor: pointer; }
-.link:hover { border-color: #229a7d; color: #229a7d; }
-.link.primary { background: #229a7d; border-color: #229a7d; color: #fff; }
-.link.primary:hover { background: #36aa89; border-color: #36aa89; }
+.link { flex: 1; border: 1px solid #efd9c8; background: #fffdf9; color: #876b5d; border-radius: 9px; padding: 6px 0; font-size: 13px; cursor: pointer; }
+.link:hover { border-color: #e99168; color: #d67b59; }
+.link.primary { background: #e99168; border-color: #e99168; color: #fff; }
+.link.primary:hover { background: #d67b59; border-color: #d67b59; }
 </style>

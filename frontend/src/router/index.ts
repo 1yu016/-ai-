@@ -19,10 +19,13 @@ const router = createRouter({
       name: 'login',
       component: () => import('../views/LoginView.vue'),
     },
-    { path: '/classes', name: 'classes', meta: { requiresAuth: true }, component: () => import('../views/ClassesView.vue') },
+    { path: '/classes', name: 'classes', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/ClassesView.vue') },
+    { path: '/teachers', name: 'teachers', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/TeacherManagementView.vue') },
+    { path: '/my-classes', name: 'my-classes', meta: { requiresAuth: true }, component: () => import('../views/MyClassesView.vue') },
+    { path: '/students', name: 'student-center', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentCenterView.vue') },
     { path: '/classes/:classId/students', name: 'students', meta: { requiresAuth: true }, component: () => import('../views/StudentsView.vue') },
-    { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true }, component: () => import('../views/StudentProfileView.vue') },
-    { path: '/devices', name: 'devices', meta: { requiresAuth: true }, component: () => import('../views/DevicesView.vue') },
+    { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentProfileView.vue') },
+    { path: '/devices', name: 'devices', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/DevicesView.vue') },
     { path: '/classroom/scan', name: 'classroom-scan', meta: { requiresAuth: true }, component: () => import('../views/ClassroomScanView.vue') },
     { path: '/forbidden', name: 'forbidden', component: () => import('../views/ForbiddenView.vue') },
     {
@@ -89,11 +92,17 @@ router.afterEach((to) => {
 router.beforeEach((to) => {
   const userStore = useUserStore(pinia)
   userStore.initialize()
-  if (to.name === 'login' && userStore.isLogin) {
-    return { name: 'chat' }
+  if (to.name === 'login') {
+    if (userStore.isLogin) {
+      return { name: 'chat' }
+    }
+    return true
   }
   if (to.meta.requiresAuth && !userStore.isLogin) {
     return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.adminOnly && !userStore.isAdmin) {
+    return { name: 'forbidden' }
   }
   return true
 })

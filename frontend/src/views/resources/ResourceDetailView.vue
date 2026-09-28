@@ -153,11 +153,11 @@ onMounted(() => {
   </ManagementLayout>
 </template>
 <style scoped>
-.back { border: 0; background: none; color: #229a7d; font-size: 14px; cursor: pointer; padding: 0 0 16px; }
-.muted { color: #8191a2; }
+.back { border: 0; background: none; color: #d67b59; font-size: 14px; cursor: pointer; padding: 0 0 16px; }
+.muted { color: #9a7e6e; }
 .bad { background: #ffebeb; color: #c64e4e; padding: 14px 16px; border-radius: 10px; display: flex; align-items: center; gap: 12px; }
 .retry { border: 0; background: #c64e4e; color: #fff; border-radius: 7px; padding: 6px 12px; cursor: pointer; }
-.panel { background: #fff; border: 1px solid #e7edf3; border-radius: 12px; padding: 24px; max-width: 760px; }
+.panel { background: #fffdf9; border: 1px solid #f0ddce; border-radius: 16px; padding: 24px; max-width: 760px; }
 .title-row { display: flex; align-items: center; gap: 14px; }
 .title-row h1 { margin: 0; font-size: 24px; }
 .badge { border-radius: 12px; padding: 4px 10px; font-size: 12px; }
@@ -166,20 +166,20 @@ onMounted(() => {
 .bad { background: #ffebeb; color: #c64e4e; }
 .cover { margin: 18px 0; max-height: 260px; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #eef7f4, #dceee8); }
 .cover img { max-width: 100%; max-height: 260px; object-fit: contain; }
-.cover-fallback { font-size: 30px; font-weight: 700; color: #229a7d; padding: 40px; }
+.cover-fallback { font-size: 30px; font-weight: 700; color: #d67b59; padding: 40px; }
 .fields { margin: 0; }
 .row { display: flex; gap: 16px; padding: 9px 0; border-bottom: 1px solid #eef2f5; }
-.row dt { width: 90px; color: #8191a2; font-size: 14px; flex-shrink: 0; }
+.row dt { width: 90px; color: #9a7e6e; font-size: 14px; flex-shrink: 0; }
 .row dd { margin: 0; color: #26364a; font-size: 14px; }
 .sec { margin-top: 20px; }
 .sec h3 { margin: 0 0 8px; font-size: 15px; color: #3b526b; }
 .tags { display: flex; gap: 8px; flex-wrap: wrap; }
-.tag { background: #f0f6f4; color: #229a7d; border-radius: 6px; padding: 3px 9px; font-size: 13px; }
+.tag { background: #fff0e5; color: #b9684d; border-radius: 999px; padding: 3px 9px; font-size: 13px; }
 .desc { color: #3b526b; font-size: 14px; line-height: 1.7; margin: 0; }
 .actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
-.button { border: 0; background: #36aa89; color: #fff; border-radius: 8px; padding: 10px 18px; cursor: pointer; }
-.button:hover { background: #229a7d; }
-.ghost { border: 1px solid #dce5ed; background: #fff; color: #66788c; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
+.button { border: 0; background: #e99168; color: #fff; border-radius: 12px; padding: 10px 18px; cursor: pointer; }
+.button:hover { background: #d67b59; }
+.ghost { border: 1px solid #efd9c8; background: #fffdf9; color: #876b5d; border-radius: 12px; padding: 10px 16px; cursor: pointer; }
 .ghost.on { color: #b77d20; border-color: #f0c168; }
 .danger { border: 1px solid #ffd7d7; background: #fff; color: #c64e4e; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
 </style>
