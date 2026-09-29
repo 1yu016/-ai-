@@ -31,7 +31,7 @@ onMounted(async () => {
 })
 
 const show3d = computed(() => webglSupported.value && modelState.value !== 'error')
-function listen() { store.setAction('listen') }
+function listen() { store.transition({ type: 'teacher_command', command: 'listen' }) }
 </script>
 
 <template>

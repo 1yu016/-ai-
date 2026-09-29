@@ -1,8 +1,9 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { listAvatarCharacters, resolveAvatar } from '@/api/avatar'
 import type { ResolveAvatarContext, ResolveAvatarResponse } from '@/api/avatar'
 import type { AvatarModelFormat, AvatarRuntimeConfig } from '@/avatar/types'
+import { AvatarStateMachine, type AvatarState, type AvatarStateEvent } from '@/avatar/state/AvatarStateMachine'
 
 export const DIGITAL_HUMAN_ACTIONS = ['idle', 'listen', 'thinking', 'talk', 'happy', 'question', 'encourage', 'praise', 'wave', 'goodbye'] as const
 export type DigitalHumanAction = (typeof DIGITAL_HUMAN_ACTIONS)[number]
@@ -20,8 +21,12 @@ export const DIGITAL_HUMAN_ROLES: AvatarRole[] = [
   { id: 'garden', name: '园所专属角色', category: 'local', description: '本地默认角色' },
 ]
 
+// 业务状态机单例：组件只发事件，不直接指定动作；渲染层只消费快照。
+const avatarMachine = new AvatarStateMachine()
+
 export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   const action = ref<DigitalHumanAction>('idle')
+  const currentState = ref<AvatarState>('idle')
   const visible = ref(true)
   const compact = ref(false)
   const fallback = ref(true)
@@ -41,6 +46,18 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   function setAction(next: DigitalHumanAction) {
     if (!DIGITAL_HUMAN_ACTIONS.includes(next)) return
     action.value = next
+  }
+  // 手动播放白名单动作（渲染层/临时播放用，不改变业务状态）。
+  function playAction(next: DigitalHumanAction) { setAction(next) }
+  // 状态机入口：业务事件 → 状态/动作/表情；组件不再执行播放判断。
+  function transition(event: AvatarStateEvent) {
+    const snap = avatarMachine.transition(event)
+    currentState.value = snap.state
+    setAction(snap.action as DigitalHumanAction)
+    return snap
+  }
+  function onStateChange(callback: (next: AvatarState) => void) {
+    watch(currentState, (next) => callback(next))
   }
   function setWebglSupported(value: boolean) { webglSupported.value = value }
   function setModelState(next: DigitalHumanModelState) {
@@ -105,8 +122,8 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
     }
   }
 
-  function setFallback(message = '') { fallback.value = true; loading.value = false; error.value = message; action.value = 'idle' }
-  function reset() { action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; selectRole('flower') }
+  function setFallback(message = '') { fallback.value = true; loading.value = false; error.value = message; action.value = 'idle'; currentState.value = 'idle' }
+  function reset() { avatarMachine.reset(); currentState.value = 'idle'; action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; selectRole('flower') }
 
-  return { action, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, setFallback, reset }
+  return { action, currentState, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, setFallback, reset }
 })
