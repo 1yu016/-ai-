@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { expect, test } from '@playwright/test'
 
 test.describe.serial('正式冻结核心流程', () => {
@@ -31,7 +32,7 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.locator('.el-form-item').filter({ hasText: '教学目标' }).locator('textarea').fill('观察并表达春天的颜色')
 
     const leaveWarning = page.waitForEvent('dialog')
-    await page.evaluate(() => history.back())
+    await page.evaluate(() => (globalThis as unknown as { history: { back(): void } }).history.back())
     const dialog = await leaveWarning
     expect(['beforeunload', 'confirm']).toContain(dialog.type())
     if (dialog.type() === 'confirm') expect(dialog.message()).toContain('未保存')

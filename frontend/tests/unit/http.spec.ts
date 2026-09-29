@@ -1,4 +1,4 @@
-import type { AxiosRequestConfig, AxiosResponse } from 'axios'
+import type { AxiosHeaders, AxiosRequestConfig, AxiosResponse } from 'axios'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { USER_STORAGE_KEYS, useUserStore } from '@/stores/user'
 import { pinia } from '@/stores'
@@ -20,7 +20,7 @@ describe('HTTP interceptors', () => {
     user.setLogin('bearer-token', { teacherId: 1, account: 'teacher', name: '老师' })
     let chatConfig: AxiosRequestConfig | undefined
     await http.post('/ai/chat', { text: '你好' }, { adapter: async (config) => { chatConfig = config; return response(config) } })
-    expect(chatConfig?.headers?.get?.('Authorization')).toBe('Bearer bearer-token')
+    expect((chatConfig?.headers as AxiosHeaders | undefined)?.get('Authorization')).toBe('Bearer bearer-token')
     expect(JSON.parse(String(chatConfig?.data))).toMatchObject({ text: '你好', visitorId: user.visitorId })
 
     let ttsConfig: AxiosRequestConfig | undefined
@@ -29,7 +29,7 @@ describe('HTTP interceptors', () => {
 
     let planConfig: AxiosRequestConfig | undefined
     await http.get('/lesson-plans', { adapter: async (config) => { planConfig = config; return response(config) } })
-    expect(planConfig?.headers?.get?.('Authorization')).toBe('Bearer bearer-token')
+    expect((planConfig?.headers as AxiosHeaders | undefined)?.get('Authorization')).toBe('Bearer bearer-token')
     expect(planConfig?.data).toBeUndefined()
   })
 
