@@ -224,8 +224,8 @@ async function init() {
 
   // 三级降级：课堂运行时模型（resolve contentUrl）→ 内置默认 GLB → 程序化占位/2D。
   // 模型始终不阻塞课堂：任意一级失败都继续尝试下一级。
-  const runtimeModelUrl = store.runtime?.modelUrl ?? null
-  const runtimeFormat = store.runtime?.modelFormat ?? null
+  const runtimeModelUrl = store.runtime?.model?.modelUrl ?? null
+  const runtimeFormat = store.runtime?.model?.modelFormat ?? null
   const candidates: Array<[string, AvatarModelFormat | null]> = runtimeModelUrl
     ? [[runtimeModelUrl, runtimeFormat], [DEFAULT_MODEL_URL, 'glb']]
     : [[DEFAULT_MODEL_URL, 'glb']]

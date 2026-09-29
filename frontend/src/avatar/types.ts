@@ -19,17 +19,22 @@ export interface AvatarPersonalityConfig {
   goodbyeText: string
 }
 
-// 当前课堂应使用的数字人配置（来自 GET /avatars/resolve）
-export interface AvatarRuntimeConfig {
-  characterId: number | null
-  characterName: string
-  modelUrl: string | null
-  modelFormat: AvatarModelFormat | null
-  engineVersion: string | null
+// 模型配置：对应后端 resolve 返回的 version + renderAsset。
+export interface AvatarModelConfig {
   versionId: number | null
-  sourceScope: string | null
+  engineVersion: string | null
+  modelFormat: AvatarModelFormat | null
+  modelUrl: string | null
+}
+
+// 当前课堂应使用的数字人配置（来自 GET /avatars/resolve），
+// 字段对应后端返回：character / version / renderAsset / voice / personality / fallbackLevel。
+export interface AvatarRuntimeConfig {
+  character: { id: number | null; name: string; category?: string | null } | null
+  model: AvatarModelConfig
   voice: AvatarVoiceConfig | null
   personality: AvatarPersonalityConfig | null
   fallbackLevel: string | null
   reason: string | null
+  sourceScope: string | null
 }

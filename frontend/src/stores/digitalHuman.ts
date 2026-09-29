@@ -83,17 +83,20 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
     const format: AvatarModelFormat | null =
       data.version?.modelFormat === 'gltf' ? 'gltf' : data.version?.modelFormat === 'glb' ? 'glb' : null
     return {
-      characterId: data.character?.id ?? null,
-      characterName: data.character?.name ?? '',
-      modelUrl: data.renderAsset?.contentUrl ?? null,
-      modelFormat: format,
-      engineVersion: data.version?.engineVersion ?? null,
-      versionId: data.version?.id ?? null,
-      sourceScope: data.sourceScope,
+      character: data.character
+        ? { id: data.character.id, name: data.character.name, category: data.character.category ?? null }
+        : null,
+      model: {
+        versionId: data.version?.id ?? null,
+        engineVersion: data.version?.engineVersion ?? null,
+        modelFormat: format,
+        modelUrl: data.renderAsset?.contentUrl ?? null,
+      },
       voice: data.voice,
       personality: data.personality,
       fallbackLevel: data.fallbackLevel,
       reason: data.reason,
+      sourceScope: data.sourceScope,
     }
   }
 

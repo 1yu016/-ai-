@@ -53,7 +53,7 @@ export async function loadAvatarModel(
   const resolvedFormat: AvatarModelFormat = format ?? formatFromUrl(url)
 
   if (resolvedFormat === 'vrm') {
-    throw new Error('VRM 模型尚未接入（预留格式），请使用 GLB/GLTF 模型。')
+    return VRMLoader(url)
   }
 
   const gltf = await loadGltf(url)
@@ -64,4 +64,21 @@ export async function loadAvatarModel(
     update: () => undefined,
     dispose: () => disposeObject(gltf.scene),
   }
+}
+
+/** GLB/GLTF 加载器（Three.js GLTFLoader）。 */
+export function GLBLoader(url: string): Promise<AvatarLoadedModel> {
+  return loadGltf(url).then((gltf) => ({
+    root: gltf.scene,
+    animations: gltf.animations ?? [],
+    format: 'glb',
+    update: () => undefined,
+    dispose: () => disposeObject(gltf.scene),
+  }))
+}
+
+/** VRM 加载器占位：预留接入 @pixiv/three-vrm，当前统一走降级。 */
+export async function VRMLoader(_url: string): Promise<AvatarLoadedModel> {
+  void _url
+  throw new Error('VRM 模型尚未接入（预留格式），请使用 GLB/GLTF 模型。')
 }
