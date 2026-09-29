@@ -11,9 +11,10 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore, type DigitalHumanAction } from '@/stores/digitalHuman'
+import { loadAvatarModel, type AvatarLoadedModel } from '@/avatar/AvatarLoader'
+import type { AvatarModelFormat } from '@/avatar/types'
 
 const store = useDigitalHumanStore()
 const { action, compact, roleId } = storeToRefs(store)
@@ -42,8 +43,9 @@ const CLIP_HINTS: Record<DigitalHumanAction, string[]> = {
 let renderer: THREE.WebGLRenderer | null = null
 let scene: THREE.Scene | null = null
 let camera: THREE.PerspectiveCamera | null = null
-let root: THREE.Group | null = null
+let root: THREE.Object3D | null = null
 let mixer: THREE.AnimationMixer | null = null
+let currentModel: AvatarLoadedModel | null = null
 let clips: THREE.AnimationClip[] = []
 let resizeObserver: ResizeObserver | null = null
 let disposed = false
@@ -163,28 +165,38 @@ function loop(time: number) {
     fpsWindowStart = time
     fpsFrames = 0
   }
-  if (mixer) {
-    const dt = lastTime ? (time - lastTime) / 1000 : 0.016
-    mixer.update(dt)
-  }
+  const dt = lastTime ? (time - lastTime) / 1000 : 0.016
+  if (mixer) mixer.update(dt)
+  currentModel?.update(dt, time / 1000)
   applyPose(time)
   if (renderer && scene && camera) renderer.render(scene, camera)
   lastTime = time
 }
 
-function loadGltf(url: string): Promise<{ group: THREE.Group; animations: THREE.AnimationClip[] }> {
-  return new Promise((resolve, reject) => {
-    new GLTFLoader().load(url, (gltf) => resolve({ group: gltf.scene, animations: gltf.animations }), undefined, reject)
-  })
+function bindModel(model: AvatarLoadedModel) {
+  currentModel = model
+  root = model.root
+  clips = model.animations
+  mixer = clips.length ? new THREE.AnimationMixer(root) : null
+  scene?.add(root)
 }
 
-async function detectModel(url: string): Promise<boolean> {
-  try {
-    const resp = await fetch(url, { method: 'HEAD' })
-    return resp.ok
-  } catch {
-    return false
-  }
+function startRenderLoop() {
+  if (!renderer || !camera || !mountEl.value) return
+  renderer.setAnimationLoop(loop)
+  lastTime = 0
+  fpsWindowStart = 0
+  fpsFrames = 0
+  fpsBadCount = 0
+  resizeObserver = new ResizeObserver(() => {
+    if (!renderer || !camera || !mountEl.value) return
+    const w = mountEl.value.clientWidth || 180
+    const h = mountEl.value.clientHeight || 200
+    renderer.setSize(w, h)
+    camera.aspect = w / h
+    camera.updateProjectionMatrix()
+  })
+  resizeObserver.observe(mountEl.value)
 }
 
 async function init() {
@@ -210,42 +222,34 @@ async function init() {
   key.position.set(1.5, 2.5, 2)
   scene.add(ambient, key)
 
-  const modelUrl = store.roles.find((role) => role.id === roleId.value)?.modelUrl || DEFAULT_MODEL_URL
-  const hasModel = await detectModel(modelUrl)
-  if (disposed) return
-  if (hasModel) {
+  // 三级降级：课堂运行时模型（resolve contentUrl）→ 内置默认 GLB → 程序化占位/2D。
+  // 模型始终不阻塞课堂：任意一级失败都继续尝试下一级。
+  const runtimeModelUrl = store.runtime?.modelUrl ?? null
+  const runtimeFormat = store.runtime?.modelFormat ?? null
+  const candidates: Array<[string, AvatarModelFormat | null]> = runtimeModelUrl
+    ? [[runtimeModelUrl, runtimeFormat], [DEFAULT_MODEL_URL, 'glb']]
+    : [[DEFAULT_MODEL_URL, 'glb']]
+
+  for (const [url, format] of candidates) {
+    if (disposed) return
     try {
-      const loaded = await loadGltf(modelUrl)
+      const model = await loadAvatarModel(url, format)
       if (disposed) return
-      root = loaded.group
-      clips = loaded.animations
-      mixer = new THREE.AnimationMixer(root)
+      bindModel(model)
+      store.setModelState('loaded')
+      playAction(store.action)
+      startRenderLoop()
+      return
     } catch {
-      if (disposed) return
-      root = buildProcedural()
+      // 本级别模型加载失败，尝试下一候选。
     }
-  } else {
-    root = buildProcedural()
   }
   if (disposed) return
+  root = buildProcedural()
   scene.add(root)
   store.setModelState('loaded')
   playAction(store.action)
-  renderer.setAnimationLoop(loop)
-  lastTime = 0
-  fpsWindowStart = 0
-  fpsFrames = 0
-  fpsBadCount = 0
-
-  resizeObserver = new ResizeObserver(() => {
-    if (!renderer || !camera || !mountEl.value) return
-    const w = mountEl.value.clientWidth || 180
-    const h = mountEl.value.clientHeight || 200
-    renderer.setSize(w, h)
-    camera.aspect = w / h
-    camera.updateProjectionMatrix()
-  })
-  resizeObserver.observe(mountEl.value)
+  startRenderLoop()
 }
 
 function disposeScene() {
@@ -270,6 +274,8 @@ function disposeAll() {
     try { renderer.forceContextLoss?.() } catch { /* 忽略 */ }
   }
   disposeScene()
+  currentModel?.dispose()
+  currentModel = null
   if (mixer) { mixer.stopAllAction(); mixer = null }
   root = null
   renderer = null

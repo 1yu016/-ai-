@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
+import { useLessonRunStore } from '@/stores/lessonRun'
 
 // 仅在 WebGL 可用、且模型加载未失败时挂载 3D 组件；three 走独立 chunk
 const ThreeAvatarStage = defineAsyncComponent(() => import('./avatar/ThreeAvatarStage.vue'))
@@ -22,7 +23,12 @@ function detectWebGL(): boolean {
   }
 }
 store.setWebglSupported(detectWebGL())
-onMounted(() => { void store.loadRoles() })
+onMounted(async () => {
+  void store.loadRoles()
+  // 课堂运行时：resolve 当前课堂应使用的角色与模型，失败时保持内置占位形象，不阻塞课堂。
+  const run = useLessonRunStore().run
+  if (run) await store.loadRuntime({ lessonPlanId: run.lessonPlanId, classroomRunId: run.id, deviceId: run.deviceId })
+})
 
 const show3d = computed(() => webglSupported.value && modelState.value !== 'error')
 function listen() { store.setAction('listen') }
