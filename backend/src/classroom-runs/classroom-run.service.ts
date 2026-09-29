@@ -195,6 +195,8 @@ export class ClassroomRunService {
               title: step.title,
               type: step.stepType,
               content: step.content ?? step.instruction,
+              expectedResponse: step.expectedResponse,
+              teacherTip: step.teacherTip,
               durationSeconds: step.durationSeconds,
               resourceId: step.resourceId,
               actionConfig: step.actions?.length

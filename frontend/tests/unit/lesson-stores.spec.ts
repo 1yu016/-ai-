@@ -2,11 +2,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { http } from '@/api/http'
 import { useLessonPlanStore, type LessonPlan } from '@/stores/lessonPlan'
-import { useLessonRunStore, type LessonRun } from '@/stores/lessonRun'
+import { useLessonRunStore } from '@/stores/lessonRun'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'draft', version: 1, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
-const running: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, version: 1, status: 'running', currentStepIndex: 0, lessonTitle: '春天', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '看一看', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '提问', type: 'question', content: '什么颜色？', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 5, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
+const running = { id: 9, lessonPlanId: 3, deviceId: 1, version: 1, status: 'running', currentStepIndex: 0, title: '春天', steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '看一看', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '提问', type: 'question', content: '什么颜色？', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 5, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
 
 describe('lesson plan store', () => {
   beforeEach(() => setActivePinia(createPinia()))

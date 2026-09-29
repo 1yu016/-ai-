@@ -19,6 +19,10 @@ export class ClassroomRunStepSnapshot {
   @Column({ type: 'varchar', length: 200 }) title: string;
   @Column({ type: 'simple-enum', enum: LessonStepType }) type: LessonStepType;
   @Column({ type: 'text' }) content: string;
+  @Column({ name: 'expected_response', type: 'text', nullable: true })
+  expectedResponse: string | null;
+  @Column({ name: 'teacher_tip', type: 'text', nullable: true }) teacherTip:
+    string | null;
   @Column({ name: 'duration_seconds', type: 'integer' })
   durationSeconds: number;
   @Column({ name: 'resource_id', type: 'integer', nullable: true })

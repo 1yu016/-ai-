@@ -8,7 +8,30 @@ import { useClassroomAssistantStore } from './classroomAssistant'
 
 export type LessonRunStatus = 'prepared' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'
 export type RunStep = { stepIndex: number; title: string; type: string; content: string; durationSeconds: number; resourceId: number | null; actionConfig?: unknown; recoveryPointConfig?: unknown; expectedResponse?: string | null; teacherTip?: string | null }
-export type LessonRun = { id: number; runId?: number; lessonPlanId: number; version: number; status: LessonRunStatus; currentStepIndex: number; lessonTitle: string; lessonObjectives: string; ageGroup: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number }
+export type LessonRun = { id: number; runId?: number; lessonPlanId: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; lessonTitle: string; lessonObjectives: string; ageGroup: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number }
+
+// 后端 GET/POST /classroom-runs 返回的原始结构：标题字段为 title，且不返回 lessonObjectives/ageGroup。
+type ClassroomRunPayload = { id: number; lessonPlanId: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; title: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number }
+
+// 将后端返回映射为前端 LessonRun：title → lessonTitle，缺失字段使用安全默认值。
+function adaptRun(data: ClassroomRunPayload): LessonRun {
+  return {
+    id: data.id,
+    lessonPlanId: data.lessonPlanId,
+    deviceId: data.deviceId,
+    version: data.version,
+    status: data.status,
+    currentStepIndex: data.currentStepIndex,
+    lessonTitle: data.title ?? '',
+    lessonObjectives: '',
+    ageGroup: '',
+    steps: data.steps,
+    startedAt: data.startedAt,
+    endedAt: data.endedAt ?? null,
+    updatedAt: data.updatedAt,
+    elapsedSeconds: data.elapsedSeconds,
+  }
+}
 
 function requestId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `classroom-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -23,12 +46,12 @@ export const useLessonRunStore = defineStore('lessonRun', () => {
   function stopTimer() { if (timer !== null) window.clearInterval(timer); timer = null }
   function syncTimer() { stopTimer(); if (!run.value) return; elapsedSeconds.value = run.value.elapsedSeconds ?? Math.max(0, Math.floor((new Date(run.value.status === 'paused' ? run.value.updatedAt : Date.now()).getTime() - new Date(run.value.startedAt).getTime()) / 1000)); if (run.value.status === 'running') timer = window.setInterval(() => { elapsedSeconds.value += 1 }, 1000) }
   function syncAssistantContext() { if (!run.value || !currentStep.value) return; assistant.theme = run.value.lessonTitle; assistant.objective = run.value.lessonObjectives; assistant.currentStep = `${currentStep.value.title}：${currentStep.value.content}` }
-  async function load(id: number) { loading.value = true; error.value = ''; try { const { data } = await http.get<LessonRun>(`/classroom-runs/${id}`); run.value = data; await resources.refreshLibrary(); syncTimer(); syncAssistantContext() } catch (cause) { error.value = apiErrorMessage(cause, '课堂恢复失败，请返回教案列表重试。'); throw cause } finally { loading.value = false } }
-  async function move(index: number) { if (!run.value || run.value.status !== 'running' || busy.value) return; busy.value = true; player.requestControl('stop'); try { const { data } = await http.post<LessonRun>(`/classroom-runs/${run.value.id}/steps/${index}`, { version: run.value.version, requestId: requestId() }); run.value = data; assistant.endInteraction(); syncAssistantContext() } finally { busy.value = false } }
+  async function load(id: number) { loading.value = true; error.value = ''; try { const { data } = await http.get<ClassroomRunPayload>(`/classroom-runs/${id}`); run.value = adaptRun(data); await resources.refreshLibrary(); syncTimer(); syncAssistantContext() } catch (cause) { error.value = apiErrorMessage(cause, '课堂恢复失败，请返回教案列表重试。'); throw cause } finally { loading.value = false } }
+  async function move(index: number) { if (!run.value || run.value.status !== 'running' || busy.value) return; busy.value = true; player.requestControl('stop'); try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/steps/${index}`, { version: run.value.version, deviceId: run.value.deviceId, requestId: requestId() }); run.value = adaptRun(data); assistant.endInteraction(); syncAssistantContext() } finally { busy.value = false } }
   async function previous() { if (run.value?.status === 'running' && run.value.currentStepIndex > 0) await move(run.value.currentStepIndex - 1) }
   async function next() { if (run.value?.status === 'running' && run.value.currentStepIndex < run.value.steps.length - 1) await move(run.value.currentStepIndex + 1) }
   function repeat() { if (run.value?.status === 'running') { player.requestControl('stop'); assistant.endInteraction() } }
-  async function action(name: 'pause' | 'resume' | 'complete' | 'cancel') { if (!run.value || busy.value) return; const allowed = name === 'pause' ? run.value.status === 'running' : name === 'resume' ? run.value.status === 'paused' : run.value.status === 'running' || run.value.status === 'paused'; if (!allowed) return; busy.value = true; player.requestControl('stop'); try { const { data } = await http.post<LessonRun>(`/classroom-runs/${run.value.id}/${name}`, { version: run.value.version, requestId: requestId() }); run.value = data; if (name === 'complete' || name === 'cancel') assistant.endInteraction(); syncTimer() } finally { busy.value = false } }
+  async function action(name: 'pause' | 'resume' | 'complete' | 'cancel') { if (!run.value || busy.value) return; const allowed = name === 'pause' ? run.value.status === 'running' : name === 'resume' ? run.value.status === 'paused' : run.value.status === 'running' || run.value.status === 'paused'; if (!allowed) return; busy.value = true; player.requestControl('stop'); try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/${name}`, { version: run.value.version, deviceId: run.value.deviceId, requestId: requestId() }); run.value = adaptRun(data); if (name === 'complete' || name === 'cancel') assistant.endInteraction(); syncTimer() } finally { busy.value = false } }
   function openResource() { if (currentResource.value) player.openResource(currentResource.value, false) }
   function clear() { stopTimer(); player.requestControl('stop'); assistant.endInteraction(); run.value = null; elapsedSeconds.value = 0 }
   onScopeDispose(stopTimer)
