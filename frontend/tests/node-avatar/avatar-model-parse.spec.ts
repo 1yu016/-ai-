@@ -75,14 +75,13 @@ describe('real VRM model (AliciaSolid 0.51)', () => {
     // 单测在 fixture 无 clip 时仅验证 playAnimation 不抛错（行为在后续 VRMA 阶段覆盖）。
   })
 
-  it('supports blink expression and resets expressions cleanly', async () => {
+  it('supports blink/happy and reports unsupported presets safely', async () => {
     const buffer = await fixtureBuffer('AliciaSolid_vrm-0.51.vrm')
     const model = await VRMBufferLoader(buffer)
     expect(model.setExpression('blink', 1)).toBe(true)
     expect(model.setExpression('happy', 1)).toBe(true)
-    expect(model.setExpression('happy', 1)).toBe(true)
-    // 不支持的表达式：安全不抛异常（存在预设则应用，缺失则 no-op）
-    expect(() => model.setExpression('question', 0.5)).not.toThrow()
+    // VRM 0.51 无 surprised 预设：question 表情应安全返回 false（不抛异常、不卡表情）
+    expect(model.setExpression('question', 1)).toBe(false)
     model.resetExpressions()
     // reset 后重新施加表情仍可工作（无残留互斥）
     expect(model.setExpression('happy', 1)).toBe(true)

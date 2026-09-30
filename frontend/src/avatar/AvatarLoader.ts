@@ -173,6 +173,12 @@ function buildVrmModel(vrm: VRM): AvatarLoadedModel {
       const manager = vrm.expressionManager
       const preset = VRM_PRESET[name]
       if (!manager || !preset) return false
+      // 存在性校验：模型不提供该预设时安全返回 false（如 VRM 0.51 无 surprised）。
+      // expressions 为对象数组（数字索引），按 expressionName 匹配。
+      const exists = Array.isArray(manager.expressions)
+        ? (manager.expressions as unknown as Array<{ expressionName?: string }>).some((e) => e.expressionName === preset)
+        : preset in manager.expressions
+      if (!exists) return false
       // 先清除上一个表情预设，避免叠加
       if (currentExpression && currentExpression !== name) {
         const previous = VRM_PRESET[currentExpression]
