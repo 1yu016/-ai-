@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { http } from '@/api/http'
 import { useLessonPlanStore, type LessonPlan } from '@/stores/lessonPlan'
 import { useLessonRunStore } from '@/stores/lessonRun'
+import { useClassroomAssistantStore } from '@/stores/classroomAssistant'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'draft', version: 1, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
@@ -101,5 +102,29 @@ describe('lesson run state flow', () => {
     await store.cancel()
     expect(patch).not.toHaveBeenCalled()
     expect(post).not.toHaveBeenCalled()
+  })
+
+  it('adapts the real lesson objectives from the classroom-run payload and trims whitespace', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, objectives: '能识别数字“1”  的外形特征  ' } })
+    const store = useLessonRunStore()
+    await store.load(9)
+    expect(store.run?.lessonObjectives).toBe('能识别数字“1”  的外形特征')
+  })
+
+  it('syncs a real objective to the assistant so no empty objective is ever sent', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running, objectives: '能识别数字1' } })
+    const store = useLessonRunStore()
+    const assistant = useClassroomAssistantStore()
+    await store.load(9)
+    expect(assistant.objective).toBe('能识别数字1')
+  })
+
+  it('keeps the assistant default objective (never empty) when the backend returns none', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...running } })
+    const store = useLessonRunStore()
+    const assistant = useClassroomAssistantStore()
+    await store.load(9)
+    expect(store.run?.lessonObjectives).toBe('')
+    expect(assistant.objective).toBe('鼓励幼儿认真观察并说出自己的发现')
   })
 })

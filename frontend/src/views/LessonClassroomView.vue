@@ -49,7 +49,7 @@ watch(currentStep, (step, previous) => {
   assistant.activate()
   assistant.ageGroup = ageGroupMap[run.value.ageGroup as keyof typeof ageGroupMap] ?? 'middle'
   assistant.theme = run.value.lessonTitle
-  assistant.objective = run.value.lessonObjectives
+  if (run.value.lessonObjectives) assistant.objective = run.value.lessonObjectives
   assistant.currentStep = `${step.title}：${step.content}`
 })
 watch(currentResource, (resource) => {

@@ -387,7 +387,7 @@ export class ClassroomRunService {
       where: { classroomRunId: id },
       order: { stepIndex: 'ASC' },
     });
-    return this.response(run, steps);
+    return this.response(run, steps, await this.readObjectives(actor, run));
   }
 
   async active(actor: JwtTeacherPayload, deviceId?: number) {
@@ -403,7 +403,7 @@ export class ClassroomRunService {
     return Promise.all(
       runs.map(async (run) => {
         await this.access.requireClassAccess(actor, run.classId);
-        return this.response(run);
+        return this.response(run, undefined, await this.readObjectives(actor, run));
       }),
     );
   }
@@ -418,7 +418,7 @@ export class ClassroomRunService {
     });
     const valid = await this.snapshotService.loadLatestValid(id);
     const elapsedSeconds = this.snapshotService.currentElapsed(run);
-    const base = this.response(run, steps);
+    const base = this.response(run, steps, await this.readObjectives(actor, run));
     if (!valid)
       return {
         ...base,
@@ -1113,7 +1113,23 @@ export class ClassroomRunService {
     );
   }
 
-  private response(run: ClassroomRun, snapshots?: ClassroomRunStepSnapshot[]) {
+  private async readObjectives(
+    actor: JwtTeacherPayload,
+    run: ClassroomRun,
+  ): Promise<string> {
+    try {
+      const plan = await this.lessonPlans.get(actor, run.lessonPlanId);
+      return plan.objectives ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  private response(
+    run: ClassroomRun,
+    snapshots?: ClassroomRunStepSnapshot[],
+    objectives?: string,
+  ) {
     const liveElapsedSeconds =
       run.status === ClassroomRunStatus.Running && run.resumedAt
         ? run.elapsedSeconds +
@@ -1122,6 +1138,7 @@ export class ClassroomRunService {
     return {
       ...run,
       elapsedSeconds: liveElapsedSeconds,
+      ...(objectives !== undefined ? { objectives } : {}),
       ...(snapshots
         ? {
             steps: snapshots.map((step) => ({

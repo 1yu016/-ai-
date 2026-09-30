@@ -50,4 +50,15 @@ describe('classroom assistant state', () => {
     await store.ask('我叫小明', 'child')
     expect(store.history[0]?.content).toBe('[儿童隐私内容已省略]')
   })
+
+  it('sends the real objective trimmed and never an empty or whitespace objective', async () => {
+    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { mode: 'guided_dialogue', reply: '好', teacherTip: '提示', suggestedAction: null, requiresTeacherConfirmation: false } })
+    const store = useClassroomAssistantStore()
+    store.objective = '  能识别数字1  '
+    await store.ask('怎样观察？', 'teacher', 'guided_question')
+    expect(post).toHaveBeenCalledTimes(1)
+    const body = post.mock.calls[0]![1] as { activityContext: { objective: string } }
+    expect(body.activityContext.objective).toBe('能识别数字1')
+    expect(body.activityContext.objective.length).toBeGreaterThanOrEqual(1)
+  })
 })
