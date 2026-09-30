@@ -270,11 +270,15 @@ onBeforeUnmount(() => disposeAll())
 </script>
 
 <template>
-  <div ref="mountEl" class="three-avatar-stage" :class="{ compact }" aria-label="3D 数字人模型"></div>
+  <div ref="mountEl" class="three-avatar-stage" :class="{ compact }" aria-label="3D 数字人模型">
+    <span class="interact-zone" aria-hidden="true"></span>
+  </div>
 </template>
 
 <style scoped>
-.three-avatar-stage { width: 100%; height: 100%; min-width: 160px; min-height: 180px; pointer-events: auto; transition: transform .25s ease, opacity .25s ease }
+.three-avatar-stage { position: relative; width: 100%; height: 100%; min-width: 160px; min-height: 180px; pointer-events: none; transition: transform .25s ease, opacity .25s ease }
 .three-avatar-stage :deep(canvas) { display: block; width: 100%; height: 100% }
+/* 仅人物渲染的中心区域可点击（触发 listen），其余透明区域不拦截其下课堂助教按钮的点击。 */
+.interact-zone { position: absolute; left: 50%; top: 50%; width: 74%; height: 78%; transform: translate(-50%, -48%); border-radius: 50%; pointer-events: auto; cursor: pointer }
 .three-avatar-stage.compact { transform: scale(.7); transform-origin: bottom right }
 </style>
