@@ -52,7 +52,7 @@ async function submitLogin() {
         Authorization: `Bearer ${login.data.access_token}`,
       },
     })
-    userStore.setLogin(login.data.access_token, profile.data)
+    userStore.setLogin(login.data.access_token, profile.data, login.data.refresh_token)
 
     // 登录已经成功。迁移异常只提示，不阻塞教师进入聊天页面。
     try {

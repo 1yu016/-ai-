@@ -1,4 +1,4 @@
-import axios, { type AxiosError } from 'axios'
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { pinia } from '@/stores'
@@ -31,6 +31,48 @@ export const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '',
 })
 
+// 独立的 axios 实例用于静默续期，避免触发自身拦截器的递归 401 处理。
+const refreshClient = axios.create({
+  baseURL: http.defaults.baseURL,
+})
+
+// 单飞(single-flight)：并发多个 401 时共享同一次刷新请求。
+let refreshPromise: Promise<boolean> | null = null
+
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshPromise) {
+    const userStore = useUserStore(pinia)
+    const refreshToken = userStore.refreshToken
+    if (!refreshToken) {
+      refreshPromise = Promise.resolve(false)
+    } else {
+      refreshPromise = refreshClient
+        .post('/auth/refresh', { refreshToken })
+        .then((response) => {
+          const data: {
+            access_token?: string
+            refresh_token?: string
+          } = response.data ?? {}
+          if (typeof data.access_token === 'string' && data.access_token) {
+            userStore.updateTokens(data.access_token, data.refresh_token ?? '')
+            return true
+          }
+          return false
+        })
+        .catch(() => false)
+    }
+    // 无论成功失败都释放单飞锁，避免无 refreshToken 时锁被永久占住。
+    refreshPromise = refreshPromise.finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+function isAuthEndpoint(path: string): boolean {
+  return path === '/auth/login' || path === '/auth/refresh'
+}
+
 http.interceptors.request.use((config) => {
   const userStore = useUserStore(pinia)
   const path = requestPath(config.url)
@@ -50,9 +92,26 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => response,
-  (error: AxiosError) => {
-    const path = requestPath(error.config?.url)
-    if (error.response?.status === 401 && path !== '/auth/login') {
+  async (error: AxiosError) => {
+    const config = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
+    const path = requestPath(config?.url)
+
+    const shouldRefresh =
+      error.response?.status === 401 &&
+      !!config &&
+      !config._retried &&
+      !isAuthEndpoint(path)
+
+    if (shouldRefresh) {
+      config._retried = true
+      const ok = await refreshAccessToken()
+      if (ok) {
+        // 重放原请求；请求拦截器会用新 token 覆盖 Authorization。
+        return http.request(config)
+      }
+    }
+
+    if (error.response?.status === 401 && !isAuthEndpoint(path)) {
       useUserStore(pinia).logout()
       if (router.currentRoute.value.path !== '/chat') void router.push('/')
       ElMessage.error('登录状态已失效，请重新登录')
