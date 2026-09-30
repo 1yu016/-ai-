@@ -13,9 +13,10 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore, type DigitalHumanAction } from '@/stores/digitalHuman'
-import { loadAvatarModel, type AvatarLoadedModel } from '@/avatar/AvatarLoader'
+import { loadAvatarModel, type AvatarLoadedModel, type AvatarLoadContext } from '@/avatar/AvatarLoader'
 import type { AvatarModelFormat } from '@/avatar/types'
 import { ExpressionController } from '@/avatar/expression/ExpressionController'
+import { useUserStore } from '@/stores/user'
 
 const store = useDigitalHumanStore()
 const { action, compact, roleId } = storeToRefs(store)
@@ -200,11 +201,13 @@ async function init() {
   const candidates: Array<[string, AvatarModelFormat | null]> = runtimeModelUrl
     ? [[runtimeModelUrl, runtimeFormat], [DEFAULT_MODEL_URL, 'glb']]
     : [[DEFAULT_MODEL_URL, 'glb']]
+  // 受保护资产：只向 loader 提供 token，Authorization 组装与 fetch 全部在 AvatarLoader 内部完成。
+  const loadContext: AvatarLoadContext = { getToken: () => useUserStore().accessToken }
 
   for (const [url, format] of candidates) {
     if (disposed) return
     try {
-      const model = await loadAvatarModel(url, format)
+      const model = await loadAvatarModel(url, format, loadContext)
       if (disposed) return
       bindModel(model)
       store.setModelState('loaded')
