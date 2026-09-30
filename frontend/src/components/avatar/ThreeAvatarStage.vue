@@ -26,27 +26,11 @@ const FPS_LOW_THRESHOLD = 12
 const FPS_WINDOW_MS = 1500
 const FPS_MAX_BAD_FRAMES = 3
 
-// glTF 动作片段名 → 标准动作的映射（按片段名关键词匹配）
-const CLIP_HINTS: Record<DigitalHumanAction, string[]> = {
-  idle: ['Idle', 'idle'],
-  listen: ['Listening', 'Listen'],
-  thinking: ['Think', 'Thinking'],
-  talk: ['Talk', 'Talking'],
-  happy: ['Happy', 'Celebrate'],
-  question: ['Question', 'Look'],
-  encourage: ['Wave', 'Dance', 'Cheer'],
-  praise: ['Dance', 'Happy', 'Praise'],
-  wave: ['Wave', 'Waving', 'Hi'],
-  goodbye: ['Wave', 'Goodbye', 'Sad', 'Dance'],
-}
-
 let renderer: THREE.WebGLRenderer | null = null
 let scene: THREE.Scene | null = null
 let camera: THREE.PerspectiveCamera | null = null
 let root: THREE.Object3D | null = null
-let mixer: THREE.AnimationMixer | null = null
 let currentModel: AvatarLoadedModel | null = null
-let clips: THREE.AnimationClip[] = []
 let resizeObserver: ResizeObserver | null = null
 let disposed = false
 let lastTime = 0
@@ -99,24 +83,11 @@ function buildProcedural(): THREE.Group {
   return group
 }
 
-function findClip(actionName: DigitalHumanAction): THREE.AnimationClip | null {
-  if (!clips.length) return null
-  const hints = CLIP_HINTS[actionName]
-  for (const hint of hints) {
-    const hit = clips.find((clip) => clip.name.toLowerCase().includes(hint.toLowerCase()))
-    if (hit) return hit
-  }
-  // 无匹配时回退首个片段（动作缺失回退，仍保持动画不中断）
-  return clips[0] ?? null
-}
-
 function playAction(actionName: DigitalHumanAction) {
   currentAction = actionName
-  if (!mixer || !root) return
-  const clip = findClip(actionName)
-  if (!clip) return
-  mixer.stopAllAction()
-  mixer.clipAction(clip, root).play()
+  // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放。
+  // 程序化占位：无 clip，由 applyPose 按 currentAction 施加姿势。
+  currentModel?.playAnimation(actionName)
 }
 
 watch(action, (next) => playAction(next))
@@ -166,7 +137,6 @@ function loop(time: number) {
     fpsFrames = 0
   }
   const dt = lastTime ? (time - lastTime) / 1000 : 0.016
-  if (mixer) mixer.update(dt)
   currentModel?.update(dt, time / 1000)
   applyPose(time)
   if (renderer && scene && camera) renderer.render(scene, camera)
@@ -176,8 +146,6 @@ function loop(time: number) {
 function bindModel(model: AvatarLoadedModel) {
   currentModel = model
   root = model.root
-  clips = model.animations
-  mixer = clips.length ? new THREE.AnimationMixer(root) : null
   scene?.add(root)
 }
 
@@ -276,7 +244,6 @@ function disposeAll() {
   disposeScene()
   currentModel?.dispose()
   currentModel = null
-  if (mixer) { mixer.stopAllAction(); mixer = null }
   root = null
   renderer = null
   camera = null
