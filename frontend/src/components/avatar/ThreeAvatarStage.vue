@@ -268,7 +268,7 @@ onBeforeUnmount(() => disposeAll())
 </template>
 
 <style scoped>
-.three-avatar-stage { width: 100%; height: 100%; min-width: 160px; min-height: 180px; transition: transform .25s ease, opacity .25s ease }
+.three-avatar-stage { width: 100%; height: 100%; min-width: 160px; min-height: 180px; pointer-events: auto; transition: transform .25s ease, opacity .25s ease }
 .three-avatar-stage :deep(canvas) { display: block; width: 100%; height: 100% }
 .three-avatar-stage.compact { transform: scale(.7); transform-origin: bottom right }
 </style>
