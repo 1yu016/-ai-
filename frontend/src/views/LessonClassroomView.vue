@@ -11,12 +11,25 @@ import { useClassroomAssistantStore, type AssistantTool } from '@/stores/classro
 import { useCourseResourceStore } from '@/stores/courseResource'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import { RECORDING_MIME_TYPE, isRecordingSupported, webmToWav } from '@/services/recordingAudio'
+import { resolveIntent } from '@/classroom/command/ClassroomIntentRouter'
+import {
+  AI_COMMAND_FAILURE_HINT,
+  AI_COMMAND_PENDING_HINT,
+  runAiCommandFallback,
+} from '@/classroom/command/classroomAiFallback'
+import { ClassroomCommandExecutor } from '@/classroom/command/ClassroomCommandExecutor'
+import { useClassroomCommandStore } from '@/stores/classroomCommand'
+import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
 const route = useRoute(); const router = useRouter(); const store = useLessonRunStore(); const assistant = useClassroomAssistantStore(); const resources = useCourseResourceStore()
 const digitalHuman = useDigitalHumanStore()
+const classroomCommand = useClassroomCommandStore()
+const resourcePlayer = useResourcePlayerStore()
+const commandExecutor = new ClassroomCommandExecutor(store, resourcePlayer)
 const { run, currentStep, currentResource, progress, elapsedSeconds, loading, busy, error } = storeToRefs(store)
 const { draftReply, teacherTip, loading: assistantLoading, attemptCount, requiresTeacherConfirmation } = storeToRefs(assistant)
 const teacherPrompt = ref(''); const childReply = ref(''); const assistantEnabled = ref(false)
+const commandInput = ref(''); const commandFeedback = ref(''); const commandRunId = ref(0); const commandBusy = ref(false)
 const assistantSpeechLoading = ref(false); const assistantSpeaking = ref(false); const draftAccepted = ref(false)
 let assistantAudio: HTMLAudioElement | null = null
 const childRecording = ref(false); const childRequestingMicrophone = ref(false); const childRecognizing = ref(false)
@@ -30,6 +43,64 @@ function formatTime(value: number) { const m = Math.floor(value / 60); return `$
 async function safe(task: () => Promise<void>) { try { await task() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作失败，请检查网络后重试') } }
 async function goToStep(index: number) { if (!run.value || index === run.value.currentStepIndex) return; await safe(() => store.move(index)) }
 async function finish(kind: 'complete' | 'cancel') { const text = kind === 'complete' ? '确认结束并完成本次课堂吗？' : '确认中止本次课堂吗？教案不会被删除。'; try { await ElMessageBox.confirm(text, kind === 'complete' ? '结束课堂' : '中止课堂', { type:'warning', confirmButtonText:'确认', cancelButtonText:'继续上课' }) } catch { return } digitalHuman.transition({ type: 'lesson_end' }); await safe(async () => { await (kind === 'complete' ? store.complete() : store.cancel()); store.clear(); await router.push('/lesson-plans') }) }
+async function runCommand() {
+  const text = commandInput.value.trim()
+  if (!text) return
+  const runId = ++commandRunId.value
+  commandFeedback.value = ''
+  // 第一层：本地确定性解析（毫秒级、零 AI）。
+  const match = resolveIntent(text)
+  if (match.local && match.command) {
+    await safe(async () => {
+      const result = await commandExecutor.execute(match)
+      commandFeedback.value = `${match.intent} → ${result.message}`
+    })
+    return
+  }
+  // 第二层：无法可靠判断 → 让渡给已有 POST /ai/command 兜底。
+  // 仅限 /ai/command 有显式超时，绝不设全局 timeout；超时即安全失败，不执行。
+  commandFeedback.value = AI_COMMAND_PENDING_HINT
+  commandBusy.value = true
+  try {
+    const outcome = await runAiCommandFallback(
+      runId,
+      text,
+      {
+        text,
+        context: {
+          currentPage: 'resources',
+          currentResourceId: currentResource.value?.id ?? undefined,
+          playerStatus: resourcePlayer.playerStatus,
+          ageGroup: run.value?.ageGroup || undefined,
+        },
+      },
+      {
+        post: (url, body, config) => http.post(url, body, config),
+        // 迟到响应防护：请求已失效（超时在此期间 / 用户又发起新指令）时不执行。
+        isCurrent: (id) => id === commandRunId.value,
+      },
+      commandExecutor,
+    )
+    if (runId !== commandRunId.value) return
+    if (outcome.kind === 'executed') {
+      commandFeedback.value = `AI 判读为 ${outcome.intent}，${outcome.message}`
+      return
+    }
+    if (outcome.kind === 'unsupported') {
+      // 白名单外的 intent（play_resource/open_resources/volume_up 等）属后续 Device Command 阶段，
+      // 明确 unsupported/deferred，绝不自动执行。
+      commandFeedback.value = `AI 判读为 ${outcome.intent}，该指令不属于本阶段已批准范围，未执行（交由后续指令系统接入）。`
+      classroomCommand.feedback = outcome.reply ?? ''
+      return
+    }
+    // failed：超时 / 网络错误 / 5xx / 格式非法 —— 统一安全失败，不执行。
+    commandFeedback.value = outcome.hint
+  } catch {
+    if (runId === commandRunId.value) commandFeedback.value = AI_COMMAND_FAILURE_HINT
+  } finally {
+    if (runId === commandRunId.value) commandBusy.value = false
+  }
+}
 async function askAssistant(tool?: AssistantTool, useTeacherPrompt = false) { const teacherText = teacherPrompt.value.trim(); const childText = childReply.value.trim(); const text = useTeacherPrompt ? teacherText : childText || currentStep.value?.content || ''; if (!text) return ElMessage.warning(useTeacherPrompt ? '请先输入老师的问题或要求' : '当前没有可用于引导的课堂内容'); try { await assistant.ask(text, useTeacherPrompt || !childText ? 'teacher' : 'child', tool); if (useTeacherPrompt) teacherPrompt.value = ''; else childReply.value = '' } catch (e) { ElMessage.error(e instanceof Error ? e.message : '课堂助教暂时不可用') } }
 function stopChildMediaTracks() { childMediaStream?.getTracks().forEach((track) => track.stop()); childMediaStream = null }
 function cancelChildRecording() { childRecordingGeneration += 1; if (childMediaRecorder?.state === 'recording') childMediaRecorder.stop(); childMediaRecorder = null; childAudioChunks = []; childRecording.value = false; childRequestingMicrophone.value = false; childRecognizing.value = false; stopChildMediaTracks() }
@@ -68,7 +139,7 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
       <section class="stage"><aside><button v-for="step in run.steps" :key="step.stepIndex" :class="{active: step.stepIndex === run.currentStepIndex}" :disabled="paused || busy" @click="goToStep(step.stepIndex)"><span>{{ step.stepIndex + 1 }}</span>{{ step.title }}</button></aside>
         <article class="content"><div class="step-title"><ElTag effect="dark">{{ typeText[currentStep.type] ?? currentStep.type }}</ElTag><h2>{{ currentStep.title }}</h2></div><p class="instruction">{{ currentStep.content }}</p><div v-if="currentStep.expectedResponse" class="teacher-card"><small>预期回答</small><p>{{ currentStep.expectedResponse }}</p></div><div v-if="currentStep.teacherTip" class="teacher-card tip"><small>教师提示</small><p>{{ currentStep.teacherTip }}</p></div>
           <div v-if="currentStep.type === 'resource'" class="resource-card"><div><strong>{{ currentResource?.title ?? '资源已失效' }}</strong><p>{{ currentResource ? '点击后打开现有统一播放器，不会自动播放。' : '该资源已删除或无权访问，可继续切换其他环节。' }}</p></div><ElButton type="primary" size="large" :disabled="!currentResource" @click="store.openResource">打开资源</ElButton></div>
-          <div class="assistant"><div class="assistant-head"><div><strong>🌱 启发式课堂助教</strong><small>任意环节都可调用，不需要编写代码</small></div><ElButton type="success" plain @click="assistantEnabled = !assistantEnabled">{{ assistantEnabled ? '收起助教' : '打开助教' }}</ElButton></div><template v-if="assistantEnabled"><p>老师可以自由输入问题或要求；AI 先生成可编辑草稿，再由老师决定是否播放。</p><div class="assistant-free-input"><ElInput v-model="teacherPrompt" type="textarea" :rows="2" maxlength="1000" placeholder="输入老师想让助教回答的问题或课堂要求"/><ElButton type="primary" :loading="assistantLoading" :disabled="!teacherPrompt.trim()" @click="askAssistant(undefined, true)">生成AI草稿</ElButton></div><div class="assistant-child-voice"><ElInput v-model="childReply" type="textarea" :rows="2" maxlength="1000" placeholder="点击右侧“让孩子说话”，识别文字会显示在这里，老师也可修改" aria-label="孩子语音识别结果"/><ElButton :type="childRecording ? 'danger' : 'default'" :loading="childRequestingMicrophone || childRecognizing" :disabled="assistantLoading || childRequestingMicrophone || childRecognizing" @click="toggleChildRecording">{{ childRecording ? '■ 说完了' : '🎤 让孩子说话' }}</ElButton></div><p v-if="childVoiceStatus" class="child-voice-status" role="status">{{ childVoiceStatus }}</p><div class="assistant-buttons"><ElButton type="primary" :loading="assistantLoading" @click="askAssistant('guided_question')">生成启发问题</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('give_hint')">再给提示</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('follow_up')">继续追问</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('encourage')">鼓励表达</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('summarize')">总结本环节</ElButton><span v-if="attemptCount">提示层级 {{ attemptCount + 1 }}</span></div><div v-if="draftReply" class="ai-draft"><small>AI 草稿（可由教师修改后再决定）</small><ElInput v-model="draftReply" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" maxlength="500" aria-label="编辑AI草稿"/><em>{{ teacherTip }}</em><div class="assistant-draft-actions"><ElButton type="primary" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation || assistantSpeaking" @click="playAssistantDraft">{{ assistantSpeaking ? '正在播放' : '教师确认并播放' }}</ElButton><ElButton v-if="assistantSpeaking" type="warning" plain @click="stopAssistantSpeech">停止播放</ElButton><ElButton type="success" plain :disabled="draftAccepted" @click="acceptDraftAsText">{{ draftAccepted ? '已确认文字' : '教师自行讲述' }}</ElButton><ElButton @click="discardAssistantDraft">暂不采用</ElButton></div></div></template></div>
+          <div class="assistant"><div class="assistant-head"><div><strong>🌱 启发式课堂助教</strong><small>任意环节都可调用，不需要编写代码</small></div><ElButton type="success" plain @click="assistantEnabled = !assistantEnabled">{{ assistantEnabled ? '收起助教' : '打开助教' }}</ElButton></div><div class="command-debug"><ElInput v-model="commandInput" placeholder="课堂口令（下一步 / 暂停 / 继续上课 / 重置本环节…）" @keyup.enter="runCommand" aria-label="课堂口令文本调试" /><ElButton type="primary" :loading="busy || commandBusy" :disabled="!commandInput.trim()" @click="runCommand">执行口令</ElButton><span v-if="commandFeedback" class="command-feedback">{{ commandFeedback }}</span></div><template v-if="assistantEnabled"><p>老师可以自由输入问题或要求；AI 先生成可编辑草稿，再由老师决定是否播放。</p><div class="assistant-free-input"><ElInput v-model="teacherPrompt" type="textarea" :rows="2" maxlength="1000" placeholder="输入老师想让助教回答的问题或课堂要求"/><ElButton type="primary" :loading="assistantLoading" :disabled="!teacherPrompt.trim()" @click="askAssistant(undefined, true)">生成AI草稿</ElButton></div><div class="assistant-child-voice"><ElInput v-model="childReply" type="textarea" :rows="2" maxlength="1000" placeholder="点击右侧“让孩子说话”，识别文字会显示在这里，老师也可修改" aria-label="孩子语音识别结果"/><ElButton :type="childRecording ? 'danger' : 'default'" :loading="childRequestingMicrophone || childRecognizing" :disabled="assistantLoading || childRequestingMicrophone || childRecognizing" @click="toggleChildRecording">{{ childRecording ? '■ 说完了' : '🎤 让孩子说话' }}</ElButton></div><p v-if="childVoiceStatus" class="child-voice-status" role="status">{{ childVoiceStatus }}</p><div class="assistant-buttons"><ElButton type="primary" :loading="assistantLoading" @click="askAssistant('guided_question')">生成启发问题</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('give_hint')">再给提示</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('follow_up')">继续追问</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('encourage')">鼓励表达</ElButton><ElButton :disabled="assistantLoading" @click="askAssistant('summarize')">总结本环节</ElButton><span v-if="attemptCount">提示层级 {{ attemptCount + 1 }}</span></div><div v-if="draftReply" class="ai-draft"><small>AI 草稿（可由教师修改后再决定）</small><ElInput v-model="draftReply" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" maxlength="500" aria-label="编辑AI草稿"/><em>{{ teacherTip }}</em><div class="assistant-draft-actions"><ElButton type="primary" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation || assistantSpeaking" @click="playAssistantDraft">{{ assistantSpeaking ? '正在播放' : '教师确认并播放' }}</ElButton><ElButton v-if="assistantSpeaking" type="warning" plain @click="stopAssistantSpeech">停止播放</ElButton><ElButton type="success" plain :disabled="draftAccepted" @click="acceptDraftAsText">{{ draftAccepted ? '已确认文字' : '教师自行讲述' }}</ElButton><ElButton @click="discardAssistantDraft">暂不采用</ElButton></div></div></template></div>
         </article></section>
       <footer><ElButton size="large" :disabled="paused || busy || run.currentStepIndex <= 0" @click="safe(store.previous)">上一步</ElButton><ElButton size="large" :disabled="paused || busy" @click="store.repeat">重复本环节</ElButton><ElButton size="large" type="primary" :disabled="paused || busy || run.currentStepIndex >= run.steps.length - 1" @click="safe(store.next)">下一步</ElButton><ElButton v-if="!paused" size="large" type="warning" :loading="busy" :disabled="busy" @click="safe(store.pause)">暂停课堂</ElButton><ElButton v-else size="large" type="success" :loading="busy" :disabled="busy" @click="safe(store.resume)">继续课堂</ElButton><ElButton size="large" type="danger" :loading="busy" :disabled="busy" @click="finish('complete')">结束课堂</ElButton><ElButton size="large" plain :disabled="busy" @click="finish('cancel')">中止</ElButton></footer>
       <ResourcePlayer :resources="currentResource ? [currentResource] : resources.sortedResources" />
@@ -83,5 +154,5 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
 </template>
 
 <style scoped>
-.classroom{min-height:100vh;box-sizing:border-box;padding:22px 30px 120px;background:#1d1a18;color:#fff;position:relative}header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:14px}header small{color:#ffc9a8;font-weight:800}h1{margin:4px 0 0;font-size:28px}.metrics{display:flex;gap:24px;color:#d7cbc4}.metrics b{color:#fff;font-size:20px}.stage{display:grid;grid-template-columns:250px 1fr;gap:22px;margin-top:20px;min-height:calc(100vh - 280px)}aside{display:flex;flex-direction:column;gap:8px}aside button{display:flex;align-items:center;gap:10px;padding:13px;border:1px solid #ffffff18;border-radius:13px;background:#2a2623;color:#d7cbc4;text-align:left;font:inherit;cursor:pointer}aside button span{display:grid;width:28px;height:28px;place-items:center;border-radius:9px;background:#3d3733}aside button.active{border-color:#f0a27b;background:#4a3025;color:#fff}aside button:disabled{cursor:not-allowed}.content{padding:clamp(25px,4vw,58px);border-radius:24px;background:#fffaf3;color:#493d36}.step-title{display:flex;align-items:center;gap:14px}.step-title h2{font-size:clamp(28px,4vw,48px);margin:0}.instruction{font-size:clamp(22px,3vw,36px);line-height:1.65}.teacher-card{padding:15px 18px;margin-top:12px;border-radius:14px;background:#f1f7ed}.teacher-card.tip{background:#fff0df}.teacher-card small{font-weight:800;color:#7b9a65}.teacher-card p{margin:5px 0;font-size:19px}.resource-card,.assistant{margin-top:20px;padding:18px;border:1px solid #ead5c2;border-radius:17px;background:#fff}.resource-card,.assistant-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.assistant-head>div{display:grid;gap:4px}.assistant-head small{color:#8a7466;font-weight:400}.resource-card p,.assistant>p{margin:10px 0;color:#8a7466;line-height:1.6}.assistant-free-input,.assistant-child-voice{display:grid;grid-template-columns:1fr auto;align-items:stretch;gap:10px;margin-bottom:10px}.assistant-free-input :deep(.el-button),.assistant-child-voice :deep(.el-button){height:auto;min-width:150px}.child-voice-status{margin:-2px 0 10px!important;padding:8px 11px;border-radius:9px;background:#fff4dc;color:#8d6732!important;font-size:14px}.assistant-buttons,.assistant-draft-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:10px}.ai-draft{display:grid;gap:10px;margin-top:12px;padding:14px;border-radius:12px;background:#eff8e8}.ai-draft :deep(.el-textarea__inner){font-size:18px;line-height:1.6}.ai-draft em{display:block;color:#718064}.assistant-draft-actions{margin-top:0}footer{position:fixed;z-index:20;left:0;right:0;bottom:0;display:flex;justify-content:center;gap:12px;padding:18px;background:#28231f;box-shadow:0 -8px 30px #0005}footer :deep(.el-button){min-width:118px;height:54px;font-size:17px}.center{min-height:70vh;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px}.error{color:#ffb3b3}@media(max-width:850px){.classroom{padding:15px 15px 170px}.stage{grid-template-columns:1fr}aside{flex-direction:row;overflow:auto}aside button{min-width:150px}.metrics{display:none}.assistant-head{align-items:flex-start;flex-direction:column}.assistant-free-input,.assistant-child-voice{grid-template-columns:1fr}.assistant-child-voice :deep(.el-button){min-height:44px}footer{flex-wrap:wrap;padding:10px}footer :deep(.el-button){min-width:100px;height:44px}}
+.classroom{min-height:100vh;box-sizing:border-box;padding:22px 30px 120px;background:#1d1a18;color:#fff;position:relative}header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:14px}header small{color:#ffc9a8;font-weight:800}h1{margin:4px 0 0;font-size:28px}.metrics{display:flex;gap:24px;color:#d7cbc4}.metrics b{color:#fff;font-size:20px}.stage{display:grid;grid-template-columns:250px 1fr;gap:22px;margin-top:20px;min-height:calc(100vh - 280px)}aside{display:flex;flex-direction:column;gap:8px}aside button{display:flex;align-items:center;gap:10px;padding:13px;border:1px solid #ffffff18;border-radius:13px;background:#2a2623;color:#d7cbc4;text-align:left;font:inherit;cursor:pointer}aside button span{display:grid;width:28px;height:28px;place-items:center;border-radius:9px;background:#3d3733}aside button.active{border-color:#f0a27b;background:#4a3025;color:#fff}aside button:disabled{cursor:not-allowed}.content{padding:clamp(25px,4vw,58px);border-radius:24px;background:#fffaf3;color:#493d36}.step-title{display:flex;align-items:center;gap:14px}.step-title h2{font-size:clamp(28px,4vw,48px);margin:0}.instruction{font-size:clamp(22px,3vw,36px);line-height:1.65}.teacher-card{padding:15px 18px;margin-top:12px;border-radius:14px;background:#f1f7ed}.teacher-card.tip{background:#fff0df}.teacher-card small{font-weight:800;color:#7b9a65}.teacher-card p{margin:5px 0;font-size:19px}.resource-card,.assistant{margin-top:20px;padding:18px;border:1px solid #ead5c2;border-radius:17px;background:#fff}.resource-card,.assistant-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.assistant-head>div{display:grid;gap:4px}.assistant-head small{color:#8a7466;font-weight:400}.resource-card p,.assistant>p{margin:10px 0;color:#8a7466;line-height:1.6}.command-debug{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;margin:-6px 0 10px;padding:10px;border-radius:12px;background:#f5f0e8}.command-debug :deep(.el-button){height:auto;min-width:118px}.command-feedback{grid-column:1 / -1;padding:7px 10px;border-radius:8px;background:#fff4dc;color:#8d6732;font-size:13px}.assistant-free-input,.assistant-child-voice{display:grid;grid-template-columns:1fr auto;align-items:stretch;gap:10px;margin-bottom:10px}.assistant-free-input :deep(.el-button),.assistant-child-voice :deep(.el-button){height:auto;min-width:150px}.child-voice-status{margin:-2px 0 10px!important;padding:8px 11px;border-radius:9px;background:#fff4dc;color:#8d6732!important;font-size:14px}.assistant-buttons,.assistant-draft-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:10px}.ai-draft{display:grid;gap:10px;margin-top:12px;padding:14px;border-radius:12px;background:#eff8e8}.ai-draft :deep(.el-textarea__inner){font-size:18px;line-height:1.6}.ai-draft em{display:block;color:#718064}.assistant-draft-actions{margin-top:0}footer{position:fixed;z-index:20;left:0;right:0;bottom:0;display:flex;justify-content:center;gap:12px;padding:18px;background:#28231f;box-shadow:0 -8px 30px #0005}footer :deep(.el-button){min-width:118px;height:54px;font-size:17px}.center{min-height:70vh;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px}.error{color:#ffb3b3}@media(max-width:850px){.classroom{padding:15px 15px 170px}.stage{grid-template-columns:1fr}aside{flex-direction:row;overflow:auto}aside button{min-width:150px}.metrics{display:none}.assistant-head{align-items:flex-start;flex-direction:column}.assistant-free-input,.assistant-child-voice{grid-template-columns:1fr}.assistant-child-voice :deep(.el-button){min-height:44px}footer{flex-wrap:wrap;padding:10px}footer :deep(.el-button){min-width:100px;height:44px}}
 </style>
