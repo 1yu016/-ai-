@@ -15,6 +15,7 @@ import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore, type DigitalHumanAction } from '@/stores/digitalHuman'
 import { loadAvatarModel, type AvatarLoadedModel } from '@/avatar/AvatarLoader'
 import type { AvatarModelFormat } from '@/avatar/types'
+import { ExpressionController } from '@/avatar/expression/ExpressionController'
 
 const store = useDigitalHumanStore()
 const { action, compact, roleId } = storeToRefs(store)
@@ -85,9 +86,11 @@ function buildProcedural(): THREE.Group {
 
 function playAction(actionName: DigitalHumanAction) {
   currentAction = actionName
-  // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放。
-  // 程序化占位：无 clip，由 applyPose 按 currentAction 施加姿势。
+  // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放；
+  // 表情名 → ExpressionController → model.setExpression（VRM ExpressionManager / GLB morph target）。
+  // 程序化占位：无 clip/morph，由 applyPose 按 currentAction 施加姿势。
   currentModel?.playAnimation(actionName)
+  currentModel?.setExpression(ExpressionController.fromAction(actionName), 1)
 }
 
 watch(action, (next) => playAction(next))
