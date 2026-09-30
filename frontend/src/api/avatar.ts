@@ -21,7 +21,7 @@ export interface AvatarCharacterListResponse {
 export interface ResolveAvatarResponse {
   sourceScope: string | null
   character: { id: number; name: string; category: string | null } | null
-  version: { id: number; version: number; engineVersion: string; modelFormat: 'glb' | 'gltf' } | null
+  version: { id: number; version: number; engineVersion: string; modelFormat: 'glb' | 'gltf' | 'vrm' } | null
   renderAsset: { id: number; assetType: string; contentUrl: string | null; mimeType: string | null } | null
   action: { requested: string; effective: string | null; contentUrl: string | null }
   voice: { provider: string; voiceId: string; language: string; speed: number; volume: number; pitch: number } | null

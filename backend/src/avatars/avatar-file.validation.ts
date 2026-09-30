@@ -26,7 +26,7 @@ const ASSET_SIZE_LIMITS: Readonly<Record<AvatarAssetType, number>> = {
 
 const ALLOWED_EXTENSIONS: Readonly<Record<AvatarAssetType, readonly string[]>> =
   {
-    [AvatarAssetType.Model]: ['.glb', '.gltf'],
+    [AvatarAssetType.Model]: ['.glb', '.gltf', '.vrm'],
     [AvatarAssetType.Texture]: ['.png', '.jpg', '.jpeg'],
     [AvatarAssetType.Animation]: ['.glb', '.gltf'],
     [AvatarAssetType.Expression]: ['.json'],
@@ -37,6 +37,7 @@ const ALLOWED_EXTENSIONS: Readonly<Record<AvatarAssetType, readonly string[]>> =
 
 const DECLARED_MIME: Readonly<Record<string, readonly string[]>> = {
   '.glb': ['model/gltf-binary'],
+  '.vrm': ['model/gltf-binary'],
   '.gltf': ['model/gltf+json', 'application/json'],
   '.png': ['image/png'],
   '.jpg': ['image/jpeg'],
@@ -115,14 +116,15 @@ export async function validateAvatarFile(
   const expected =
     extension === '.gltf' || extension === '.json'
       ? 'application/json'
-      : extension === '.glb'
+      : extension === '.glb' || extension === '.vrm'
         ? 'model/gltf-binary'
         : extension === '.png'
           ? 'image/png'
           : 'image/jpeg';
   if (detected !== expected)
     throw new BadRequestException('文件真实内容与扩展名或 MIME 不匹配');
-  if (extension === '.glb') await validateGlbStructure(file.path);
+  if (extension === '.glb' || extension === '.vrm')
+    await validateGlbStructure(file.path);
   if (['.gltf', '.json'].includes(extension)) {
     let parsed: unknown;
     try {
@@ -208,5 +210,6 @@ function rejectDangerousConfiguration(value: unknown): void {
 export function modelFormatForExtension(extension: string): AvatarModelFormat {
   if (extension === '.glb') return AvatarModelFormat.Glb;
   if (extension === '.gltf') return AvatarModelFormat.Gltf;
+  if (extension === '.vrm') return AvatarModelFormat.Vrm;
   throw new BadRequestException('不支持的模型格式');
 }

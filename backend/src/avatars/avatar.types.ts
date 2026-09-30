@@ -21,6 +21,7 @@ export enum AvatarVersionStatus {
 export enum AvatarModelFormat {
   Glb = 'glb',
   Gltf = 'gltf',
+  Vrm = 'vrm',
 }
 
 export enum AvatarAssetType {

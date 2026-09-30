@@ -104,6 +104,12 @@ const RULES: Readonly<Record<string, FileRule>> = {
     defaultType: ResourceType.Model3d,
     allowedTypes: [ResourceType.Model3d],
   },
+  '.vrm': {
+    // VRM 是 glTF 2.0 Binary 容器（扩展名 .vrm），与 .glb 同一容器规则。
+    mime: 'model/gltf-binary',
+    defaultType: ResourceType.Model3d,
+    allowedTypes: [ResourceType.Model3d],
+  },
 };
 const EXECUTABLE_EXTENSIONS =
   /\.(?:exe|dll|com|bat|cmd|ps1|sh|js|mjs|cjs|html?|php|py|jar|msi|scr|vbs)$/i;
