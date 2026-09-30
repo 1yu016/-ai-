@@ -35,6 +35,12 @@ export class BlinkController {
     this.nextBlinkAt = options?.firstAt ?? now + randomIn(this.interval)
   }
 
+  /** 回归待机：重置眨眼调度（模型卸载/角色切换时使用）。 */
+  reset(now = 0): void {
+    this.blinkEndAt = 0
+    this.nextBlinkAt = now + randomIn(this.interval)
+  }
+
   /**
    * 返回当前眼睛睁开权重：1 = 睁眼，0 = 完全闭合。
    * 在眨眼闭合窗口内返回 0，结束后安排下一次随机眨眼。

@@ -16,6 +16,7 @@ export interface AvatarLoadedModel {
   update: (deltaSeconds: number, timeSeconds: number) => void
   playAnimation: (actionName: AvatarActionName) => boolean
   setExpression: (name: AvatarExpressionName, value: number) => boolean
+  resetExpressions: () => void
   dispose: () => void
 }
 
@@ -108,6 +109,7 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
       return true
     },
     setExpression(name: AvatarExpressionName, value: number): boolean {
+      // 先清除上一个表情的 morph 权重，避免叠加。
       if (currentExpression && currentExpression !== name) {
         for (const keyword of ExpressionController.targets(currentExpression)) applyMorph(keyword, 0)
       }
@@ -118,6 +120,12 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
       }
       return applied
     },
+    resetExpressions() {
+      if (currentExpression) {
+        for (const keyword of ExpressionController.targets(currentExpression)) applyMorph(keyword, 0)
+        currentExpression = null
+      }
+    },
     dispose() {
       mixer.stopAllAction()
       disposeObject(gltf.scene)
@@ -126,6 +134,7 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
 }
 
 // VRM ExpressionManager 预设名（VRM 0.x / 1.0 均通过 ExpressionManager.setValue）
+// thinking 无标准预设 → null（安全 no-op）。
 const VRM_PRESET: Record<AvatarExpressionName, string | null> = {
   neutral: null,
   happy: 'happy',
@@ -133,6 +142,7 @@ const VRM_PRESET: Record<AvatarExpressionName, string | null> = {
   encourage: 'happy',
   goodbye: 'sad',
   talk: 'aa',
+  thinking: null,
   blink: 'blink',
 }
 
@@ -171,6 +181,14 @@ function buildVrmModel(vrm: VRM): AvatarLoadedModel {
       currentExpression = name
       manager.setValue(preset, value)
       return true
+    },
+    resetExpressions() {
+      const manager = vrm.expressionManager
+      if (manager && currentExpression) {
+        const previous = VRM_PRESET[currentExpression]
+        if (previous) manager.setValue(previous, 0)
+        currentExpression = null
+      }
     },
     dispose() {
       mixer.stopAllAction()

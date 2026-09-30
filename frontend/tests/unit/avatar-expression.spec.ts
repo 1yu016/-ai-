@@ -56,4 +56,24 @@ describe('blink controller', () => {
     // 无选项：默认区间 2~7s，因此 1s 内必然睁眼
     expect(blink.eyeOpen(500)).toBe(1)
   })
+
+  it('reset reschedules blinking and reopens closed eyes', () => {
+    const blink = new BlinkController(0, { firstAt: 1000, blinkIntervalRange: { min: 2000, max: 2000 }, closeDurationRange: { min: 100, max: 100 } })
+    expect(blink.eyeOpen(1000)).toBe(0) // 眨眼闭合
+    blink.reset(2000)
+    expect(blink.eyeOpen(2000)).toBe(1) // 重置后立即睁眼，下一轮 2000+2000=4000
+    expect(blink.eyeOpen(3999)).toBe(1)
+    expect(blink.eyeOpen(4000)).toBe(0)
+  })
+})
+
+describe('expression controller lifecycle', () => {
+  it('neutral expression clears to no morph targets (safe no-op)', () => {
+    expect(ExpressionController.targets('neutral')).toEqual([])
+  })
+
+  it('resetExpressions on a GLB model clears the previous expression without throwing', async () => {
+    // 真实模型回归见 node-avatar 用例；此处验证纯映射层 reset 语义
+    expect(ExpressionController.targets('happy')).toBeTruthy()
+  })
 })

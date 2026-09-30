@@ -42,6 +42,18 @@ describe('real GLB model (RobotExpressive)', () => {
     expect(model.setExpression('happy', 1)).toBe(false)
     model.dispose()
   })
+
+  it('resetExpressions clears applied morphs without affecting playback', async () => {
+    const buffer = await fixtureBuffer('RobotExpressive.glb')
+    const model = await GLBBufferLoader(buffer)
+    model.setExpression('question', 1)
+    model.resetExpressions()
+    // reset 后动作仍可播放（动作与表情互不阻塞）
+    expect(model.playAnimation('idle')).toBe(true)
+    // reset 后再次施加表情不残留
+    expect(model.setExpression('goodbye', 1)).toBe(true)
+    model.dispose()
+  })
 })
 
 describe('real VRM model (AliciaSolid 0.51)', () => {
@@ -61,5 +73,19 @@ describe('real VRM model (AliciaSolid 0.51)', () => {
   it('resolves gracefully when no animation clips are present', () => {
     // VRM 模型通常不自带动画 clip：由动作资产扩展阶段补充，此处由调用方返回布尔值处理。
     // 单测在 fixture 无 clip 时仅验证 playAnimation 不抛错（行为在后续 VRMA 阶段覆盖）。
+  })
+
+  it('supports blink expression and resets expressions cleanly', async () => {
+    const buffer = await fixtureBuffer('AliciaSolid_vrm-0.51.vrm')
+    const model = await VRMBufferLoader(buffer)
+    expect(model.setExpression('blink', 1)).toBe(true)
+    expect(model.setExpression('happy', 1)).toBe(true)
+    expect(model.setExpression('happy', 1)).toBe(true)
+    // 不支持的表达式：安全不抛异常（存在预设则应用，缺失则 no-op）
+    expect(() => model.setExpression('question', 0.5)).not.toThrow()
+    model.resetExpressions()
+    // reset 后重新施加表情仍可工作（无残留互斥）
+    expect(model.setExpression('happy', 1)).toBe(true)
+    model.dispose()
   })
 })

@@ -15,11 +15,10 @@ import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore, type DigitalHumanAction } from '@/stores/digitalHuman'
 import { loadAvatarModel, type AvatarLoadedModel, type AvatarLoadContext } from '@/avatar/AvatarLoader'
 import type { AvatarModelFormat } from '@/avatar/types'
-import { ExpressionController } from '@/avatar/expression/ExpressionController'
 import { useUserStore } from '@/stores/user'
 
 const store = useDigitalHumanStore()
-const { action, compact, roleId } = storeToRefs(store)
+const { action, expression, compact, roleId } = storeToRefs(store)
 const mountEl = ref<HTMLElement | null>(null)
 
 // 模型部署路径：文件存在时走真实 GLTF 加载，否则用程序化占位角色
@@ -87,14 +86,16 @@ function buildProcedural(): THREE.Group {
 
 function playAction(actionName: DigitalHumanAction) {
   currentAction = actionName
-  // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放；
-  // 表情名 → ExpressionController → model.setExpression（VRM ExpressionManager / GLB morph target）。
-  // 程序化占位：无 clip/morph，由 applyPose 按 currentAction 施加姿势。
+  // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放。
+  // 表情由 store.expression（状态机快照）单独驱动，组件不判断业务状态。
   currentModel?.playAnimation(actionName)
-  currentModel?.setExpression(ExpressionController.fromAction(actionName), 1)
 }
 
 watch(action, (next) => playAction(next))
+// 表情：只转发状态机输出的 expression 快照，不做任何业务判断。
+watch(expression, (next) => {
+  currentModel?.setExpression(next ?? 'neutral', 1)
+})
 
 // 程序化占位角色：按动作施加简单姿态
 function applyPose(time: number) {
@@ -212,6 +213,7 @@ async function init() {
       bindModel(model)
       store.setModelState('loaded')
       playAction(store.action)
+      currentModel?.setExpression(store.expression ?? 'neutral', 1)
       startRenderLoop()
       return
     } catch {
@@ -248,6 +250,7 @@ function disposeAll() {
     try { renderer.forceContextLoss?.() } catch { /* 忽略 */ }
   }
   disposeScene()
+  currentModel?.resetExpressions()
   currentModel?.dispose()
   currentModel = null
   root = null

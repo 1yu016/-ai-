@@ -4,6 +4,7 @@ import { listAvatarCharacters, resolveAvatar } from '@/api/avatar'
 import type { ResolveAvatarContext, ResolveAvatarResponse } from '@/api/avatar'
 import type { AvatarModelFormat, AvatarRuntimeConfig } from '@/avatar/types'
 import { AvatarStateMachine, type AvatarState, type AvatarStateEvent } from '@/avatar/state/AvatarStateMachine'
+import type { AvatarExpressionName } from '@/avatar/expression/ExpressionController'
 
 export const DIGITAL_HUMAN_ACTIONS = ['idle', 'listen', 'thinking', 'talk', 'happy', 'question', 'encourage', 'praise', 'wave', 'goodbye'] as const
 export type DigitalHumanAction = (typeof DIGITAL_HUMAN_ACTIONS)[number]
@@ -27,6 +28,8 @@ const avatarMachine = new AvatarStateMachine()
 export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   const action = ref<DigitalHumanAction>('idle')
   const currentState = ref<AvatarState>('idle')
+  // 当前表情（状态机 snapshot.expression 的权威输出，渲染层直接消费）
+  const expression = ref<AvatarExpressionName>('neutral')
   const visible = ref(true)
   const compact = ref(false)
   const fallback = ref(true)
@@ -53,6 +56,7 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   function transition(event: AvatarStateEvent) {
     const snap = avatarMachine.transition(event)
     currentState.value = snap.state
+    expression.value = snap.expression
     setAction(snap.action as DigitalHumanAction)
     return snap
   }
@@ -125,8 +129,8 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
     }
   }
 
-  function setFallback(message = '') { fallback.value = true; loading.value = false; error.value = message; action.value = 'idle'; currentState.value = 'idle' }
-  function reset() { avatarMachine.reset(); currentState.value = 'idle'; action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; selectRole('flower') }
+  function setFallback(message = '') { fallback.value = true; loading.value = false; error.value = message; action.value = 'idle'; currentState.value = 'idle'; expression.value = 'neutral' }
+  function reset() { avatarMachine.reset(); currentState.value = 'idle'; expression.value = 'neutral'; action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; selectRole('flower') }
 
-  return { action, currentState, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, setFallback, reset }
+  return { action, currentState, expression, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, setFallback, reset }
 })

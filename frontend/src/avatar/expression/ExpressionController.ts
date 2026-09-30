@@ -5,7 +5,7 @@
 
 import type { AvatarActionName } from '../action/AvatarActionResolver'
 
-export type AvatarExpressionName = 'neutral' | 'happy' | 'question' | 'encourage' | 'goodbye' | 'talk' | 'blink'
+export type AvatarExpressionName = 'neutral' | 'happy' | 'question' | 'encourage' | 'goodbye' | 'talk' | 'thinking' | 'blink'
 
 // 动作 → 表情（状态机输出的动作白名单 → 表情名）
 export const ACTION_EXPRESSION_MAP: Record<AvatarActionName, AvatarExpressionName> = {
@@ -23,6 +23,7 @@ export const ACTION_EXPRESSION_MAP: Record<AvatarActionName, AvatarExpressionNam
 
 // 表情 → 施加的 morph target / ExpressionManager 预设（关键词，大小写不敏感子串匹配）
 // question = surprised（惊讶）+ brow（挑眉）；goodbye = sad/smile。
+// thinking 无专用 morph：空目标 = 安全 no-op（不改变当前表情，不报错）。
 export const EXPRESSION_TARGETS: Record<AvatarExpressionName, readonly string[]> = {
   neutral: [],
   happy: ['happy', 'smile'],
@@ -30,6 +31,7 @@ export const EXPRESSION_TARGETS: Record<AvatarExpressionName, readonly string[]>
   encourage: ['happy', 'smile'],
   goodbye: ['sad', 'smile'],
   talk: ['mouthOpen', 'viseme', 'aa', 'oh', 'ih'],
+  thinking: [],
   blink: ['blink', 'eyeBlink'],
 }
 
