@@ -161,7 +161,7 @@ export class AiController {
     let matches: ResourceSearchResult[];
     try {
       matches = await this.resourceService.search(
-        request.user.sub,
+        request.user,
         keyword,
         result.resourceType,
       );
