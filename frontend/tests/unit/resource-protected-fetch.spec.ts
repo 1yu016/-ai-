@@ -7,10 +7,8 @@ import { fetchAuthedBlob } from '@/api/resources'
 // token 绝不进入 URL，并返回可释放的 object URL。
 const originalCreate = URL.createObjectURL
 const originalRevoke = URL.revokeObjectURL
-let created: string[] = []
 
 function setupBlobGlobals() {
-  created = []
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-0' as unknown as string)
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
 }
@@ -19,7 +17,6 @@ describe('fetchAuthedBlob (protected media download)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     setupBlobGlobals()
-    created = ['blob:mock-0']
   })
   afterEach(() => {
     URL.createObjectURL = originalCreate
