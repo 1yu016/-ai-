@@ -232,12 +232,13 @@ describe('commandRuntime 总编排：Device / Classroom / fallback 共用单入�
     expect(resourcePlayer.requestControl).toHaveBeenCalledWith('pause')
   })
 
-  it('AI fallback 未放行 play_resource → unsupported，不执行', async () => {
+  it('AI fallback 放行 play_resource → 进入资源确认流程（resource_pending），不直接交给 DeviceCommandExecutor', async () => {
     const { executors, resourcePlayer } = build()
     const post = vi.fn(async () => ({ intent: 'play_resource', reply: 'xx' }))
     const outcome = await runAiCommandFallback(1, '帮我播放小星星', { text: '帮我播放小星星' }, { post, isCurrent: () => true }, executors)
-    expect(outcome.kind).toBe('unsupported')
-    if (outcome.kind === 'unsupported') expect(outcome.intent).toBe('play_resource')
+    expect(outcome.kind).toBe('resource_pending')
+    if (outcome.kind === 'resource_pending') expect(outcome.intent).toBe('play_resource')
+    // Stage 6.5：资源命令必须经教师确认后才播放；未确认前播放器零副作用。
     expect(resourcePlayer.requestControl).not.toHaveBeenCalled()
   })
 })

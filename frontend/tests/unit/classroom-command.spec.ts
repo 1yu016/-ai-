@@ -349,12 +349,16 @@ describe('Stage 6.2.2 /ai/command 显式 timeout + 安全失败', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
-  it('E) unsupported intent（play_resource）→ 不执行、返回 unsupported 提示', async () => {
+  it('E) 资源意图（play_resource）→ 进入 resource_pending 确认流程，不交给 Executor，不执行', async () => {
     const post = vi.fn(async () => ({ intent: 'play_resource', reply: '当前处于资源步骤。' }))
     const { execute, obj } = countExecutor()
     const outcome = await runAiCommandFallback(1, '播放资源', { text: '播放资源' }, { post, isCurrent: () => true }, obj, AI_COMMAND_TIMEOUT_MS)
-    expect(outcome.kind).toBe('unsupported')
-    if (outcome.kind === 'unsupported') expect(outcome.intent).toBe('play_resource')
+    // Stage 6.5：resource 不再判 unsupported，而是进入待确认流程；确认前绝不执行。
+    expect(outcome.kind).toBe('resource_pending')
+    if (outcome.kind === 'resource_pending') {
+      expect(outcome.intent).toBe('play_resource')
+      expect(outcome.result.candidates).toHaveLength(0)
+    }
     expect(execute).not.toHaveBeenCalled()
   })
 

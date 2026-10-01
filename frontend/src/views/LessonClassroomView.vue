@@ -33,6 +33,10 @@ import {
 import { ClassroomCommandExecutor } from '@/classroom/command/ClassroomCommandExecutor'
 import { useClassroomCommandStore } from '@/stores/classroomCommand'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
+import ResourceCandidatePanel from '@/components/classroom/ResourceCandidatePanel.vue'
+import { resolveExecuteAction } from '@/classroom/command/ResourceCommandCoordinator'
+import type { ResourceCommandResult } from '@/classroom/command/ResourceCommand'
+import type { CourseResource } from '@/stores/courseResource'
 
 const route = useRoute(); const router = useRouter(); const store = useLessonRunStore(); const assistant = useClassroomAssistantStore(); const resources = useCourseResourceStore()
 const digitalHuman = useDigitalHumanStore()
@@ -49,6 +53,8 @@ const { draftReply, teacherTip, loading: assistantLoading, attemptCount, require
 const { roleName: dhRoleName } = storeToRefs(digitalHuman)
 const teacherPrompt = ref(''); const childReply = ref(''); const assistantEnabled = ref(false)
 const commandInput = ref(''); const commandFeedback = ref(''); const commandRunId = ref(0); const commandBusy = ref(false)
+// Stage 6.5：资源命令（search/open/play）的待确认结果；教师确认/取消前绝不产生播放器副作用。
+const resourceCommandResult = ref<ResourceCommandResult | null>(null)
 const voiceRecState = ref<'idle' | 'recording' | 'recognizing'>('idle'); const voiceFeedback = ref('')
 const assistantSpeechLoading = ref(false); const assistantSpeaking = ref(false); const draftAccepted = ref(false)
 let assistantAudio: HTMLAudioElement | null = null
@@ -74,6 +80,7 @@ async function runCommand() {
   const runId = ++commandRunId.value
   commandFeedback.value = ''
   commandBusy.value = true
+  resourceCommandResult.value = null
   commandFeedback.value = AI_COMMAND_PENDING_HINT
   try {
     const outcome = await orchestrateCommand({
@@ -90,7 +97,8 @@ async function runCommand() {
       },
       executors: commandExecutors,
       deps: {
-        post: (url, body, config) => http.post(url, body, config),
+        // 与语音路径一致：http.post 返回 axios response，统一解包到 payload，保证文本/语音同一条管线。
+        post: async (url, body, config) => (await http.post(url, body, config)).data,
         // 迟到响应防护：请求已失效（超时在此期间 / 用户又发起新指令）时不执行。
         isCurrent: (id) => id === commandRunId.value,
       },
@@ -105,14 +113,21 @@ async function runCommand() {
       commandFeedback.value = `${outcome.intent} → ${outcome.message}`
       return
     }
+    if (outcome.kind === 'resource_pending') {
+      // 资源命令：进入教师确认流程（候选区域展示）。未确认前不打开/不播放。
+      commandFeedback.value = outcome.result.reply
+      resourceCommandResult.value =
+        outcome.result.candidates.length > 0 ? outcome.result : null
+      return
+    }
     if (outcome.kind === 'unsupported') {
-      // 白名单外的 intent（search_resource/open_resources/play_resource 等）属后续阶段，
+      // 白名单外的 intent（open_chat/open_resources/start_activity 等）属后续阶段，
       // 明确 unsupported/deferred，绝不自动执行。
       commandFeedback.value = `AI 判读为 ${outcome.intent}，该指令不属于本阶段已批准范围，未执行（交由后续指令系统接入）。`
       classroomCommand.feedback = outcome.reply ?? ''
       return
     }
-    // failed：超时 / 网络错误 / 5xx / 格式非法 —— 统一安全失败，不执行。
+    // failed：超时 / 网络错误 / 5xx / 格式非法 / 疑问否定安全句 —— 统一安全失败，不执行。
     commandFeedback.value = outcome.hint
   } catch {
     if (runId === commandRunId.value) commandFeedback.value = AI_COMMAND_FAILURE_HINT
@@ -126,6 +141,7 @@ async function runCommand() {
 async function runVoiceCommand(audioBlob: Blob) {
   const runId = ++commandRunId.value
   voiceRecState.value = 'recognizing'
+  resourceCommandResult.value = null
   try {
     const text = await asrRecognizeWav(audioBlob, async (url, body, config) => (await http.post(url, body, config)).data)
     if (runId !== commandRunId.value || componentUnmounted) return
@@ -160,6 +176,13 @@ async function runVoiceCommand(audioBlob: Blob) {
       voiceFeedback.value = `${outcome.intent} → ${outcome.message}`
       return
     }
+    if (outcome.kind === 'resource_pending') {
+      // 资源命令（语音与文本共用 commandRuntime）：进入教师确认流程，未确认前不打开/不播放。
+      voiceFeedback.value = outcome.result.reply
+      resourceCommandResult.value =
+        outcome.result.candidates.length > 0 ? outcome.result : null
+      return
+    }
     if (outcome.kind === 'unsupported') {
       voiceFeedback.value = `AI 判读为 ${outcome.intent}，该指令不属于本阶段已批准范围，未执行。`
       return
@@ -171,6 +194,24 @@ async function runVoiceCommand(audioBlob: Blob) {
   } finally {
     if (runId === commandRunId.value && !componentUnmounted) voiceRecState.value = 'idle'
   }
+}
+// ─── 资源命令教师确认（Stage 6.5）──────────────
+// 硬约束：search/open/play 资源命令在教师确认前不产生任何播放器副作用。
+// 确认 → 统一走 resourcePlayer.openResource（protected download 链路）；
+// 取消 → 清空候选，无副作用。
+function confirmResourceCommand(resource: CourseResource) {
+  const result = resourceCommandResult.value
+  if (!result) return
+  const action = resolveExecuteAction(result.intent, resource)
+  resourcePlayer.openResource(resource, action.autoPlay)
+  const actionWord = action.autoPlay ? '播放' : '打开'
+  commandFeedback.value = `已${actionWord}《${resource.title}》。${action.note ?? ''}`
+  resourceCommandResult.value = null
+}
+function cancelResourceCommand() {
+  if (!resourceCommandResult.value) return
+  resourceCommandResult.value = null
+  commandFeedback.value = '已取消，未执行任何资源操作。'
 }
 const voiceRecorder = createClassroomVoiceRecorder({
   onBlob: (blob) => void runVoiceCommand(blob),
@@ -308,6 +349,12 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
               :is-active="isActive"
               @run-command="runCommand"
               @toggle-voice-recording="toggleVoiceRecording"
+            />
+            <ResourceCandidatePanel
+              v-if="resourceCommandResult"
+              :result="resourceCommandResult"
+              @confirm="confirmResourceCommand"
+              @cancel="cancelResourceCommand"
             />
           </div>
         </section>

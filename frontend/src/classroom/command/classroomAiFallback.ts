@@ -17,6 +17,15 @@ import { ClassroomCommandExecutor } from './ClassroomCommandExecutor'
 import { classifyAiDeviceIntent } from './DeviceIntentRouter'
 import type { DeviceCommandExecutor } from './DeviceCommandExecutor'
 import type { DeviceIntent } from './DeviceIntent'
+import {
+  isResourceIntent,
+  type ResourceIntent,
+  type ResourceCommandResult,
+} from './ResourceCommand'
+import {
+  buildResourceResult,
+  evaluateResourceCommand,
+} from './ResourceCommandCoordinator'
 
 /** 仅对 /ai/command 生效的显式超时（毫秒）。不要改为全局。 */
 export const AI_COMMAND_TIMEOUT_MS = 5000
@@ -46,6 +55,11 @@ export type AiCommandOutcome =
       executed: boolean
       message: string
       reason?: string
+    }
+  | {
+      kind: 'resource_pending'
+      intent: ResourceIntent
+      result: ResourceCommandResult
     }
   | { kind: 'unsupported'; intent: string; reply: string }
   | { kind: 'failed'; hint: string }
@@ -85,7 +99,15 @@ export async function runAiCommandFallback(
     if (!deps.isCurrent(runId)) {
       return { kind: 'failed', hint: AI_COMMAND_FAILURE_HINT }
     }
-    const data = res as { intent?: unknown; reply?: unknown }
+    const data = res as {
+      intent?: unknown
+      reply?: unknown
+      keyword?: unknown
+      matchStatus?: unknown
+      resource?: unknown
+      candidates?: unknown
+      requiresConfirmation?: unknown
+    }
     const intent = typeof data?.intent === 'string' ? data.intent : 'unknown'
 
     // ① 媒体设备意图 → DeviceCommandExecutor（仅当调用方提供了 device 执行器）。
@@ -103,7 +125,21 @@ export async function runAiCommandFallback(
       }
     }
 
-    // ② 课堂状态意图 → ClassroomCommandExecutor（白名单内）。
+    // ② 资源意图（search/open/play_resource）→ Resource 确认流程，不进 DeviceCommandExecutor。
+    //    安全句（疑问/否定）在此被拦截；其余一律生成“待确认结果”，绝不自动执行。
+    if (isResourceIntent(intent)) {
+      const safety = evaluateResourceCommand(intent, raw)
+      if (!safety.allowed) {
+        return { kind: 'failed', hint: safety.message }
+      }
+      const result = buildResourceResult(data, safety.intent)
+      if (!result) {
+        return { kind: 'failed', hint: AI_COMMAND_FAILURE_HINT }
+      }
+      return { kind: 'resource_pending', intent: safety.intent, result }
+    }
+
+    // ③ 课堂状态意图 → ClassroomCommandExecutor（白名单内）。
     const verdict = classifyAiIntent(intent, raw)
     if (verdict.allowed) {
       const classroomExecutor = isExecutorGroup(executors)
@@ -113,7 +149,7 @@ export async function runAiCommandFallback(
       return { kind: 'executed', intent, message: result.message }
     }
     const reply = typeof data?.reply === 'string' ? data.reply : ''
-    // ③ 白名单外（search/open/play_resource/open_resources…）→ unsupported，不执行。
+    // ④ 白名单外（open_resources/open_chat/start_activity 等）→ unsupported，不执行。
     return { kind: 'unsupported', intent, reply }
   } catch {
     // 超时 / ECONNABORTED / 网络 / 5xx / 格式非法 —— 统一安全失败。
