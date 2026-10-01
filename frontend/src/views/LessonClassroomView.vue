@@ -16,12 +16,15 @@ import { useClassroomAssistantStore, type AssistantTool } from '@/stores/classro
 import { useCourseResourceStore } from '@/stores/courseResource'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import { isRecordingSupported, webmToWav, RECORDING_MIME_TYPE } from '@/services/recordingAudio'
-import { resolveIntent } from '@/classroom/command/ClassroomIntentRouter'
 import {
   AI_COMMAND_FAILURE_HINT,
   AI_COMMAND_PENDING_HINT,
-  runAiCommandFallback,
 } from '@/classroom/command/classroomAiFallback'
+import {
+  orchestrateCommand,
+  type CommandRuntimeExecutors,
+} from '@/classroom/command/commandRuntime'
+import { DeviceCommandExecutor } from '@/classroom/command/DeviceCommandExecutor'
 import {
   asrRecognizeWav,
   createClassroomVoiceRecorder,
@@ -36,6 +39,11 @@ const digitalHuman = useDigitalHumanStore()
 const classroomCommand = useClassroomCommandStore()
 const resourcePlayer = useResourcePlayerStore()
 const commandExecutor = new ClassroomCommandExecutor(store, resourcePlayer)
+const deviceExecutor = new DeviceCommandExecutor(resourcePlayer)
+const commandExecutors: CommandRuntimeExecutors = {
+  classroom: commandExecutor,
+  device: deviceExecutor,
+}
 const { run, currentStep, currentResource, progress, elapsedSeconds, loading, busy, error } = storeToRefs(store)
 const { draftReply, teacherTip, loading: assistantLoading, attemptCount, requiresTeacherConfirmation } = storeToRefs(assistant)
 const { roleName: dhRoleName } = storeToRefs(digitalHuman)
@@ -65,24 +73,13 @@ async function runCommand() {
   if (!text) return
   const runId = ++commandRunId.value
   commandFeedback.value = ''
-  // 第一层：本地确定性解析（毫秒级、零 AI）。
-  const match = resolveIntent(text)
-  if (match.local && match.command) {
-    await safe(async () => {
-      const result = await commandExecutor.execute(match)
-      commandFeedback.value = `${match.intent} → ${result.message}`
-    })
-    return
-  }
-  // 第二层：无法可靠判断 → 让渡给已有 POST /ai/command 兜底。
-  // 仅限 /ai/command 有显式超时，绝不设全局 timeout；超时即安全失败，不执行。
-  commandFeedback.value = AI_COMMAND_PENDING_HINT
   commandBusy.value = true
+  commandFeedback.value = AI_COMMAND_PENDING_HINT
   try {
-    const outcome = await runAiCommandFallback(
-      runId,
+    const outcome = await orchestrateCommand({
       text,
-      {
+      runId,
+      body: {
         text,
         context: {
           currentPage: 'resources',
@@ -91,20 +88,25 @@ async function runCommand() {
           ageGroup: run.value?.ageGroup || undefined,
         },
       },
-      {
+      executors: commandExecutors,
+      deps: {
         post: (url, body, config) => http.post(url, body, config),
         // 迟到响应防护：请求已失效（超时在此期间 / 用户又发起新指令）时不执行。
         isCurrent: (id) => id === commandRunId.value,
       },
-      commandExecutor,
-    )
+    })
     if (runId !== commandRunId.value) return
+    if (outcome.kind === 'device_executed') {
+      // 媒体命令：反馈真实结果（executed=false 时为“未执行”原因，不显式假成功）。
+      commandFeedback.value = outcome.message
+      return
+    }
     if (outcome.kind === 'executed') {
-      commandFeedback.value = `AI 判读为 ${outcome.intent}，${outcome.message}`
+      commandFeedback.value = `${outcome.intent} → ${outcome.message}`
       return
     }
     if (outcome.kind === 'unsupported') {
-      // 白名单外的 intent（play_resource/open_resources/volume_up 等）属后续 Device Command 阶段，
+      // 白名单外的 intent（search_resource/open_resources/play_resource 等）属后续阶段，
       // 明确 unsupported/deferred，绝不自动执行。
       commandFeedback.value = `AI 判读为 ${outcome.intent}，该指令不属于本阶段已批准范围，未执行（交由后续指令系统接入）。`
       classroomCommand.feedback = outcome.reply ?? ''
@@ -141,7 +143,7 @@ async function runVoiceCommand(audioBlob: Blob) {
         playerStatus: resourcePlayer.playerStatus,
         ageGroup: run.value?.ageGroup || undefined,
       },
-      commandExecutor,
+      commandExecutors,
       {
         // 迟到响应防护：runId 已失效（超时/用户又发起新指令/组件卸载）时不执行。
         post: async (url, body, config) => (await http.post(url, body, config)).data,
@@ -149,6 +151,11 @@ async function runVoiceCommand(audioBlob: Blob) {
       },
     )
     if (runId !== commandRunId.value || componentUnmounted) return
+    if (outcome.kind === 'device_executed') {
+      // 语音媒体命令：反馈真实结果（executed=false 时为“未执行”原因）。
+      voiceFeedback.value = outcome.message
+      return
+    }
     if (outcome.kind === 'executed') {
       voiceFeedback.value = `${outcome.intent} → ${outcome.message}`
       return

@@ -6,6 +6,7 @@ import {
   runAsrTextThroughCommand,
 } from '@/services/voiceCommand'
 import { ClassroomCommandExecutor } from '@/classroom/command/ClassroomCommandExecutor'
+import { DeviceCommandExecutor } from '@/classroom/command/DeviceCommandExecutor'
 import { useLessonRunStore } from '@/stores/lessonRun'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
@@ -18,7 +19,7 @@ vi.mock('@/services/recordingAudio', async (importOriginal) => {
   }
 })
 
-function buildExecutor() {
+function buildExecutors() {
   const next = vi.fn()
   const previous = vi.fn()
   const pause = vi.fn()
@@ -28,8 +29,9 @@ function buildExecutor() {
     next, previous, pause, resume, repeat: reset,
   } as unknown as ReturnType<typeof useLessonRunStore>
   const resourcePlayer = {} as ReturnType<typeof useResourcePlayerStore>
-  const executor = new ClassroomCommandExecutor(lessonRun, resourcePlayer)
-  return { executor, next, previous, pause, resume, reset, lessonRun }
+  const classroom = new ClassroomCommandExecutor(lessonRun, resourcePlayer)
+  const device = new DeviceCommandExecutor(resourcePlayer)
+  return { executors: { classroom, device }, next, previous, pause, resume, reset, lessonRun }
 }
 
 function deps(overrides: Partial<{ isCurrent: () => boolean; post: () => Promise<unknown> }> = {}) {
@@ -41,33 +43,33 @@ function deps(overrides: Partial<{ isCurrent: () => boolean; post: () => Promise
 
 describe('Stage 6.3 语音命令：ASR 文本 → 已有 Command Runtime', () => {
   it('ASR “下一步”→ Router NEXT_STEP → Executor → lessonRun.next', async () => {
-    const { executor, next } = buildExecutor()
-    const outcome = await runAsrTextThroughCommand('下一步', 1, { currentPage: 'resources', playerStatus: 'idle' }, executor, deps())
+    const { executors, next } = buildExecutors()
+    const outcome = await runAsrTextThroughCommand('下一步', 1, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps())
     expect(outcome.kind).toBe('executed')
     if (outcome.kind === 'executed') expect(outcome.intent).toBe(ClassroomIntent.NEXT_STEP)
     expect(next).toHaveBeenCalledTimes(1)
   })
 
   it('ASR “下一步我们要做什么”→ 疑问守卫 → UNKNOWN → 不执行', async () => {
-    const { executor, next } = buildExecutor()
+    const { executors, next } = buildExecutors()
     const post = vi.fn(async () => ({ intent: 'unknown', reply: '' }))
-    const outcome = await runAsrTextThroughCommand('下一步我们要做什么', 1, { currentPage: 'resources', playerStatus: 'idle' }, executor, deps({ post }))
+    const outcome = await runAsrTextThroughCommand('下一步我们要做什么', 1, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps({ post }))
     expect(outcome.kind).toBe('unsupported')
     expect(next).not.toHaveBeenCalled()
   })
 
   it('ASR “不要下一步我们继续讲”→ UNKNOWN → 不执行任何 classroom-run 写操作', async () => {
-    const { executor, next, previous, pause, resume, reset } = buildExecutor()
+    const { executors, next, previous, pause, resume, reset } = buildExecutors()
     const post = vi.fn(async () => ({ intent: 'unknown', reply: '' }))
-    const outcome = await runAsrTextThroughCommand('不要下一步我们继续讲', 1, { currentPage: 'resources', playerStatus: 'idle' }, executor, deps({ post }))
+    const outcome = await runAsrTextThroughCommand('不要下一步我们继续讲', 1, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps({ post }))
     expect(outcome.kind).toBe('unsupported')
     expect(next).not.toHaveBeenCalled(); expect(previous).not.toHaveBeenCalled()
     expect(pause).not.toHaveBeenCalled(); expect(resume).not.toHaveBeenCalled(); expect(reset).not.toHaveBeenCalled()
   })
 
   it('ASR 空文本 → 不执行，提示“没有听清”', async () => {
-    const { executor, next } = buildExecutor()
-    const outcome = await runAsrTextThroughCommand('   ', 1, { currentPage: 'resources', playerStatus: 'idle' }, executor, deps())
+    const { executors, next } = buildExecutors()
+    const outcome = await runAsrTextThroughCommand('   ', 1, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps())
     expect(outcome.kind).toBe('failed')
     if (outcome.kind === 'failed') expect(outcome.hint).toContain('没有听清')
     expect(next).not.toHaveBeenCalled()
@@ -88,18 +90,18 @@ describe('Stage 6.3 语音命令：ASR 文本 → 已有 Command Runtime', () =>
   })
 
   it('fallback timeout → 沿用 Stage 6.2 safe failure（不执行）', async () => {
-    const { executor, next } = buildExecutor()
+    const { executors, next } = buildExecutors()
     const post = vi.fn(async () => { throw new Error('timeout') })
-    const outcome = await runAsrTextThroughCommand('我们回到刚刚认识数字外形的那个环节', 1, { currentPage: 'resources', playerStatus: 'idle' }, executor, deps({ post }))
+    const outcome = await runAsrTextThroughCommand('我们回到刚刚认识数字外形的那个环节', 1, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps({ post }))
     expect(outcome.kind).toBe('failed')
     if (outcome.kind === 'failed') expect(outcome.hint).toContain('未能识别')
     expect(next).not.toHaveBeenCalled()
   })
 
   it('迟到响应：runId 已失效（isCurrent=false）→ 即使返回可执行意图也不执行', async () => {
-    const { executor, next } = buildExecutor()
+    const { executors, next } = buildExecutors()
     const post = vi.fn(async () => ({ intent: 'next_step', reply: '' }))
-    const outcome = await runAsrTextThroughCommand('复杂表达', 42, { currentPage: 'resources', playerStatus: 'idle' }, executor, deps({ post, isCurrent: () => false }))
+    const outcome = await runAsrTextThroughCommand('复杂表达', 42, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps({ post, isCurrent: () => false }))
     expect(outcome.kind).toBe('failed')
     expect(next).not.toHaveBeenCalled()
   })

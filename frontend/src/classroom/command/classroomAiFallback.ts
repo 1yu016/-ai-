@@ -14,6 +14,9 @@
 import { classifyAiIntent } from './ClassroomIntentRouter'
 import { ClassroomIntent, type ClassroomIntentMatch } from './ClassroomIntent'
 import { ClassroomCommandExecutor } from './ClassroomCommandExecutor'
+import { classifyAiDeviceIntent } from './DeviceIntentRouter'
+import type { DeviceCommandExecutor } from './DeviceCommandExecutor'
+import type { DeviceIntent } from './DeviceIntent'
 
 /** 仅对 /ai/command 生效的显式超时（毫秒）。不要改为全局。 */
 export const AI_COMMAND_TIMEOUT_MS = 5000
@@ -37,8 +40,28 @@ export interface AiCommandFallbackDeps {
 
 export type AiCommandOutcome =
   | { kind: 'executed'; intent: string; message: string }
+  | {
+      kind: 'device_executed'
+      intent: DeviceIntent
+      executed: boolean
+      message: string
+      reason?: string
+    }
   | { kind: 'unsupported'; intent: string; reply: string }
   | { kind: 'failed'; hint: string }
+
+/** 命令编排所需的两个执行器（classroom 课堂状态 / device 媒体）。 */
+export interface CommandRuntimeExecutors {
+  classroom: ClassroomCommandExecutor
+  device: DeviceCommandExecutor
+}
+
+/** 兼容参数：允许仅传单个 classroom executor（旧调用方），或 (classroom+device) 组合。 */
+type ExecutorArg = ClassroomCommandExecutor | CommandRuntimeExecutors
+
+function isExecutorGroup(arg: ExecutorArg): arg is CommandRuntimeExecutors {
+  return 'classroom' in arg
+}
 
 /**
  * 执行一次 /ai/command fallback：
@@ -53,7 +76,7 @@ export async function runAiCommandFallback(
   raw: string,
   body: unknown,
   deps: AiCommandFallbackDeps,
-  executor: ClassroomCommandExecutor,
+  executors: ExecutorArg,
   timeoutMs = AI_COMMAND_TIMEOUT_MS,
 ): Promise<AiCommandOutcome> {
   try {
@@ -64,12 +87,33 @@ export async function runAiCommandFallback(
     }
     const data = res as { intent?: unknown; reply?: unknown }
     const intent = typeof data?.intent === 'string' ? data.intent : 'unknown'
+
+    // ① 媒体设备意图 → DeviceCommandExecutor（仅当调用方提供了 device 执行器）。
+    if (isExecutorGroup(executors)) {
+      const deviceVerdict = classifyAiDeviceIntent(intent)
+      if (deviceVerdict.allowed) {
+        const result = executors.device.execute(deviceVerdict.match)
+        return {
+          kind: 'device_executed',
+          intent: deviceVerdict.match.intent,
+          executed: result.executed,
+          message: result.message,
+          ...(result.reason ? { reason: result.reason } : {}),
+        }
+      }
+    }
+
+    // ② 课堂状态意图 → ClassroomCommandExecutor（白名单内）。
     const verdict = classifyAiIntent(intent, raw)
     if (verdict.allowed) {
-      const result = await executor.execute(verdict.match)
+      const classroomExecutor = isExecutorGroup(executors)
+        ? executors.classroom
+        : executors
+      const result = await classroomExecutor.execute(verdict.match)
       return { kind: 'executed', intent, message: result.message }
     }
     const reply = typeof data?.reply === 'string' ? data.reply : ''
+    // ③ 白名单外（search/open/play_resource/open_resources…）→ unsupported，不执行。
     return { kind: 'unsupported', intent, reply }
   } catch {
     // 超时 / ECONNABORTED / 网络 / 5xx / 格式非法 —— 统一安全失败。

@@ -13,22 +13,19 @@
  *  - 任何错误（权限/不支持/空录音/ASR 失败/空 text/fallback 失败）都不执行课堂命令；
  *  - 本模块是纯 TS（除 createClassroomVoiceRecorder 涉及浏览器 API），便于注入 mock 单测。
  */
-import { ClassroomCommandExecutor } from '@/classroom/command/ClassroomCommandExecutor'
-import { resolveIntent } from '@/classroom/command/ClassroomIntentRouter'
+import type { AiCommandFallbackDeps } from '@/classroom/command/classroomAiFallback'
 import {
-  runAiCommandFallback,
-  type AiCommandFallbackDeps,
-} from '@/classroom/command/classroomAiFallback'
+  orchestrateCommand,
+  type CommandRuntimeExecutors,
+  type CommandRuntimeOutcome,
+} from '@/classroom/command/commandRuntime'
 import {
   RECORDING_MIME_TYPE,
   isRecordingSupported,
   webmToWav,
 } from '@/services/recordingAudio'
 
-export type VoiceCommandOutcome =
-  | { kind: 'executed'; intent: string; message: string }
-  | { kind: 'unsupported'; intent: string; reply: string }
-  | { kind: 'failed'; hint: string }
+export type VoiceCommandOutcome = CommandRuntimeOutcome
 
 export interface VoiceCommandContext {
   currentPage: string
@@ -38,7 +35,7 @@ export interface VoiceCommandContext {
 }
 
 /**
- * 把 /ai/asr 识别出的文本跑一遍「本地 Router → AI fallback」流水线。
+ * 把 /ai/asr 识别出的文本跑一遍「Device → Classroom → AI fallback」共用管线。
  * 与文本口令 runCommand 完全同一条命令链路，绝不新建第二套 Router。
  * 返回 outcome，由调用方决定 UI 反馈；本函数不修改任何课堂状态以外的副作用（除 Executor 本身）。
  */
@@ -46,30 +43,18 @@ export async function runAsrTextThroughCommand(
   text: string,
   runId: number,
   context: VoiceCommandContext,
-  executor: ClassroomCommandExecutor,
+  executors: CommandRuntimeExecutors,
   deps: AiCommandFallbackDeps,
   timeoutMs = 5000,
-): Promise<VoiceCommandOutcome> {
-  const trimmed = text.trim()
-  if (!trimmed) {
-    // 空文本：不得执行任何课堂命令。
-    return { kind: 'failed', hint: '没有听清，请再说一次。' }
-  }
-  const match = resolveIntent(trimmed)
-  if (match.local && match.command) {
-    const result = await executor.execute(match)
-    return { kind: 'executed', intent: match.intent, message: result.message }
-  }
-  // UNKNOWN（含疑问句“下一步我们要做什么”、否定句“不要下一步我们继续讲”等）
-  // → 已有 AI fallback：5s timeout + allowlist + safe failure。
-  return runAiCommandFallback(
+): Promise<CommandRuntimeOutcome> {
+  return orchestrateCommand({
+    text,
     runId,
-    trimmed,
-    { text: trimmed, context },
+    body: { text, context },
+    executors,
     deps,
-    executor,
     timeoutMs,
-  )
+  })
 }
 
 export interface ClassroomVoiceRecorderOptions {
