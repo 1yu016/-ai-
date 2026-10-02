@@ -53,11 +53,15 @@ function invalidateMediaLoad() {
   mediaLoadSeq += 1
 }
 function releaseActiveBlob() {
-  if (activeBlobRevoke) {
-    activeBlobRevoke()
-    activeBlobRevoke = null
-  }
   if (mediaSource.value) mediaSource.value = ''
+  const revoke = activeBlobRevoke
+  activeBlobRevoke = null
+  if (revoke) {
+    // 先让 Vue 在下一次 DOM 更新中清掉 <audio>/<video> 对 blob 的 src 引用，
+    // 再回收 object URL；若在元素仍引用 blob 时 revoke，Chromium 会中止加载并
+    // 在 console 记录 net::ERR_ABORTED。
+    void nextTick(revoke)
+  }
 }
 async function loadMediaSource(resource: CourseResource) {
   const loadId = ++mediaLoadSeq
@@ -270,9 +274,13 @@ async function exitClassroomMode() {
 async function closePlayer() {
   invalidateMediaLoad()
   stopMediaElements()
-  releaseActiveBlob()
   await exitClassroomMode()
   playerStore.close()
+  // 等 currentResource 置空后 <audio>/<video> 已从 DOM 卸载，再回收 blob。
+  // 若在元素仍引用 blob 时 revoke，Chromium 会中止加载并在 console 记录
+  // net::ERR_ABORTED。
+  await nextTick()
+  releaseActiveBlob()
 }
 
 function handleFullscreenChange() {

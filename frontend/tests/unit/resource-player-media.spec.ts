@@ -117,6 +117,8 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
     await openVideo(useResourcePlayerStore(), videoResource)
     wrapper.unmount()
+    // blob 回收在元素 src 引用清空后的 nextTick 执行，需等待微任务。
+    await flushPromises()
     expect(revokeSpies[0]).toHaveBeenCalled()
   })
 
