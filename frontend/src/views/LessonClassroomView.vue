@@ -11,6 +11,7 @@ import ClassroomControlBar from '@/components/classroom/ClassroomControlBar.vue'
 import ClassroomAssistantPanel from '@/components/classroom/ClassroomAssistantPanel.vue'
 import ClassroomVoiceControl from '@/components/classroom/ClassroomVoiceControl.vue'
 import ClassroomPartnerPanel from '@/components/classroom/ClassroomPartnerPanel.vue'
+import ClassRewardDrawer from '@/components/classroom/ClassRewardDrawer.vue'
 import { useLessonRunStore } from '@/stores/lessonRun'
 import { useClassroomAssistantStore, type AssistantTool } from '@/stores/classroomAssistant'
 import { useCourseResourceStore } from '@/stores/courseResource'
@@ -37,6 +38,10 @@ import ResourceCandidatePanel from '@/components/classroom/ResourceCandidatePane
 import { resolveExecuteAction } from '@/classroom/command/ResourceCommandCoordinator'
 import type { ResourceCommandResult } from '@/classroom/command/ResourceCommand'
 import type { CourseResource } from '@/stores/courseResource'
+import {
+  listRunRewards,
+  type RewardRecord,
+} from '@/services/classroomCheckpoint'
 
 const route = useRoute(); const router = useRouter(); const store = useLessonRunStore(); const assistant = useClassroomAssistantStore(); const resources = useCourseResourceStore()
 const digitalHuman = useDigitalHumanStore()
@@ -62,6 +67,30 @@ const childRecording = ref(false); const childRequestingMicrophone = ref(false);
 let childMediaRecorder: MediaRecorder | null = null; let childMediaStream: MediaStream | null = null; let childAudioChunks: Blob[] = []; let childRecordingGeneration = 0; let componentUnmounted = false
 // 左侧环节导航折叠：纯前端状态，禁止调用 backend / 修改 ClassroomRun / snapshot。较窄屏幕默认收起。
 const stepSidebarCollapsed = ref(window.innerWidth < 1280)
+// Stage 7.3：本节课奖励入口（drawer 展示独立 RewardRecord，X 为累计星星数）。
+const rewards = ref<RewardRecord[]>([])
+const runRewardTotal = ref(0)
+const rewardDrawerOpen = ref(false)
+const rewardsLoading = ref(false)
+async function loadRewards() {
+  const current = run.value
+  if (!current) return
+  rewardsLoading.value = true
+  try {
+    const payload = await listRunRewards(current.id)
+    rewards.value = payload.items
+    runRewardTotal.value = payload.items.reduce((sum, r) => sum + r.stars, 0)
+  } catch {
+    rewards.value = []
+    runRewardTotal.value = 0
+  } finally {
+    rewardsLoading.value = false
+  }
+}
+async function openRewardDrawer() {
+  await loadRewards()
+  rewardDrawerOpen.value = true
+}
 const isActive = computed(() => run.value?.status === 'running' || run.value?.status === 'paused')
 const paused = computed(() => run.value?.status === 'paused')
 const childVoiceStatus = computed(() => childRequestingMicrophone.value ? '正在请求麦克风权限…' : childRecording.value ? '录音中，请让孩子说话，说完再点一次' : childRecognizing.value ? '正在识别孩子的回答…' : '')
@@ -264,6 +293,10 @@ watch(currentResource, (resource) => {
   digitalHuman.setCompact(Boolean(resource))
 }, { immediate: true })
 watch(draftReply, () => { draftAccepted.value = false; stopAssistantSpeech() })
+// Stage 7.3：run 就绪后自动加载本节课奖励汇总（X 计数）。
+watch(run, (current) => {
+  if (current?.id) void loadRewards()
+})
 onMounted(async () => { window.addEventListener('beforeunload', beforeUnload); await store.load(Number(route.params.runId)).catch(() => undefined) })
 onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); voiceRecorder.cancel(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
 </script>
@@ -378,6 +411,21 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
         @resume="safe(store.resume)"
         @finish-complete="finish('complete')"
         @finish-cancel="finish('cancel')"
+      >
+        <template #extra>
+          <div class="control-group reward">
+            <span class="group-label">奖励</span>
+            <ElButton size="large" :disabled="rewardsLoading" @click="openRewardDrawer">
+              🌟 本节课奖励（{{ runRewardTotal }}）
+            </ElButton>
+          </div>
+        </template>
+      </ClassroomControlBar>
+      <ClassRewardDrawer
+        v-model="rewardDrawerOpen"
+        :rewards="rewards"
+        :total-stars="runRewardTotal"
+        :loading="rewardsLoading"
       />
       <ResourcePlayer :resources="currentResource ? [currentResource] : resources.sortedResources" />
     </template>
@@ -447,6 +495,7 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
 .resource-card strong { color: #4F3D31; font-size: 16px; }
 .resource-card p { margin: 4px 0 0; color: #718064; font-size: 14px; line-height: 1.6; }
 .resource-card :deep(.el-button) { border-radius: 12px; }
+.control-group.reward { border-left: 1px solid #E8DED1; }
 .center { min-height: 70vh; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 16px; }
 .error { color: #E76F6F; }
 .ended h1 { margin: 0; font-size: 28px; }

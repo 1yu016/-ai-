@@ -24,6 +24,7 @@ const router = createRouter({
     { path: '/my-classes', name: 'my-classes', meta: { requiresAuth: true }, component: () => import('../views/MyClassesView.vue') },
     { path: '/students', name: 'student-center', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentCenterView.vue') },
     { path: '/classes/:classId/students', name: 'students', meta: { requiresAuth: true }, component: () => import('../views/StudentsView.vue') },
+    { path: '/classes/:classId/rewards', name: 'class-rewards', meta: { requiresAuth: true }, component: () => import('../views/ClassRewardHistoryView.vue') },
     { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentProfileView.vue') },
     { path: '/devices', name: 'devices', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/DevicesView.vue') },
     { path: '/classroom/scan', name: 'classroom-scan', meta: { requiresAuth: true }, component: () => import('../views/ClassroomScanView.vue') },
@@ -58,6 +59,9 @@ const router = createRouter({
       meta: { requiresAuth: true },
       component: () => import('../views/LessonClassroomView.vue'),
     },
+    { path: '/classroom/engagement', name: 'classroom-engagement', meta: { requiresAuth: true }, component: () => import('../views/ClassroomOperationsView.vue') },
+    { path: '/classroom/insights', name: 'classroom-insights', meta: { requiresAuth: true }, component: () => import('../views/ClassroomOperationsView.vue') },
+    { path: '/classroom/remote', name: 'classroom-remote', meta: { requiresAuth: true }, component: () => import('../views/ClassroomOperationsView.vue') },
     // 资源库（静态路由在前，动态 :id 在后，避免抢先匹配 upload/preview/edit/review）
     { path: '/resources', name: 'resources', meta: { requiresAuth: true }, component: () => import('../views/resources/ResourceLibraryView.vue') },
     { path: '/resources/upload', name: 'resource-upload', meta: { requiresAuth: true }, component: () => import('../views/resources/UploadView.vue') },

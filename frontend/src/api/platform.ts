@@ -26,6 +26,30 @@ export type TeacherItem = {
   classes: { classId: number; className: string; role: string }[]
 }
 
+export type RewardRecord = {
+  id: number
+  studentId: number
+  studentName: string | null
+  classId: number
+  classroomRunId: number
+  lessonTitle?: string | null
+  runAt?: string | null
+  teacherId: number
+  teacherName: string | null
+  rewardType: string
+  stars: number
+  reason: string | null
+  createdAt: string
+}
+
+export type ClassRewardPage = {
+  items: RewardRecord[]
+  total: number
+  page: number
+  pageSize: number
+  summary: { classId: number; className: string; totalStars: number }
+}
+
 export const platformApi = {
   classes: (page = 1) => http.get<Page<SchoolClass>>('/classes', { params: { page, pageSize: 50 } }),
   listClasses: (page = 1) => http.get<Page<SchoolClass>>('/classes', { params: { page, pageSize: 50 } }),
@@ -54,4 +78,5 @@ export const platformApi = {
   classDeviceBindings: (classId: number) => http.get<ClassDeviceBinding[]>(`/classes/${classId}/device-bindings`),
   bindTeacher: (classId: number, data: { teacherId: number; role: string }) => http.post(`/classes/${classId}/teachers`, data),
   unbindTeacher: (classId: number, teacherId: number) => http.delete(`/classes/${classId}/teachers/${teacherId}`),
+  classRewards: (classId: number, params: { page?: number; pageSize?: number; studentId?: number } = {}) => http.get<ClassRewardPage>(`/classes/${classId}/rewards`, { params }),
 }

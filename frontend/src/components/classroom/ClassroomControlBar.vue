@@ -37,6 +37,7 @@ const emit = defineEmits<{
       <ElButton size="large" type="danger" :loading="busy" :disabled="busy" @click="emit('finishComplete')">结束课堂</ElButton>
       <ElButton size="large" type="danger" plain :disabled="busy" @click="emit('finishCancel')">中止</ElButton>
     </div>
+    <slot name="extra" />
   </footer>
 </template>
 
