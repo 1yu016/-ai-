@@ -1,6 +1,7 @@
-import { computed, onScopeDispose, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { apiErrorMessage, http } from '@/api/http'
+import { resourceAccessMessage } from '@/api/resources'
 import type { CourseResource } from './courseResource'
 import { useCourseResourceStore } from './courseResource'
 import { useResourcePlayerStore } from './resourcePlayer'
@@ -12,6 +13,9 @@ export type LessonRun = { id: number; runId?: number; lessonPlanId: number; devi
 
 // 后端 GET/POST /classroom-runs 返回的原始结构：标题字段为 title，不返回 ageGroup，但返回 objectives（教案教学目标）。
 export type ClassroomRunPayload = { id: number; lessonPlanId: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; title: string; objectives?: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number; serverNow?: string; breakStartedAt?: string | null; breakEndsAt?: string | null }
+
+// 当前步骤绑定资源的解析状态：loading（fallback 请求中）/ ready（可用）/ missing（404/403/网络失败，给出可展示提示）。
+export type ResourceResolveState = { status: 'idle' | 'loading' | 'ready' | 'missing'; message: string }
 
 // 将后端返回映射为前端 LessonRun：title → lessonTitle，缺失字段使用安全默认值。objectives 即教案教学目标，做 trim 防空白。
 function adaptRun(data: ClassroomRunPayload): LessonRun {
@@ -45,7 +49,47 @@ export const useLessonRunStore = defineStore('lessonRun', () => {
   // serverNow 时钟校准：serverOffset = 服务器时间 - 本机时间；nowTick 每秒递增驱动倒计时重算
   const serverOffset = ref(0); const nowTick = ref(0); const polling = ref(false); let pollTimer: number | null = null; let pollInFlight = false
   const currentStep = computed(() => run.value?.steps.find((step) => step.stepIndex === run.value?.currentStepIndex) ?? null)
-  const currentResource = computed<CourseResource | null>(() => { const id = currentStep.value?.resourceId; return id == null ? null : resources.sortedResources.find((item) => Number(item.id) === id) ?? null })
+  // Stage 6.6：当前步骤绑定的资源。先从已加载列表/按 id 缓存同步解析；
+  // 不在列表中时由 resolveCurrentResource() 走 GET /resources/:id fallback 后再命中缓存。
+  const currentResource = computed<CourseResource | null>(() => {
+    const id = currentStep.value?.resourceId
+    return id == null ? null : resources.getResourceById(id)
+  })
+  // 资源解析状态：loading（fallback 请求中）/ ready（可用）/ missing（404/403/网络失败，给出可展示提示）。
+  const resourceResolveState = ref<ResourceResolveState>({ status: 'idle', message: '' })
+  // 世代号：快速切换步骤时，丢弃旧步骤资源的迟到响应，防止其覆盖最新步骤的状态。
+  let resourceResolveSeq = 0
+  async function resolveCurrentResource() {
+    const step = currentStep.value
+    const id = step?.resourceId == null ? null : Number(step.resourceId)
+    const seq = ++resourceResolveSeq
+    if (id == null || !Number.isInteger(id)) {
+      resourceResolveState.value = { status: 'idle', message: '' }
+      return
+    }
+    if (resources.getResourceById(id)) {
+      resourceResolveState.value = { status: 'ready', message: '' }
+      return
+    }
+    resourceResolveState.value = { status: 'loading', message: '' }
+    try {
+      await resources.ensureResourceById(id)
+      if (seq !== resourceResolveSeq) return
+      resourceResolveState.value = { status: 'ready', message: '' }
+    } catch (cause) {
+      if (seq !== resourceResolveSeq) return
+      resourceResolveState.value = { status: 'missing', message: resourceAccessMessage(cause) }
+    }
+  }
+  watch(currentStep, (step, previous) => {
+    if (!step || !run.value) {
+      resourceResolveState.value = { status: 'idle', message: '' }
+      return
+    }
+    const changed =
+      !previous || previous.stepIndex !== step.stepIndex || previous.resourceId !== step.resourceId
+    if (changed) void resolveCurrentResource()
+  })
   const progress = computed(() => run.value?.steps.length ? ((run.value.currentStepIndex + 1) / run.value.steps.length) * 100 : 0)
   function stopTimer() { if (timer !== null) window.clearInterval(timer); timer = null }
   function syncTimer() { stopTimer(); if (!run.value) return; elapsedSeconds.value = run.value.elapsedSeconds ?? Math.max(0, Math.floor((new Date(run.value.status === 'paused' ? run.value.updatedAt : Date.now()).getTime() - new Date(run.value.startedAt).getTime()) / 1000)); if (run.value.status === 'running') timer = window.setInterval(() => { elapsedSeconds.value += 1; nowTick.value += 1 }, 1000) }
@@ -72,5 +116,5 @@ export const useLessonRunStore = defineStore('lessonRun', () => {
   function openResource() { if (currentResource.value) player.openResource(currentResource.value, false) }
   function clear() { clearRun(); player.requestControl('stop'); assistant.endInteraction() }
   onScopeDispose(() => { stopTimer(); stopPolling() })
-  return { run, loading, busy, error, elapsedSeconds, serverOffset, isBreakActive, breakRemainingSeconds, polling, currentStep, currentResource, progress, load, adoptRun, clearRun, move, previous, next, repeat, pause: () => action('pause'), resume: () => action('resume'), complete: () => action('complete'), cancel: () => action('cancel'), startBreak, endBreak, startPolling, stopPolling, openResource, clear }
+  return { run, loading, busy, error, elapsedSeconds, serverOffset, isBreakActive, breakRemainingSeconds, polling, currentStep, currentResource, resourceResolveState, progress, load, adoptRun, clearRun, move, previous, next, repeat, pause: () => action('pause'), resume: () => action('resume'), complete: () => action('complete'), cancel: () => action('cancel'), startBreak, endBreak, startPolling, stopPolling, openResource, resolveCurrentResource, clear }
 })

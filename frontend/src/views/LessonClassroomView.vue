@@ -53,7 +53,7 @@ const commandExecutors: CommandRuntimeExecutors = {
   classroom: commandExecutor,
   device: deviceExecutor,
 }
-const { run, currentStep, currentResource, progress, elapsedSeconds, loading, busy, error, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
+const { run, currentStep, currentResource, resourceResolveState, progress, elapsedSeconds, loading, busy, error, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
 const { draftReply, teacherTip, loading: assistantLoading, attemptCount, requiresTeacherConfirmation } = storeToRefs(assistant)
 const { roleName: dhRoleName } = storeToRefs(digitalHuman)
 const teacherPrompt = ref(''); const childReply = ref(''); const assistantEnabled = ref(false)
@@ -355,10 +355,20 @@ onBeforeUnmount(() => { store.stopPolling(); componentUnmounted = true; window.r
               </div>
               <div v-if="currentStep.type === 'resource'" class="resource-card">
                 <div>
-                  <strong>{{ currentResource?.title ?? '资源已失效' }}</strong>
-                  <p>{{ currentResource ? '点击后打开现有统一播放器，不会自动播放。' : '该资源已删除或无权访问，可继续切换其他环节。' }}</p>
+                  <template v-if="resourceResolveState.status === 'loading'">
+                    <strong>正在加载资源…</strong>
+                    <p>正在获取步骤绑定的教学资源，请稍候。</p>
+                  </template>
+                  <template v-else-if="resourceResolveState.status === 'missing'">
+                    <strong>资源不可用</strong>
+                    <p>{{ resourceResolveState.message }}（可切换到其他环节继续上课）</p>
+                  </template>
+                  <template v-else>
+                    <strong>{{ currentResource?.title ?? '资源已失效' }}</strong>
+                    <p>{{ currentResource ? '点击后打开现有统一播放器，不会自动播放。' : '该资源已删除或无权访问，可继续切换其他环节。' }}</p>
+                  </template>
                 </div>
-                <ElButton type="primary" size="large" :disabled="!currentResource" @click="store.openResource">打开资源</ElButton>
+                <ElButton type="primary" size="large" :disabled="!currentResource || resourceResolveState.status === 'loading'" @click="store.openResource">打开资源</ElButton>
               </div>
             </section>
             <ClassroomAssistantPanel

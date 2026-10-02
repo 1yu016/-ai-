@@ -14,9 +14,19 @@ const selectorOpen = ref(false); const selectedStepIndex = ref(-1)
 const aiDialogOpen = ref(false); const aiTheme = ref(''); const aiObjectives = ref(''); const aiDomain = ref('')
 const isEdit = computed(() => Number.isInteger(Number(route.params.id)))
 const stepTypeText: Record<string,string> = { introduction:'导入', teacher_talk:'教师讲述', question:'提问', resource:'资源', activity:'活动', transition:'过渡', summary:'总结' }
-const selectedResource = (id?: number | null) => resources.sortedResources.find((item) => item.id === id)
+// Stage 6.6：回显查找优先用缓存感知的 getResourceById（覆盖不在前 100 条已加载列表的资源）。
+const selectedResource = (id?: number | null) => (id == null ? null : resources.getResourceById(id))
 function selectResource(index: number) { selectedStepIndex.value = index; selectorOpen.value = true }
 function updateResource(value: number | null) { const step = store.steps[selectedStepIndex.value]; if (!step) return; step.resourceId = value; store.markDirty() }
+// 编辑已有教案时预加载所有已绑定资源，保证 >100 条场景下也能正确回显标题（失败静默，回显兜底为“资源已失效”）。
+function preloadBoundResources() {
+  for (const step of store.steps) {
+    const id = step.resourceId
+    if (id != null && !resources.getResourceById(id)) {
+      void resources.ensureResourceById(Number(id)).catch(() => undefined)
+    }
+  }
+}
 function preview(step: LessonStep) { const resource = selectedResource(step.resourceId); if (resource) resourcesPlayer(resource) }
 function resourcesPlayer(resource: CourseResource) { import('@/stores/resourcePlayer').then(({ useResourcePlayerStore }) => useResourcePlayerStore().openResource(resource, false)) }
 function validate(): string | null { if (!draft.value.title.trim()) return '请填写教案标题'; if (!draft.value.theme.trim()) return '请填写课堂主题'; if (!draft.value.objectives.trim()) return '请填写教学目标'; for (const [index, step] of store.steps.entries()) { if (!step.title.trim()) return `第 ${index + 1} 个步骤缺少标题`; if (!step.instruction.trim()) return `第 ${index + 1} 个步骤缺少指导语`; if (step.stepType === 'resource' && !step.resourceId) return `第 ${index + 1} 个资源步骤尚未选择资源` } return null }
@@ -31,6 +41,7 @@ onMounted(async () => {
   const tasks: Promise<unknown>[] = [resources.refreshLibrary()]
   if (isEdit.value) tasks.push(store.load(Number(route.params.id)).catch((e) => ElMessage.error(e instanceof Error ? e.message : '加载失败')))
   await Promise.all(tasks)
+  preloadBoundResources()
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 </script>

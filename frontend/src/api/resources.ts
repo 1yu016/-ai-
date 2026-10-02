@@ -1,3 +1,4 @@
+import axios from 'axios'
 import { http } from './http'
 
 /** 资源类型，对齐后端 ResourceType 枚举 */
@@ -206,6 +207,18 @@ export async function fetchAuthedBlob(
   const url = URL.createObjectURL(response.data)
   const revoke = () => URL.revokeObjectURL(url)
   return { url, revoke }
+}
+
+/** 将单资源获取失败映射为可展示提示：404 资源失效 / 403 无权 / 其余网络或加载失败（课堂不白屏、可重试）。 */
+export function resourceAccessMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status
+    if (status === 404) return '该教学资源已不可用或已被删除'
+    if (status === 403) return '无权访问该教学资源，请联系管理员'
+    if (!error.response) return '网络连接失败，请检查网络后重试'
+  }
+  if (error instanceof Error && error.message) return error.message
+  return '资源加载失败，请检查网络后重试'
 }
 
 export const resourceApi = {
