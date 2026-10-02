@@ -47,10 +47,11 @@ function submit() {
         <button @click="emit('remote', 'pause')">⏸ 暂停</button>
         <button @click="emit('remote', 'resume')">▶ 恢复</button>
         <button @click="emit('remote', 'next')">下一环节 →</button>
-        <button @click="remoteCommand = '播放课程资源'">播放资源</button>
-        <button @click="remoteCommand = '随机点名'">随机点名</button>
-        <button @click="remoteCommand = '开始课间模式'">课间模式</button>
       </div>
+      <p class="muted">
+        「随机点名」「课间模式」请在考勤与奖励页使用其专属入口；
+        播放/搜索资源请输入或说出课堂指令。
+      </p>
       <p v-if="remoteFeedback" class="feedback">{{ remoteFeedback }}</p>
       <div class="command-input">
         <input

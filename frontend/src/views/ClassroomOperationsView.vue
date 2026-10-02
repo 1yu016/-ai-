@@ -17,15 +17,10 @@ import AttendancePanel from '@/components/classroom/operations/AttendancePanel.v
 import RewardPanel from '@/components/classroom/operations/RewardPanel.vue'
 import BreakModePanel from '@/components/classroom/operations/BreakModePanel.vue'
 import RemoteControlPanel from '@/components/classroom/operations/RemoteControlPanel.vue'
+import QuestionRecordPanel from '@/components/classroom/operations/QuestionRecordPanel.vue'
+import ArtworkReviewPanel from '@/components/classroom/operations/ArtworkReviewPanel.vue'
 
 type Tab = 'engagement' | 'insights' | 'remote'
-type Question = {
-  id: number
-  text: string
-  topic: string
-  createdAt: string
-  student?: string
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -46,14 +41,6 @@ const attendance = ref<Record<number, Attendance>>({})
 const selectedStudent = ref<number | null>(null)
 const awards = ref<Record<number, number>>({})
 const rollMessage = ref('')
-const questions = ref<Question[]>(
-  JSON.parse(localStorage.getItem('classroom-questions') || '[]'),
-)
-const questionDraft = ref('')
-const topicDraft = ref('生活观察')
-const drawingFile = ref<File | null>(null)
-const drawingDraft = ref('')
-const drawingStatus = ref<'idle' | 'ready' | 'reviewed'>('idle')
 // Stage 7.4：课堂/课间权威状态来自 lessonRun store（breakStartedAt/breakEndsAt + serverNow 时钟校准）。
 // run 直接复用 store 的 run，保证与 LessonClassroomView/大屏通过 polling 多端同步。
 const store = useLessonRunStore()
@@ -195,35 +182,6 @@ async function endBreak() {
   }
 }
 
-function addQuestion() {
-  const text = questionDraft.value.trim()
-  if (!text) return
-  questions.value.unshift({
-    id: Date.now(),
-    text,
-    topic: topicDraft.value,
-    createdAt: new Date().toLocaleString('zh-CN'),
-    student: selectedStudent.value
-      ? students.value.find((s) => s.id === selectedStudent.value)?.name
-      : undefined,
-  })
-  localStorage.setItem('classroom-questions', JSON.stringify(questions.value))
-  questionDraft.value = ''
-}
-
-function selectDrawing(event: Event) {
-  drawingFile.value = (event.target as HTMLInputElement).files?.[0] ?? null
-  drawingStatus.value = drawingFile.value ? 'ready' : 'idle'
-  drawingDraft.value = ''
-}
-
-function reviewDrawing() {
-  if (!drawingFile.value) return
-  drawingDraft.value =
-    '这幅作品很有想法，画面中的颜色和细节表达了你的观察。你愿意说说最喜欢哪一个部分吗？下次可以试着给背景增加更多小细节。'
-  drawingStatus.value = 'reviewed'
-}
-
 async function remote(action: 'pause' | 'resume' | 'next') {
   if (!run.value) {
     remoteFeedback.value = '当前没有进行中的课堂，请先从教案进入课堂。'
@@ -247,9 +205,7 @@ async function remote(action: 'pause' | 'resume' | 'next') {
           ? '课堂已暂停。'
           : '课堂已恢复。'
   } catch (e) {
-    remoteFeedback.value = apiErrorMessage(e, '指令未执行，已加入待重试队列。')
-    pendingCommands.value.push(action)
-    localStorage.setItem('classroom-command-queue', JSON.stringify(pendingCommands.value))
+    remoteFeedback.value = apiErrorMessage(e, '指令未执行，请重试。')
   }
 }
 
@@ -258,8 +214,8 @@ async function sendCommand(text: string) {
   if (!trimmed) return
   if (!online.value) {
     pendingCommands.value.push(trimmed)
-    localStorage.setItem('classroom-command-queue', JSON.stringify(pendingCommands.value))
-    remoteFeedback.value = '当前离线，指令已排队，网络恢复后可重试。'
+    persistPendingCommands()
+    remoteFeedback.value = '当前离线，指令已加入待重发队列，网络恢复后自动重试。'
     return
   }
   try {
@@ -273,12 +229,41 @@ async function sendCommand(text: string) {
   }
 }
 
+function persistPendingCommands() {
+  localStorage.setItem('classroom-command-queue', JSON.stringify(pendingCommands.value))
+}
+
+// 网络恢复后自动重发待队列指令；每条失败都再次保留，供下次重试。
+async function replayPendingCommands() {
+  if (!online.value || !pendingCommands.value.length) return
+  const pending = pendingCommands.value
+  pendingCommands.value = []
+  persistPendingCommands()
+  for (const text of pending) {
+    // 逐条尝试，避免一条异常打断后续指令。
+    remoteFeedback.value = `正在重发离线指令：${text}`
+    try {
+      await http.post<{ reply?: string }>('/ai/command', {
+        text,
+        context: { currentPage: 'chat', playerStatus: 'idle' },
+      })
+    } catch {
+      pendingCommands.value.push(text)
+    }
+  }
+  persistPendingCommands()
+  remoteFeedback.value = pendingCommands.value.length
+    ? `仍有 ${pendingCommands.value.length} 条指令待重发。`
+    : '离线指令已全部重发完成。'
+}
+
 function go(item: (typeof tabItems)[number]) {
   void router.push(item.route)
 }
 
 function onlineChanged() {
   online.value = navigator.onLine
+  if (online.value) void replayPendingCommands()
 }
 
 onMounted(() => {
@@ -369,67 +354,22 @@ onBeforeUnmount(() => {
 
     <template v-else-if="tab === 'insights'">
       <div class="insights-grid">
-        <section class="panel">
-          <div class="section-head">
-            <div>
-              <h2>幼儿问题地图</h2>
-              <p class="muted">记录问题并按主题聚合，当前先保存在本机。</p>
-            </div>
-            <span class="pill">{{ questions.length }} 条问题</span>
-          </div>
-          <div class="question-form">
-            <input
-              v-model="questionDraft"
-              placeholder="记录幼儿刚才的问题…"
-              @keyup.enter="addQuestion"
-            >
-            <select v-model="topicDraft">
-              <option>生活观察</option>
-              <option>科学探索</option>
-              <option>语言表达</option>
-              <option>艺术创作</option>
-            </select>
-            <button class="button" @click="addQuestion">记录问题</button>
-          </div>
-          <div class="question-list">
-            <article v-for="question in questions" :key="question.id">
-              <span class="topic">{{ question.topic }}</span>
-              <div>
-                <strong>{{ question.text }}</strong>
-                <small>
-                  {{ question.student ? `${question.student} · ` : ''
-                  }}{{ question.createdAt }}
-                </small>
-              </div>
-            </article>
-            <p v-if="!questions.length" class="empty">
-              还没有记录，课堂中遇到好问题就记下来吧。
-            </p>
-          </div>
+        <QuestionRecordPanel
+          v-if="run"
+          :run-id="run.id"
+          :lesson-step-index="run.currentStepIndex"
+          :students="students"
+        />
+        <section v-else class="panel">
+          <h2>幼儿问题记录</h2>
+          <p class="muted">请先从教案点击"进入课堂"开始上课，再记录本节问题。</p>
         </section>
-        <section class="panel drawing">
-          <h2>绘画作品评价</h2>
-          <p class="muted">上传后先生成可编辑草稿，确认后再播放给幼儿。</p>
-          <label class="upload-box">
-            <span>🖼️</span>
-            <strong>{{ drawingFile ? drawingFile.name : '选择一幅作品' }}</strong>
-            <small>支持 JPG、PNG</small>
-            <input type="file" accept="image/png,image/jpeg" @change="selectDrawing">
-          </label>
-          <button class="button" :disabled="!drawingFile" @click="reviewDrawing">
-            生成评价草稿
-          </button>
-          <div v-if="drawingStatus === 'reviewed'" class="draft">
-            <span class="pill">待教师确认</span>
-            <textarea v-model="drawingDraft" rows="5"></textarea>
-            <div>
-              <button class="button" @click="ElMessage.success('已确认，可在课堂中播放')">
-                确认并播放
-              </button>
-              <button class="ghost" @click="drawingStatus = 'ready'">重新生成</button>
-            </div>
-          </div>
-        </section>
+        <ArtworkReviewPanel
+          v-if="run"
+          :run-id="run.id"
+          :lesson-step-index="run.currentStepIndex"
+          :students="students"
+        />
       </div>
     </template>
 
@@ -707,6 +647,24 @@ onBeforeUnmount(() => {
 .draft div {
   display: flex;
   gap: 8px;
+}
+.blocked-notice {
+  padding: 14px 16px;
+  border: 1px dashed #d9a77e;
+  border-radius: 12px;
+  background: #fff6ec;
+  color: #876b5d;
+  margin-top: 12px;
+}
+.tag {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f5d9bf;
+  color: #a9654c;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
 }
 .feedback,
 .alert {
