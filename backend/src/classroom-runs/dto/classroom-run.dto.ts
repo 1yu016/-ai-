@@ -63,6 +63,14 @@ export class TakeoverClassroomRunDto extends RequestIdDto {
 
 export class RecoverClassroomRunDto extends ClassroomRunOperationDto {}
 
+/** Stage 7.4：开始课间。durationSeconds 限制在 1..1800（前端提供 180/300/600）。 */
+export class StartClassroomBreakDto extends ClassroomRunOperationDto {
+  @Type(() => Number) @IsInt() @Min(1) @Max(1800) durationSeconds: number;
+}
+
+/** Stage 7.4：提前结束课间。 */
+export class EndClassroomBreakDto extends ClassroomRunOperationDto {}
+
 export class ClassroomCheckpointDto extends ClassroomRunOperationDto {
   @IsEnum(ClassroomCheckpointType) checkpointType: ClassroomCheckpointType;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) resourceId?: number;

@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Post,
@@ -19,8 +21,10 @@ import {
   ClassroomCheckpointDto,
   ClassroomRunOperationDto,
   CreateClassroomRewardDto,
+  EndClassroomBreakDto,
   RecoverClassroomRunDto,
   RestoreClassroomRunQueryDto,
+  StartClassroomBreakDto,
   StartClassroomRunDto,
   TakeoverClassroomRunDto,
   SetClassroomAvatarBindingDto,
@@ -102,6 +106,25 @@ export class ClassroomRunController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.service.cancel(request.user, id, dto);
+  }
+
+  @Post(':id/break')
+  startBreak(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: StartClassroomBreakDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.startBreak(request.user, id, dto);
+  }
+
+  @Post(':id/break/end')
+  @HttpCode(HttpStatus.OK)
+  endBreak(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: EndClassroomBreakDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.endBreak(request.user, id, dto);
   }
 
   @Post(':id/steps/:stepIndex')

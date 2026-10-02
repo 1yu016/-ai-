@@ -48,13 +48,16 @@ import {
   ClassroomEventType,
   ClassroomRunStatus,
   ClassroomSnapshotReason,
+  isBreakActive,
   TERMINAL_CLASSROOM_RUN_STATUSES,
 } from './classroom-run.types';
 import {
   ClassroomCheckpointDto,
   ChangeClassroomStepDto,
   ClassroomRunOperationDto,
+  EndClassroomBreakDto,
   RecoverClassroomRunDto,
+  StartClassroomBreakDto,
   StartClassroomRunDto,
   TakeoverClassroomRunDto,
 } from './dto/classroom-run.dto';
@@ -309,6 +312,159 @@ export class ClassroomRunService {
     );
   }
 
+  /**
+   * Stage 7.4：开始课间。课间是 running 下的独立子状态（breakStartedAt/breakEndsAt），不改 status。
+   * 复用 requireTeacher / ownedRun / 设备校验 / requestId 幂等 / version 乐观锁。
+   */
+  async startBreak(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: StartClassroomBreakDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.BreakStart,
+      id,
+    );
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      this.assertCurrentDevice(current, dto.deviceId);
+      return this.get(actor, id);
+    }
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, dto.deviceId);
+    if (run.status !== ClassroomRunStatus.Running)
+      throw new ConflictException('只有运行中的课堂可以进入课间休息');
+    if (isBreakActive(run))
+      throw new ConflictException('当前已经处于课间休息');
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const runRepo = manager.getRepository(ClassroomRun);
+        const current = await runRepo.findOne({ where: { id } });
+        if (!current) throw new NotFoundException('课堂运行不存在');
+        this.assertOwner(actor, current);
+        this.assertCurrentDevice(current, dto.deviceId);
+        if (current.version !== dto.version) throw this.versionConflict();
+        if (current.status !== ClassroomRunStatus.Running)
+          throw new ConflictException('只有运行中的课堂可以进入课间休息');
+        if (isBreakActive(current))
+          throw new ConflictException('当前已经处于课间休息');
+        const now = new Date();
+        const ends = new Date(now.getTime() + dto.durationSeconds * 1000);
+        const update = await runRepo.update(
+          { id, version: dto.version, status: ClassroomRunStatus.Running },
+          {
+            breakStartedAt: now,
+            breakEndsAt: ends,
+            version: dto.version + 1,
+          },
+        );
+        if (update.affected !== 1) throw this.versionConflict();
+        const updated = await runRepo.findOneByOrFail({ id });
+        await this.writeEvent(
+          manager,
+          actor,
+          updated,
+          ClassroomEventType.BreakStart,
+          {
+            durationSeconds: dto.durationSeconds,
+            breakStartedAt: now.toISOString(),
+            breakEndsAt: ends.toISOString(),
+            version: updated.version,
+          },
+          dto.requestId,
+        );
+      });
+      await this.snapshotService.capture(
+        id,
+        ClassroomSnapshotReason.BreakStart,
+        true,
+      );
+      return this.get(actor, id);
+    } catch (error) {
+      const repeated = await this.findDuplicate(
+        actor,
+        dto.requestId,
+        ClassroomEventType.BreakStart,
+        id,
+      );
+      if (repeated) return this.get(actor, id);
+      throw error;
+    }
+  }
+
+  /**
+   * Stage 7.4：提前结束课间。只有 active break 才真正清理字段；
+   * 未在课间（含已自然到期）时安全幂等返回当前 run，不写入、不加版本。
+   */
+  async endBreak(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: EndClassroomBreakDto,
+  ) {
+    this.requireTeacher(actor);
+    const duplicate = await this.findDuplicate(
+      actor,
+      dto.requestId,
+      ClassroomEventType.BreakEnd,
+      id,
+    );
+    if (duplicate) {
+      const current = await this.ownedRun(actor, id);
+      this.assertCurrentDevice(current, dto.deviceId);
+      return this.get(actor, id);
+    }
+    const run = await this.ownedRun(actor, id);
+    this.assertCurrentDevice(run, dto.deviceId);
+    if (!isBreakActive(run)) return this.get(actor, id);
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const runRepo = manager.getRepository(ClassroomRun);
+        const current = await runRepo.findOne({ where: { id } });
+        if (!current) throw new NotFoundException('课堂运行不存在');
+        this.assertOwner(actor, current);
+        this.assertCurrentDevice(current, dto.deviceId);
+        if (current.version !== dto.version) throw this.versionConflict();
+        if (!isBreakActive(current)) return;
+        const update = await runRepo.update(
+          { id, version: dto.version, status: ClassroomRunStatus.Running },
+          { breakStartedAt: null, breakEndsAt: null, version: dto.version + 1 },
+        );
+        if (update.affected !== 1) throw this.versionConflict();
+        const updated = await runRepo.findOneByOrFail({ id });
+        await this.writeEvent(
+          manager,
+          actor,
+          updated,
+          ClassroomEventType.BreakEnd,
+          {
+            breakStartedAt: current.breakStartedAt?.toISOString() ?? null,
+            breakEndsAt: current.breakEndsAt?.toISOString() ?? null,
+            version: updated.version,
+          },
+          dto.requestId,
+        );
+      });
+      await this.snapshotService.capture(
+        id,
+        ClassroomSnapshotReason.BreakEnd,
+        true,
+      );
+      return this.get(actor, id);
+    } catch (error) {
+      const repeated = await this.findDuplicate(
+        actor,
+        dto.requestId,
+        ClassroomEventType.BreakEnd,
+        id,
+      );
+      if (repeated) return this.get(actor, id);
+      throw error;
+    }
+  }
+
   async changeStep(
     actor: JwtTeacherPayload,
     id: number,
@@ -326,7 +482,8 @@ export class ClassroomRunService {
       this.assertCurrentDevice(current, dto.deviceId);
       return this.get(actor, id);
     }
-    await this.ownedRun(actor, id);
+    const preflight = await this.ownedRun(actor, id);
+    this.assertNotInBreak(preflight);
     try {
       await this.dataSource.transaction(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
@@ -339,6 +496,7 @@ export class ClassroomRunService {
           throw new ConflictException('课堂暂停时不能切换步骤');
         if (run.status !== ClassroomRunStatus.Running)
           throw new ConflictException('只有运行中的课堂可以切换步骤');
+        this.assertNotInBreak(run);
         const exists = await manager
           .getRepository(ClassroomRunStepSnapshot)
           .exists({ where: { classroomRunId: id, stepIndex: dto.stepIndex } });
@@ -845,7 +1003,13 @@ export class ClassroomRunService {
       this.assertCurrentDevice(current, dto.deviceId);
       return this.get(actor, id);
     }
-    await this.ownedRun(actor, id);
+    const preflight = await this.ownedRun(actor, id);
+    if (
+      eventType === ClassroomEventType.Pause ||
+      eventType === ClassroomEventType.Resume
+    )
+      // Stage 7.4：课间与 pause/resume 不混用（课间是 running 下子状态，pause 需整体暂停课堂）。
+      this.assertNotInBreak(preflight);
     try {
       await this.dataSource.transaction(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
@@ -855,6 +1019,11 @@ export class ClassroomRunService {
         this.assertCurrentDevice(run, dto.deviceId);
         if (run.version !== dto.version) throw this.versionConflict();
         assertClassroomRunTransition(run.status, target);
+        if (
+          eventType === ClassroomEventType.Pause ||
+          eventType === ClassroomEventType.Resume
+        )
+          this.assertNotInBreak(run);
         const now = new Date();
         const updates: Partial<ClassroomRun> = {
           status: target,
@@ -1064,6 +1233,12 @@ export class ClassroomRunService {
       throw new ConflictException('已结束课堂不能继续恢复或接管');
   }
 
+  /** Stage 7.4（P0）：课间 active 时禁止推进教学的课堂状态命令（changeStep / pause / resume 等）。 */
+  private assertNotInBreak(run: ClassroomRun) {
+    if (isBreakActive(run))
+      throw new ConflictException('当前处于课间休息，不能执行该课堂操作');
+  }
+
   private requireTeacher(actor: JwtTeacherPayload) {
     if (actor.userType !== AuthUserType.Teacher)
       throw new ForbiddenException('课堂运行只能由教师操作');
@@ -1138,6 +1313,8 @@ export class ClassroomRunService {
     return {
       ...run,
       elapsedSeconds: liveElapsedSeconds,
+      // Stage 7.4：权威服务器时间，供各端做时钟偏移校准（倒计时 = breakEndsAt - effectiveServerNow）。
+      serverNow: new Date().toISOString(),
       ...(objectives !== undefined ? { objectives } : {}),
       ...(snapshots
         ? {

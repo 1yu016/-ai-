@@ -53,6 +53,11 @@ export class ClassroomRun {
   resumedAt: Date | null;
   @Column({ name: 'ended_at', type: 'datetime', nullable: true })
   endedAt: Date | null;
+  // Stage 7.4：课间休息子状态（status 仍为 running）。breakStartedAt=null 表示不在课间。
+  @Column({ name: 'break_started_at', type: 'datetime', nullable: true })
+  breakStartedAt: Date | null;
+  @Column({ name: 'break_ends_at', type: 'datetime', nullable: true })
+  breakEndsAt: Date | null;
   @Column({ name: 'elapsed_seconds', type: 'integer', default: 0 })
   elapsedSeconds: number;
   @Column({ type: 'integer', default: 1 }) version: number;
