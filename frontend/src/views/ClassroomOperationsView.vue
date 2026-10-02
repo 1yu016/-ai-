@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { ElDialog, ElMessage } from 'element-plus'
 import { http, apiErrorMessage } from '@/api/http'
 import { platformApi, type Student } from '@/api/platform'
+import { useLessonRunStore, type ClassroomRunPayload } from '@/stores/lessonRun'
 import {
   postReward,
   restoreCheckpoint,
@@ -44,9 +46,6 @@ const attendance = ref<Record<number, Attendance>>({})
 const selectedStudent = ref<number | null>(null)
 const awards = ref<Record<number, number>>({})
 const rollMessage = ref('')
-const breakMode = ref(false)
-const breakSeconds = ref(300)
-let breakTimer: number | null = null
 const questions = ref<Question[]>(
   JSON.parse(localStorage.getItem('classroom-questions') || '[]'),
 )
@@ -55,7 +54,10 @@ const topicDraft = ref('生活观察')
 const drawingFile = ref<File | null>(null)
 const drawingDraft = ref('')
 const drawingStatus = ref<'idle' | 'ready' | 'reviewed'>('idle')
-const run = ref<ActiveRun | null>(null)
+// Stage 7.4：课堂/课间权威状态来自 lessonRun store（breakStartedAt/breakEndsAt + serverNow 时钟校准）。
+// run 直接复用 store 的 run，保证与 LessonClassroomView/大屏通过 polling 多端同步。
+const store = useLessonRunStore()
+const { run, busy, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
 const remoteFeedback = ref('')
 const pendingCommands = ref<string[]>([])
 const online = ref(navigator.onLine)
@@ -100,8 +102,10 @@ async function load() {
       const result = await platformApi.students(selectedClassId.value)
       students.value = result.data.items
     }
-    const active = await http.get<ActiveRun | ActiveRun[]>('/classroom-runs/active')
-    run.value = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
+    const active = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>('/classroom-runs/active')
+    const current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
+    if (current) store.adoptRun(current)
+    else store.clearRun()
     if (run.value) {
       const restored = await restoreCheckpoint(run.value)
       attendance.value = restored.attendance
@@ -174,24 +178,21 @@ async function confirmReward() {
   }
 }
 
-function startBreak() {
-  breakMode.value = true
-  breakSeconds.value = 300
-  if (breakTimer) window.clearInterval(breakTimer)
-  breakTimer = window.setInterval(() => {
-    if (breakSeconds.value > 0) breakSeconds.value -= 1
-  }, 1000)
+// Stage 7.4：课间休息走真实 API。POST 成功（store 应用后端新 run）后才显示课间 UI。
+async function startBreak(durationSeconds: number) {
+  try {
+    await store.startBreak(durationSeconds)
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '课间休息未开启，请重试。'))
+  }
 }
 
-function stopBreak() {
-  breakMode.value = false
-  if (breakTimer) window.clearInterval(breakTimer)
-  breakTimer = null
-}
-
-function toggleBreak() {
-  if (breakMode.value) stopBreak()
-  else startBreak()
+async function endBreak() {
+  try {
+    await store.endBreak()
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '提前结束课间失败，请重试。'))
+  }
 }
 
 function addQuestion() {
@@ -238,7 +239,7 @@ async function remote(action: 'pause' | 'resume' | 'next') {
       version: run.value.version,
       deviceId: run.value.deviceId,
     })
-    run.value = result.data
+    store.adoptRun(result.data as unknown as ClassroomRunPayload)
     remoteFeedback.value =
       action === 'next'
         ? '已切换到下一环节。'
@@ -284,11 +285,11 @@ onMounted(() => {
   pendingCommands.value = JSON.parse(localStorage.getItem('classroom-command-queue') || '[]')
   window.addEventListener('online', onlineChanged)
   window.addEventListener('offline', onlineChanged)
-  void load()
+  void load().finally(() => store.startPolling())
 })
 
 onBeforeUnmount(() => {
-  if (breakTimer) window.clearInterval(breakTimer)
+  store.stopPolling()
   window.removeEventListener('online', onlineChanged)
   window.removeEventListener('offline', onlineChanged)
 })
@@ -355,9 +356,12 @@ onBeforeUnmount(() => {
         <aside class="side-stack">
           <RewardPanel :award-total="awardTotal" />
           <BreakModePanel
-            :break-mode="breakMode"
-            :break-seconds="breakSeconds"
-            @toggle-break="toggleBreak"
+            :active="isBreakActive"
+            :remaining-seconds="breakRemainingSeconds"
+            :busy="busy"
+            :can-start="!!run && run.status === 'running'"
+            @start-break="startBreak"
+            @end-break="endBreak"
           />
         </aside>
       </div>

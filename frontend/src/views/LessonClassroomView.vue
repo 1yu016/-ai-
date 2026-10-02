@@ -53,7 +53,7 @@ const commandExecutors: CommandRuntimeExecutors = {
   classroom: commandExecutor,
   device: deviceExecutor,
 }
-const { run, currentStep, currentResource, progress, elapsedSeconds, loading, busy, error } = storeToRefs(store)
+const { run, currentStep, currentResource, progress, elapsedSeconds, loading, busy, error, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
 const { draftReply, teacherTip, loading: assistantLoading, attemptCount, requiresTeacherConfirmation } = storeToRefs(assistant)
 const { roleName: dhRoleName } = storeToRefs(digitalHuman)
 const teacherPrompt = ref(''); const childReply = ref(''); const assistantEnabled = ref(false)
@@ -93,6 +93,7 @@ async function openRewardDrawer() {
 }
 const isActive = computed(() => run.value?.status === 'running' || run.value?.status === 'paused')
 const paused = computed(() => run.value?.status === 'paused')
+const breakTimeText = computed(() => { const total = breakRemainingSeconds.value; return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}` })
 const childVoiceStatus = computed(() => childRequestingMicrophone.value ? '正在请求麦克风权限…' : childRecording.value ? '录音中，请让孩子说话，说完再点一次' : childRecognizing.value ? '正在识别孩子的回答…' : '')
 const typeText: Record<string,string> = { introduction:'导入', teacher_talk:'教师讲述', question:'提问互动', resource:'课程资源', activity:'集体活动', transition:'环节过渡', summary:'课堂总结' }
 const ageGroupMap = { '3-4':'small', '4-5':'middle', '5-6':'large' } as const
@@ -297,14 +298,26 @@ watch(draftReply, () => { draftAccepted.value = false; stopAssistantSpeech() })
 watch(run, (current) => {
   if (current?.id) void loadRewards()
 })
-onMounted(async () => { window.addEventListener('beforeunload', beforeUnload); await store.load(Number(route.params.runId)).catch(() => undefined) })
-onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); voiceRecorder.cancel(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
+onMounted(async () => { window.addEventListener('beforeunload', beforeUnload); await store.load(Number(route.params.runId)).catch(() => undefined); store.startPolling() })
+onBeforeUnmount(() => { store.stopPolling(); componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); voiceRecorder.cancel(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
 </script>
 
 <template>
   <main class="classroom">
     <div v-if="loading" class="center">正在恢复课堂…</div>
     <div v-else-if="error" class="center error">{{ error }}<ElButton @click="router.push('/lesson-plans')">返回教案列表</ElButton></div>
+    <!-- Stage 7.4：课间休息。isBreakActive 为 true 时隐藏推进教学的 workspace/ControlBar，仅展示倒计时与提前结束 -->
+    <div v-else-if="run && isBreakActive" class="break-mode" data-test="break-mode">
+      <div class="break-card">
+        <span class="break-emoji">☕</span>
+        <h1>课间休息</h1>
+        <div class="break-time" data-test="break-countdown">{{ breakTimeText }}</div>
+        <p class="break-muted">让幼儿喝水、如厕，放松休息</p>
+        <ElButton size="large" :disabled="busy" @click="safe(store.endBreak)">
+          {{ busy ? '处理中…' : '提前结束课间' }}
+        </ElButton>
+      </div>
+    </div>
     <template v-else-if="run && currentStep && isActive">
       <ClassroomHeader
         :lesson-title="run.lessonTitle"
@@ -500,6 +513,22 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
 .error { color: #E76F6F; }
 .ended h1 { margin: 0; font-size: 28px; }
 .ended p { color: #9B8779; margin: 0; }
+.break-mode { flex: 1; min-height: 0; display: flex; justify-content: center; align-items: center; }
+.break-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 64px;
+  border: 1px solid #F0DDCE;
+  border-radius: 22px;
+  background: #FFFDF9;
+  box-shadow: 0 10px 28px #B9795114;
+}
+.break-card h1 { margin: 0; color: #4F3D31; font-size: 34px; font-weight: 800; }
+.break-emoji { font-size: 56px; }
+.break-time { font-size: 64px; font-weight: 800; color: #D67B59; font-variant-numeric: tabular-nums; }
+.break-muted { margin: 0; color: #9B8779; }
 @media (max-width: 1440px) {
   .workspace { grid-template-columns: auto minmax(0, 1fr) 260px; }
 }

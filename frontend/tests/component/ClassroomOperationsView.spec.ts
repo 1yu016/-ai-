@@ -1,5 +1,6 @@
 import ElementPlus from 'element-plus'
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { http } from '@/api/http'
@@ -26,7 +27,7 @@ async function mountOps() {
   })
   router.push('/classroom/engagement')
   await router.isReady()
-  return mount(ClassroomOperationsView, { global: { plugins: [router, ElementPlus] } })
+  return mount(ClassroomOperationsView, { global: { plugins: [router, ElementPlus, createPinia()] } })
 }
 
 function mockGets(restore = { attendanceState: {}, rewardState: {} }) {
@@ -34,6 +35,7 @@ function mockGets(restore = { attendanceState: {}, rewardState: {} }) {
     if (url === '/classes') return classes as never
     if (url.startsWith('/students')) return students as never
     if (url === '/classroom-runs/active') return { data: run } as never
+    if (url === '/classroom-runs/9') return { data: run } as never
     if (url.startsWith('/classroom-runs/9/restore')) return { data: restore } as never
     throw new Error(`unexpected GET ${url}`)
   })

@@ -1,7 +1,15 @@
 <script setup lang="ts">
-defineProps<{ breakMode: boolean; breakSeconds: number }>()
+// 课间休息面板：无本地状态，权威数据全部来自 ClassroomRun（breakStartedAt/breakEndsAt）。
+// 由父组件传入 active/remainingSeconds，成功调用 start-break / end-break 后才切换 UI。
+defineProps<{ active: boolean; remainingSeconds: number; busy: boolean; canStart: boolean }>()
 
-defineEmits<{ (e: 'toggle-break'): void }>()
+defineEmits<{ (e: 'start-break', durationSeconds: number): void; (e: 'end-break'): void }>()
+
+const DURATIONS = [
+  { seconds: 180, label: '3 分钟' },
+  { seconds: 300, label: '5 分钟' },
+  { seconds: 600, label: '10 分钟' },
+]
 
 function formatSeconds(value: number) {
   return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(
@@ -13,16 +21,29 @@ function formatSeconds(value: number) {
 <template>
   <section class="panel">
     <div class="section-head">
-      <h2>课间模式</h2>
-      <span v-if="breakMode" class="pill">进行中</span>
+      <h2>课间休息</h2>
+      <span v-if="active" class="pill">进行中</span>
     </div>
-    <div v-if="breakMode" class="break-clock">
-      {{ formatSeconds(breakSeconds) }}
+    <div v-if="active" class="break-clock" data-test="break-countdown">
+      {{ formatSeconds(remainingSeconds) }}
     </div>
-    <p class="muted">喝水 · 如厕 · 律动 · 眼保健操</p>
-    <button class="button" @click="$emit('toggle-break')">
-      {{ breakMode ? '返回课堂' : '开始 5 分钟课间' }}
-    </button>
+    <p v-else class="muted">喝水 · 如厕 · 律动，让幼儿放松休息</p>
+    <div v-if="active" class="actions">
+      <button class="button" :disabled="busy" @click="$emit('end-break')">
+        {{ busy ? '处理中…' : '提前结束课间' }}
+      </button>
+    </div>
+    <div v-else class="duration-actions">
+      <button
+        v-for="item in DURATIONS"
+        :key="item.seconds"
+        class="button"
+        :disabled="busy || !canStart"
+        @click="$emit('start-break', item.seconds)"
+      >
+        {{ item.label }}
+      </button>
+    </div>
   </section>
 </template>
 
@@ -62,6 +83,15 @@ function formatSeconds(value: number) {
   color: #d67b59;
   margin: 18px 0;
 }
+.actions {
+  display: flex;
+  justify-content: center;
+}
+.duration-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
 .button {
   border: 0;
   border-radius: 11px;
@@ -72,5 +102,9 @@ function formatSeconds(value: number) {
 }
 .button:hover {
   background: #d67b59;
+}
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 </style>
