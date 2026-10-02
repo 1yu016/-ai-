@@ -25,6 +25,7 @@ const router = createRouter({
     { path: '/students', name: 'student-center', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentCenterView.vue') },
     { path: '/classes/:classId/students', name: 'students', meta: { requiresAuth: true }, component: () => import('../views/StudentsView.vue') },
     { path: '/classes/:classId/rewards', name: 'class-rewards', meta: { requiresAuth: true }, component: () => import('../views/ClassRewardHistoryView.vue') },
+    { path: '/classes/:classId/questions', name: 'class-questions', meta: { requiresAuth: true }, component: () => import('../views/ClassQuestionHistoryView.vue') },
     { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentProfileView.vue') },
     { path: '/devices', name: 'devices', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/DevicesView.vue') },
     { path: '/classroom/scan', name: 'classroom-scan', meta: { requiresAuth: true }, component: () => import('../views/ClassroomScanView.vue') },
