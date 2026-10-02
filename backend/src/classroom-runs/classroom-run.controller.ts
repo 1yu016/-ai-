@@ -12,11 +12,13 @@ import {
 import { AuthGuard } from '../auth/auth.guard';
 import type { AuthenticatedRequest } from '../auth/auth.types';
 import { ClassroomRunService } from './classroom-run.service';
+import { StudentRewardService } from './student-reward.service';
 import {
   ChangeClassroomStepDto,
   ActiveClassroomRunsQueryDto,
   ClassroomCheckpointDto,
   ClassroomRunOperationDto,
+  CreateClassroomRewardDto,
   RecoverClassroomRunDto,
   RestoreClassroomRunQueryDto,
   StartClassroomRunDto,
@@ -28,7 +30,10 @@ import {
 @Controller('classroom-runs')
 @UseGuards(AuthGuard)
 export class ClassroomRunController {
-  constructor(private readonly service: ClassroomRunService) {}
+  constructor(
+    private readonly service: ClassroomRunService,
+    private readonly rewardService: StudentRewardService,
+  ) {}
 
   @Post('start')
   start(
@@ -137,6 +142,23 @@ export class ClassroomRunController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.service.checkpoint(request.user, id, dto);
+  }
+
+  @Post(':id/rewards')
+  createReward(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateClassroomRewardDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.createReward(request.user, id, dto);
+  }
+
+  @Get(':id/rewards')
+  listRewards(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.listRunRewards(request.user, id);
   }
 
   @Post(':id/avatar-binding')

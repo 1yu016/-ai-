@@ -25,6 +25,8 @@ import { AvatarCharacterAssets2026092700008 } from './migrations/202609270008-Av
 import { AvatarModule } from './avatars/avatar.module';
 import { AvatarConfigurationBindings2026092700009 } from './migrations/202609270009-AvatarConfigurationBindings';
 import { ClassroomRunStepSnapshotHints2026092700010 } from './migrations/202609270010-ClassroomRunStepSnapshotHints';
+import { StudentRewardRecord2026100200011 } from './migrations/202610020011-StudentRewardRecord';
+import { StudentRewardRecordIndexes2026100200012 } from './migrations/202610020012-StudentRewardRecordIndexes';
 
 @Module({
   imports: [
@@ -74,6 +76,8 @@ import { ClassroomRunStepSnapshotHints2026092700010 } from './migrations/2026092
             AvatarCharacterAssets2026092700008,
             AvatarConfigurationBindings2026092700009,
             ClassroomRunStepSnapshotHints2026092700010,
+            StudentRewardRecord2026100200011,
+            StudentRewardRecordIndexes2026100200012,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',

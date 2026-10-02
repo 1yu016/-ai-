@@ -14,6 +14,7 @@ import {
   BindDeviceDto,
   BindTeacherDto,
   ClassQueryDto,
+  ClassRewardQueryDto,
   ConsentQueryDto,
   CreateClassDto,
   CreateClassroomDto,
@@ -31,6 +32,8 @@ import {
   UpdateTeacherDto,
   UpsertConsentDto,
 } from './dto/platform.dto';
+import { StudentRewardRecord } from '../classroom-runs/entities/student-reward-record.entity';
+import { ClassroomRun } from '../classroom-runs/entities/classroom-run.entity';
 import { AiCallLog } from './entities/ai-call-log.entity';
 import { AuditLog } from './entities/audit-log.entity';
 import { ClassroomTicket } from './entities/classroom-ticket.entity';
@@ -70,6 +73,10 @@ export class PlatformService {
     private readonly auditLogs: Repository<AuditLog>,
     @InjectRepository(AiCallLog)
     private readonly aiCallLogs: Repository<AiCallLog>,
+    @InjectRepository(StudentRewardRecord)
+    private readonly rewards: Repository<StudentRewardRecord>,
+    @InjectRepository(ClassroomRun)
+    private readonly runs: Repository<ClassroomRun>,
   ) {}
 
   async createClass(actor: JwtTeacherPayload, dto: CreateClassDto) {
@@ -197,6 +204,79 @@ export class PlatformService {
       ])
       .where('tc.class_id = :classId', { classId })
       .getRawMany();
+  }
+
+  /** Stage 7.3：班级成长奖励历史（按幼儿可筛选，含累计）。 */
+  async listClassRewards(
+    actor: JwtTeacherPayload,
+    classId: number,
+    query: ClassRewardQueryDto,
+  ) {
+    const schoolClass = await this.access.requireClassAccess(actor, classId);
+    const builder = this.rewards
+      .createQueryBuilder('r')
+      .where('r.class_id = :classId', { classId })
+      .orderBy('r.created_at', 'DESC')
+      .addOrderBy('r.id', 'DESC');
+    if (query.studentId)
+      builder.andWhere('r.student_id = :studentId', {
+        studentId: query.studentId,
+      });
+    const [records, total] = await builder
+      .skip((query.page - 1) * query.pageSize)
+      .take(query.pageSize)
+      .getManyAndCount();
+    const summaryRow = (await this.rewards
+      .createQueryBuilder('r')
+      .select('COALESCE(SUM(r.stars), 0)', 'totalStars')
+      .where('r.class_id = :classId', { classId })
+      .getRawOne<{ totalStars: number | string }>()) ?? { totalStars: 0 };
+    const studentIds = [...new Set(records.map((r) => r.studentId))];
+    const runIds = [...new Set(records.map((r) => r.classroomRunId))];
+    const teacherIds = [...new Set(records.map((r) => r.teacherId))];
+    const [students, runs, teachers] = await Promise.all([
+      studentIds.length
+        ? this.students.find({ where: { id: In(studentIds) } })
+        : Promise.resolve([]),
+      runIds.length
+        ? this.runs.find({ where: { id: In(runIds) } })
+        : Promise.resolve([]),
+      teacherIds.length
+        ? this.teachers.find({ where: { id: In(teacherIds) } })
+        : Promise.resolve([]),
+    ]);
+    const studentMap = new Map(students.map((s) => [s.id, s]));
+    const runMap = new Map(runs.map((run) => [run.id, run]));
+    const teacherMap = new Map(teachers.map((t) => [t.id, t]));
+    const items = records.map((r) => {
+      const run = runMap.get(r.classroomRunId);
+      return {
+        id: r.id,
+        studentId: r.studentId,
+        studentName: studentMap.get(r.studentId)?.name ?? null,
+        classId: r.classId,
+        classroomRunId: r.classroomRunId,
+        lessonTitle: run?.title ?? null,
+        runAt: run?.startedAt ?? run?.createdAt ?? null,
+        teacherId: r.teacherId,
+        teacherName: teacherMap.get(r.teacherId)?.name ?? null,
+        rewardType: r.rewardType,
+        stars: r.stars,
+        reason: r.reason,
+        createdAt: r.createdAt,
+      };
+    });
+    return {
+      items,
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+      summary: {
+        classId,
+        className: schoolClass.name,
+        totalStars: Number(summaryRow.totalStars),
+      },
+    };
   }
 
   async listTeachers(actor: JwtTeacherPayload, query: TeacherQueryDto) {

@@ -522,6 +522,51 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(201);
   });
 
+  it('isolates restore snapshots: other teachers cannot read attendance/reward state', async () => {
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer())
+      .post('/classroom-runs/start')
+      .set(auth())
+      .send(startBody(plan.id))
+      .expect(201);
+    const runId = started.body.id as number;
+    // 教师A写入考勤+奖励快照，确保数据真实存在快照表中
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${runId}/checkpoints`)
+      .set(auth())
+      .send({
+        version: 1,
+        deviceId,
+        requestId: requestId('roll-call'),
+        checkpointType: 'roll_call',
+        attendanceState: { 1: 'present' },
+        rewardState: { 1: 2 },
+      })
+      .expect(201);
+    // 教师B访问 restore：403 拒绝，响应体不含任何快照字段
+    const denied = await request(app.getHttpServer())
+      .get(`/classroom-runs/${runId}/restore?deviceId=${deviceId}`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .expect(403);
+    const deniedBody = JSON.stringify(denied.body);
+    expect(deniedBody).not.toContain('attendanceState');
+    expect(deniedBody).not.toContain('rewardState');
+    expect(deniedBody).not.toContain('present');
+    // 教师A本人仍可正常恢复考勤与奖励
+    const own = await request(app.getHttpServer())
+      .get(`/classroom-runs/${runId}/restore?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(own.body.attendanceState).toEqual({ 1: 'present' });
+    expect(own.body.rewardState).toEqual({ 1: 2 });
+    // 清理：结束课堂，避免占用 class/device 导致后续用例冲突
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${runId}/complete`)
+      .set(auth())
+      .send({ version: 2, deviceId, requestId: requestId('complete') })
+      .expect(201);
+  });
+
   it('rejects empty plans, foreign classes, wrong bindings, and draft resources', async () => {
     const empty = await createPlan(false);
     await request(app.getHttpServer())

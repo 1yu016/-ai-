@@ -20,6 +20,7 @@ import {
   BindDeviceDto,
   BindTeacherDto,
   ClassQueryDto,
+  ClassRewardQueryDto,
   ConsentQueryDto,
   ConsumeTicketDto,
   CreateClassDto,
@@ -91,6 +92,13 @@ export class PlatformController {
     @Param('classId', ParseIntPipe) classId: number,
   ) {
     return this.platform.listClassDeviceBindings(req.user, classId);
+  }
+  @Get('classes/:classId/rewards') classRewards(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+    @Query() query: ClassRewardQueryDto,
+  ) {
+    return this.platform.listClassRewards(req.user, classId, query);
   }
   @Delete('classes/:classId/teachers/:teacherId')
   @HttpCode(HttpStatus.NO_CONTENT)

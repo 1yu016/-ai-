@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomUUID } from 'node:crypto';
-import { In, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import {
   ACTIVE_CLASSROOM_RUN_STATUSES,
@@ -58,13 +58,18 @@ export class ClassroomSnapshotService {
     reason: ClassroomSnapshotReason,
     isKey: boolean,
     patch: ClassroomSnapshotPatch = {},
+    manager?: EntityManager,
   ): Promise<ValidClassroomSnapshot | null> {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        const run = await this.runs.findOne({ where: { id: classroomRunId } });
+        const runs = manager?.getRepository(ClassroomRun) ?? this.runs;
+        const snapshots =
+          manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
+        const events = manager?.getRepository(ClassroomEvent) ?? this.events;
+        const run = await runs.findOne({ where: { id: classroomRunId } });
         if (!run) return null;
-        const previous = await this.loadLatestValid(classroomRunId);
-        const latestVersion = await this.snapshots.maximum('snapshotVersion', {
+        const previous = await this.loadLatestValid(classroomRunId, manager);
+        const latestVersion = await snapshots.maximum('snapshotVersion', {
           classroomRunId,
         });
         const playedResourceIds = Array.from(
@@ -94,8 +99,8 @@ export class ClassroomSnapshotService {
           reason,
           isKey,
         };
-        const entity = await this.snapshots.save(
-          this.snapshots.create({
+        const entity = await snapshots.save(
+          snapshots.create({
             ...values,
             playedResourceIds: JSON.stringify(values.playedResourceIds),
             attendanceState: JSON.stringify(values.attendanceState),
@@ -106,11 +111,11 @@ export class ClassroomSnapshotService {
             checksum: this.checksum(values),
           }),
         );
-        await this.trim(classroomRunId);
+        await this.trim(classroomRunId, manager);
         return { entity, ...this.stateFromValues(values) };
       } catch (error) {
         if (attempt === 1 && this.isUniqueViolation(error)) continue;
-        await this.recordFailure(classroomRunId, reason, error);
+        await this.recordFailure(classroomRunId, reason, error, manager);
         return null;
       }
     }
@@ -119,8 +124,10 @@ export class ClassroomSnapshotService {
 
   async loadLatestValid(
     classroomRunId: number,
+    manager?: EntityManager,
   ): Promise<ValidClassroomSnapshot | null> {
-    const candidates = await this.snapshots.find({
+    const snapshots = manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
+    const candidates = await snapshots.find({
       where: { classroomRunId },
       order: { snapshotVersion: 'DESC' },
       take: TOTAL_SNAPSHOT_LIMIT,
@@ -232,8 +239,9 @@ export class ClassroomSnapshotService {
     return parsed as JsonMap;
   }
 
-  private async trim(classroomRunId: number) {
-    const rows = await this.snapshots.find({
+  private async trim(classroomRunId: number, manager?: EntityManager) {
+    const snapshots = manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
+    const rows = await snapshots.find({
       where: { classroomRunId },
       order: { snapshotVersion: 'DESC' },
     });
@@ -246,15 +254,18 @@ export class ClassroomSnapshotService {
       if (row.isKey) keep.add(row.id);
     }
     const remove = rows.filter((row) => !keep.has(row.id)).map((row) => row.id);
-    if (remove.length) await this.snapshots.delete({ id: In(remove) });
+    if (remove.length) await snapshots.delete({ id: In(remove) });
   }
 
   private async recordFailure(
     classroomRunId: number,
     reason: ClassroomSnapshotReason,
     error: unknown,
+    manager?: EntityManager,
   ) {
-    const run = await this.runs.findOne({ where: { id: classroomRunId } });
+    const runs = manager?.getRepository(ClassroomRun) ?? this.runs;
+    const events = manager?.getRepository(ClassroomEvent) ?? this.events;
+    const run = await runs.findOne({ where: { id: classroomRunId } });
     const message =
       typeof error === 'object' && error !== null && 'message' in error
         ? String((error as { message?: unknown }).message ?? '')
@@ -262,8 +273,8 @@ export class ClassroomSnapshotService {
     this.logger.error(`课堂 ${classroomRunId} 快照保存失败：${message}`);
     if (!run) return;
     try {
-      await this.events.save(
-        this.events.create({
+      await events.save(
+        events.create({
           classroomRunId,
           eventType: ClassroomEventType.SnapshotFailed,
           requestId: `snapshot-error-${Date.now()}-${randomUUID().slice(0, 8)}`,

@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -70,4 +71,11 @@ export class ClassroomCheckpointDto extends ClassroomRunOperationDto {
   @IsOptional() @IsObject() rewardState?: Record<string, unknown>;
   @IsOptional() @IsObject() interactionState?: Record<string, unknown>;
   @IsOptional() @IsObject() playerState?: Record<string, unknown>;
+}
+
+/** Stage 7.3：给某幼儿发一朵（或几朵）小红花。 */
+export class CreateClassroomRewardDto extends RequestIdDto {
+  @Type(() => Number) @IsInt() @Min(1) studentId: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(5) stars?: number;
+  @IsOptional() @IsString() @MaxLength(200) reason?: string;
 }

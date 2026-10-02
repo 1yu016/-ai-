@@ -12,6 +12,8 @@ import { GuardianConsent } from './entities/guardian-consent.entity';
 import { SchoolClass } from './entities/school-class.entity';
 import { Student } from './entities/student.entity';
 import { TeacherClass } from './entities/teacher-class.entity';
+import { StudentRewardRecord } from '../classroom-runs/entities/student-reward-record.entity';
+import { ClassroomRun } from '../classroom-runs/entities/classroom-run.entity';
 import { AuditService } from './audit.service';
 import {
   ClassroomTicketPublicController,
@@ -35,7 +37,12 @@ export const PLATFORM_ENTITIES = [
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Teacher, ...PLATFORM_ENTITIES]),
+    TypeOrmModule.forFeature([
+      Teacher,
+      ...PLATFORM_ENTITIES,
+      StudentRewardRecord,
+      ClassroomRun,
+    ]),
     AuthModule,
   ],
   controllers: [PlatformController, ClassroomTicketPublicController],

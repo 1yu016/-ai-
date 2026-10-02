@@ -28,6 +28,11 @@ export class PageQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 20;
 }
 
+/** Stage 7.3：班级成长奖励历史查询，支持按幼儿筛选。 */
+export class ClassRewardQueryDto extends PageQueryDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) studentId?: number;
+}
+
 export class DeviceCodeParamDto {
   @IsString()
   @IsNotEmpty()
