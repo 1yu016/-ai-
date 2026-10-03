@@ -87,7 +87,7 @@ describe('login and role visibility', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().includes('课间模式'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('启发引导'))!.trigger('click')
     await flushPromises()
 
     expect(post).not.toHaveBeenCalled()

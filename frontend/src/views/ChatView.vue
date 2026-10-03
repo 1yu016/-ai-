@@ -31,6 +31,10 @@ import {
   type AssistantTool,
 } from '@/stores/classroomAssistant'
 import {
+  useLessonRunStore,
+  type ClassroomRunPayload,
+} from '@/stores/lessonRun'
+import {
   useCourseResourceStore,
   type CourseResource,
 } from '@/stores/courseResource'
@@ -70,6 +74,7 @@ const courseResourceStore = useCourseResourceStore()
 const resourcePlayerStore = useResourcePlayerStore()
 const classroomCommandStore = useClassroomCommandStore()
 const classroomAssistantStore = useClassroomAssistantStore()
+const lessonRunStore = useLessonRunStore()
 const { isLogin, isAdmin, teacherInfo } = storeToRefs(userStore)
 const {
   processing: commandProcessing,
@@ -84,6 +89,24 @@ const {
   draftReply: assistantDraftReply,
   suggestedAction: assistantSuggestedAction,
 } = storeToRefs(classroomAssistantStore)
+const {
+  isBreakActive,
+  breakRemainingSeconds,
+  busy: runBusy,
+} = storeToRefs(lessonRunStore)
+// 课间模式与启发式课堂助教是两条独立路径：课间走 lessonRunStore 的权威 break，
+// 启发式助教走 classroomAssistantStore.active。两者互斥：课间 active 时常驻课间 UI。
+const BREAK_DURATIONS = [
+  { seconds: 180, label: '3 分钟' },
+  { seconds: 300, label: '5 分钟' },
+  { seconds: 600, label: '10 分钟' },
+]
+const breakConfigOpen = ref(false)
+const runTitle = computed(() => lessonRunStore.run?.lessonTitle ?? '')
+const breakTimeText = computed(() => {
+  const total = breakRemainingSeconds.value
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+})
 const messages = computed(() => conversationStore.activeMessages)
 const sessions = computed(() => conversationStore.visibleSessions)
 const activeSession = computed(() => conversationStore.activeSession)
@@ -211,8 +234,12 @@ function openChatNavigation() {
 }
 
 function toggleAssistantMode() {
+  if (isBreakActive.value) {
+    ElMessage.info('课间休息中，请先结束课间再使用启发式课堂助教')
+    return
+  }
   if (!isLogin.value) {
-    ElMessage.warning('课间模式仅供登录教师开启')
+    ElMessage.warning('启发式课堂助教仅供登录教师开启')
     return
   }
   errorText.value = ''
@@ -221,6 +248,65 @@ function toggleAssistantMode() {
     classroomAssistantStore.deactivate()
   } else {
     classroomAssistantStore.activate()
+  }
+}
+
+// ===== 课间模式（与启发式助教彻底分离）=====
+async function syncActiveRun() {
+  try {
+    const { data } = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>(
+      '/classroom-runs/active',
+    )
+    const active = Array.isArray(data) ? (data[0] ?? null) : data
+    if (active) {
+      lessonRunStore.adoptRun(active)
+      // 复用现有轮询：多端同步 break 状态与倒计时
+      lessonRunStore.startPolling(2000)
+    } else {
+      lessonRunStore.stopPolling()
+      lessonRunStore.clearRun()
+    }
+    return active
+  } catch {
+    return null
+  }
+}
+
+async function openBreakConfig() {
+  errorText.value = ''
+  if (!isLogin.value) {
+    ElMessage.warning('课间模式仅供登录教师开启')
+    return
+  }
+  // 切换前先停止语音与助教语音，避免与课间 UI 互相干扰
+  stopAssistantResponse()
+  classroomAssistantStore.deactivate()
+  await syncActiveRun()
+  if (!lessonRunStore.run) {
+    ElMessage.warning('当前没有进行中的课堂，无法开启课间模式')
+    return
+  }
+  breakConfigOpen.value = true
+}
+
+async function startBreak(durationSeconds: number) {
+  breakConfigOpen.value = false
+  if (runBusy.value || isBreakActive.value) return
+  try {
+    await lessonRunStore.startBreak(durationSeconds)
+    ElMessage.success('课间休息已开始')
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '课间休息未开启，请重试。'))
+  }
+}
+
+async function endBreak() {
+  if (runBusy.value || !isBreakActive.value) return
+  try {
+    await lessonRunStore.endBreak()
+    ElMessage.success('已提前结束课间')
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '结束课间失败，请重试。'))
   }
 }
 
@@ -987,6 +1073,7 @@ onBeforeUnmount(() => {
   )
   componentUnmounted = true
   classroomAssistantStore.cancel()
+  lessonRunStore.stopPolling()
   if (mediaRecorder?.state === 'recording') mediaRecorder.stop()
   stopMediaTracks()
   releaseCurrentAudio()
@@ -1266,28 +1353,66 @@ onBeforeUnmount(() => {
         <div class="assistant-icon" aria-hidden="true">🌼</div>
         <div class="header-copy">
           <p class="eyebrow">幼儿园小助手</p>
-          <h1>{{ assistantActive ? '启发式课堂助教' : '和小花老师聊聊天' }}</h1>
+          <h1>{{ isBreakActive ? '课间休息' : (assistantActive ? '启发式课堂助教' : '和小花老师聊聊天') }}</h1>
           <p class="subtitle">
-            {{ assistantActive ? '教师控制 · 先预览再播放' : '你说的话，我会认真听呀' }}
+            {{ isBreakActive ? '让小朋友休息一下吧' : (assistantActive ? '教师控制 · 先预览再播放' : '你说的话，我会认真听呀') }}
           </p>
         </div>
         <div class="header-actions">
           <ElButton
+            v-if="isLogin"
+            class="break-mode-button"
+            :type="isBreakActive ? 'success' : 'default'"
+            :disabled="recording || voiceBusy || runBusy"
+            @click="isBreakActive ? endBreak() : openBreakConfig()"
+          >
+            {{ isBreakActive ? '退出课间模式' : '课间模式' }}
+          </ElButton>
+          <ElButton
+            v-if="isLogin"
             class="assistant-mode-button"
-            :type="assistantActive ? 'success' : 'default'"
+            :type="assistantActive ? 'primary' : 'default'"
             :disabled="recording || voiceBusy"
             @click="toggleAssistantMode"
           >
-            {{ assistantActive ? '退出课间模式' : '课间模式' }}
+            {{ assistantActive ? '返回聊天' : '启发引导' }}
           </ElButton>
           <span class="text-badge">
-            {{ assistantActive ? '启发引导' : '文字 · 语音' }}
+            {{ assistantActive ? '教师控制 · 先预览再播放' : '文字 · 语音' }}
           </span>
         </div>
       </header>
 
+      <!-- 课间模式：isBreakActive 时接管主内容，隐藏聊天框与启发式助教表单 -->
+      <div v-if="isBreakActive" class="chat-break" data-test="chat-break" aria-live="polite">
+        <div class="chat-break-card">
+          <span class="chat-break-emoji" aria-hidden="true">☕</span>
+          <h2>课间休息</h2>
+          <p class="chat-break-sub">让小朋友休息一下吧</p>
+          <div class="chat-break-time" data-test="chat-break-countdown">{{ breakTimeText }}</div>
+          <p v-if="runTitle" class="chat-break-lesson">本节课程：{{ runTitle }}</p>
+          <ElButton size="large" :disabled="runBusy" @click="endBreak">
+            {{ runBusy ? '处理中…' : '提前结束课间' }}
+          </ElButton>
+        </div>
+      </div>
+
+      <!-- 课间时长选择：仅在选择开启课间时显示 -->
+      <div v-if="breakConfigOpen" class="break-config" data-test="break-config">
+        <span class="break-config-label">选择课间时长：</span>
+        <ElButton
+          v-for="d in BREAK_DURATIONS"
+          :key="d.seconds"
+          :disabled="runBusy"
+          @click="startBreak(d.seconds)"
+        >
+          {{ d.label }}
+        </ElButton>
+        <ElButton text @click="breakConfigOpen = false">取消</ElButton>
+      </div>
+
       <ClassroomAssistantPanel
-        v-if="assistantActive"
+        v-if="assistantActive && !isBreakActive"
         :playing="playingAudio || assistantSpeechLoading"
         @tool="runAssistantTool"
         @prompt="runAssistantPrompt"
@@ -1297,7 +1422,7 @@ onBeforeUnmount(() => {
         @end="endAssistantInteraction"
       />
 
-      <div class="message-area" aria-live="polite">
+      <div v-if="!isBreakActive" class="message-area" aria-live="polite">
         <div v-if="messages.length === 0" class="welcome">
           <div class="welcome-icon" aria-hidden="true">✨</div>
           <h2>你好呀，小朋友！</h2>
@@ -1351,7 +1476,7 @@ onBeforeUnmount(() => {
         <div ref="bottomRef"></div>
       </div>
 
-      <div class="composer">
+      <div v-if="!isBreakActive" class="composer">
         <section
           v-if="commandCandidates.length"
           class="command-panel"
@@ -2058,9 +2183,68 @@ h1 {
 }
 
 .assistant-mode-button,
+.break-mode-button,
 .command-mode-button {
   height: 36px;
   border-radius: 11px;
+  font-weight: 700;
+}
+
+/* ─── 课间模式（接管主内容）────────── */
+.chat-break {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 28px;
+}
+.chat-break-card {
+  text-align: center;
+  background: #fff6ec;
+  border: 1px solid #f0ddce;
+  border-radius: 22px;
+  padding: 36px 48px;
+  box-shadow: 0 12px 30px #b9795120;
+  max-width: 420px;
+}
+.chat-break-emoji {
+  font-size: 52px;
+  line-height: 1;
+}
+.chat-break-card h2 {
+  margin: 10px 0 4px;
+  color: #4f3d31;
+  font-size: 30px;
+  font-weight: 800;
+}
+.chat-break-sub {
+  margin: 0;
+  color: #9a7e6e;
+  font-size: 15px;
+}
+.chat-break-time {
+  font-size: 62px;
+  font-weight: 800;
+  color: #d67b59;
+  font-variant-numeric: tabular-nums;
+  margin: 18px 0 6px;
+}
+.chat-break-lesson {
+  margin: 0 0 20px;
+  color: #907b6c;
+}
+.break-config {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  background: #fffaf3;
+  border-bottom: 1px solid #f0ddce;
+  flex-wrap: wrap;
+}
+.break-config-label {
+  color: #9a7e6e;
   font-weight: 700;
 }
 
