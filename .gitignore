@@ -25,6 +25,7 @@ backend/uploads/avatars/*
 frontend/playwright-report/
 frontend/test-results/
 frontend/.tmp/
+/.tmp/
 
 # Local media and temporary working files
 test-resources/*
