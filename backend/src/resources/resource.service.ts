@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   HttpException,
   Injectable,
   InternalServerErrorException,
@@ -7,13 +9,23 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { readdir, stat, unlink } from 'node:fs/promises';
-import { extname, isAbsolute, join, parse, relative, resolve } from 'node:path';
-import { Repository } from 'typeorm';
+import { createReadStream, existsSync } from 'node:fs';
+import {
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+  stat,
+  unlink,
+} from 'node:fs/promises';
+import { extname, join, parse, relative, resolve } from 'node:path';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
+import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import { TeacherRole } from '../auth/entities/teacher.entity';
 import {
   ResourceReviewStatus,
@@ -21,13 +33,42 @@ import {
   TeachingResource,
 } from '../data/entities/teaching-resource.entity';
 import { OwnerType } from '../data/owner.types';
+import { AuditService } from '../platform/audit.service';
 import type {
+  ConfirmAiSuggestionDto,
+  CreateCategoryDto,
+  CreateUploadSessionDto,
   ListResourceQueryDto,
+  ResourceReferenceDto,
+  ResourceReviewDto,
   UpdateResourceDto,
   UploadResourceDto,
 } from './dto/resource.dto';
+import { ResourceCategory } from './entities/resource-category.entity';
+import { ResourceFavorite } from './entities/resource-favorite.entity';
+import { ResourceReference } from './entities/resource-reference.entity';
+import { ResourceReview } from './entities/resource-review.entity';
 import {
+  ResourceTag,
+  ResourceTagRelation,
+} from './entities/resource-tag.entity';
+import { ResourceVersion } from './entities/resource-version.entity';
+import {
+  UploadChunk,
+  UploadSession,
+  UploadSessionStatus,
+} from './entities/upload-session.entity';
+import {
+  ResourceAiService,
+  type ResourceAiSuggestion,
+} from './resource-ai.service';
+import {
+  RESOURCE_CHUNK_DIRECTORY,
+  RESOURCE_SIZE_LIMITS,
   RESOURCE_UPLOAD_DIRECTORY,
+  resolveInside,
+  validateDeclaredFile,
+  validateSafeFileName,
   validateUploadedFile,
 } from './resource-file.validation';
 import type {
@@ -45,7 +86,6 @@ type SongMetadata = {
   domains: string[];
   themes: string[];
 };
-
 export type ResourceResponse = {
   id: number;
   title: string;
@@ -53,7 +93,9 @@ export type ResourceResponse = {
   description: string | null;
   resourceType: ResourceType;
   category: string;
+  categoryId: number | null;
   ageGroup: string;
+  domain: string | null;
   tags: string[];
   fileUrl: string;
   coverUrl: string | null;
@@ -61,9 +103,14 @@ export type ResourceResponse = {
   mimeType: string;
   fileSize: number;
   duration: number | null;
+  sha256: string | null;
+  currentVersionId: number | null;
   reviewStatus: string;
   ownerType: OwnerType;
   ownerId: string;
+  schoolId: string | null;
+  referenceCount: number;
+  isFavorite: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -112,7 +159,6 @@ const SONG_METADATA: Record<string, SongMetadata> = {
     themes: ['动物', '律动'],
   },
 };
-
 const EXTENSION_MEDIA_TYPES: Record<string, ResourceMediaType> = {
   '.mp3': 'audio',
   '.m4a': 'audio',
@@ -142,30 +188,19 @@ const PLAY_INTENT =
   /(?:打开|播放|放一下|放一首|放放|听一下|听一首|我想听|来一首)/;
 const SEARCH_INTENT = /(?:查找|搜索|找一下|有没有|给我看看)/;
 const RESOURCE_WORD = /(?:歌|音乐|儿歌|资源|故事|绘本|视频|课件|图片)/;
-
-function normalizeText(value: string): string {
-  return value
+const normalizeText = (value: string) =>
+  value
     .normalize('NFKC')
     .toLocaleLowerCase('zh-CN')
     .replace(/[\p{P}\p{S}\s]/gu, '');
-}
-function cleanFileTitle(fileName: string): string {
-  return parse(fileName)
-    .name.replace(/\s*\[[^\]]+]\s*$/, '')
-    .replace(/^(?:《|「)/, '')
-    .replace(/(?:》|」).*$/, '')
-    .trim();
-}
-function normalizedStringList(values: string[] | undefined): string[] {
-  return [
-    ...new Set((values ?? []).map((value) => value.trim()).filter(Boolean)),
-  ];
-}
+const normalizedStringList = (values?: string[]) => [
+  ...new Set((values ?? []).map((v) => v.trim()).filter(Boolean)),
+];
 function parseStoredList(value: string): string[] {
   try {
     const parsed: unknown = JSON.parse(value);
     return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string')
+      ? parsed.filter((v): v is string => typeof v === 'string')
       : [];
   } catch {
     return [];
@@ -179,85 +214,121 @@ export class ResourceService {
   private readonly sharedOwnerId: string;
 
   constructor(
-    configService: ConfigService,
+    config: ConfigService,
+    private readonly dataSource: DataSource,
     @InjectRepository(TeachingResource)
-    private readonly resourceRepository: Repository<TeachingResource>,
+    private readonly resources: Repository<TeachingResource>,
+    @InjectRepository(ResourceVersion)
+    private readonly versions: Repository<ResourceVersion>,
+    @InjectRepository(ResourceCategory)
+    private readonly categories: Repository<ResourceCategory>,
+    @InjectRepository(ResourceTag)
+    private readonly tags: Repository<ResourceTag>,
+    @InjectRepository(ResourceTagRelation)
+    private readonly tagRelations: Repository<ResourceTagRelation>,
+    @InjectRepository(ResourceFavorite)
+    private readonly favorites: Repository<ResourceFavorite>,
+    @InjectRepository(ResourceReference)
+    private readonly references: Repository<ResourceReference>,
+    @InjectRepository(ResourceReview)
+    private readonly reviews: Repository<ResourceReview>,
+    @InjectRepository(UploadSession)
+    private readonly uploadSessions: Repository<UploadSession>,
+    @InjectRepository(UploadChunk)
+    private readonly uploadChunks: Repository<UploadChunk>,
+    private readonly audit: AuditService,
+    private readonly resourceAi: ResourceAiService,
   ) {
-    const configuredPath = configService
-      .get<string>('RESOURCE_LIBRARY_PATH')
-      ?.trim();
+    const configured = config.get<string>('RESOURCE_LIBRARY_PATH')?.trim();
     const candidates = [
-      configuredPath,
+      configured,
       join(process.cwd(), 'test-resources'),
       join(process.cwd(), '..', 'test-resources'),
-    ].filter((value): value is string => Boolean(value));
+    ].filter((v): v is string => Boolean(v));
     this.libraryDirectory =
-      candidates.find((candidate) => existsSync(resolve(candidate))) ??
+      candidates.find((v) => existsSync(resolve(v))) ??
       resolve(candidates[0] ?? join(process.cwd(), 'test-resources'));
     this.sharedOwnerId =
-      configService.get<string>('GARDEN_SHARED_OWNER_ID')?.trim() ||
-      'garden:shared';
+      config.get<string>('GARDEN_SHARED_OWNER_ID')?.trim() || 'garden:shared';
   }
 
   getLibraryDirectory(): string {
     return this.libraryDirectory;
   }
-
   async list(): Promise<PersonalResource[]>;
   async list(
     teacherId: number,
     query: ListResourceQueryDto,
   ): Promise<PaginatedResources>;
   async list(
-    teacherId?: number,
+    actor: JwtTeacherPayload,
+    query: ListResourceQueryDto,
+  ): Promise<PaginatedResources>;
+  async list(
+    actorInput?: JwtTeacherPayload | number,
     query?: ListResourceQueryDto,
   ): Promise<PaginatedResources | PersonalResource[]> {
-    if (teacherId === undefined || query === undefined) {
-      return (await this.scanLegacyLibrary()).map(
-        ({ absolutePath: _absolutePath, ...resource }) => resource,
+    if (actorInput === undefined || !query)
+      return (await this.scanLegacyLibrary()).map((item) =>
+        this.withoutAbsolutePath(item),
       );
-    }
-    const builder = this.resourceRepository
-      .createQueryBuilder('resource')
-      .where(
-        `((resource.owner_type = :ownerType AND resource.owner_id = :ownerId)
-          OR (resource.owner_type = :ownerType AND resource.owner_id = :sharedOwnerId
-            AND resource.review_status = :approved))`,
+    const actor = this.asActor(actorInput);
+    const builder = this.resources
+      .createQueryBuilder('r')
+      .where('r.deleted_at IS NULL');
+    if (!this.isAdmin(actor)) {
+      builder.andWhere(
+        '((r.owner_type = :teacher AND r.owner_id = :owner) OR (r.review_status = :approved AND (r.school_id = :school OR r.owner_id = :shared)))',
         {
-          ownerType: OwnerType.Teacher,
-          ownerId: String(teacherId),
-          sharedOwnerId: this.sharedOwnerId,
+          teacher: OwnerType.Teacher,
+          owner: String(actor.sub),
           approved: ResourceReviewStatus.Approved,
+          school: actor.schoolId ?? '',
+          shared: this.sharedOwnerId,
         },
       );
+    } else if (actor.schoolId)
+      builder.andWhere('(r.school_id = :school OR r.owner_id = :shared)', {
+        school: actor.schoolId,
+        shared: this.sharedOwnerId,
+      });
     if (query.category)
-      builder.andWhere('resource.category = :category', {
-        category: query.category,
+      builder.andWhere('r.category = :category', { category: query.category });
+    if (query.categoryId)
+      builder.andWhere('r.category_id = :categoryId', {
+        categoryId: query.categoryId,
       });
     if (query.resourceType)
-      builder.andWhere('resource.resource_type = :resourceType', {
+      builder.andWhere('r.resource_type = :resourceType', {
         resourceType: query.resourceType,
       });
     if (query.ageGroup)
-      builder.andWhere('resource.age_group = :ageGroup', {
-        ageGroup: query.ageGroup,
+      builder.andWhere('r.age_group = :ageGroup', { ageGroup: query.ageGroup });
+    if (query.domain)
+      builder.andWhere('r.domain = :domain', { domain: query.domain });
+    if (query.reviewStatus)
+      builder.andWhere('r.review_status = :reviewStatus', {
+        reviewStatus: query.reviewStatus,
       });
-    if (query.keyword?.trim()) {
-      const keyword = `%${this.escapeLike(query.keyword.trim())}%`;
+    if (query.tag)
+      builder.andWhere('r.tags LIKE :tag', {
+        tag: `%${this.escapeLike(query.tag)}%`,
+      });
+    if (query.keyword?.trim())
       builder.andWhere(
-        "(resource.title LIKE :keyword ESCAPE '\\' OR resource.aliases LIKE :keyword ESCAPE '\\' OR resource.tags LIKE :keyword ESCAPE '\\')",
-        { keyword },
+        "(r.title LIKE :keyword ESCAPE '\\' OR r.aliases LIKE :keyword ESCAPE '\\' OR r.tags LIKE :keyword ESCAPE '\\')",
+        { keyword: `%${this.escapeLike(query.keyword.trim())}%` },
       );
-    }
-    const page = query.page ?? 1;
-    const pageSize = query.pageSize ?? 20;
+    const page = query.page ?? 1,
+      pageSize = query.pageSize ?? 20;
     const [items, total] = await builder
-      .orderBy('resource.created_at', 'DESC')
+      .orderBy('r.created_at', 'DESC')
+      .addOrderBy('r.id', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize)
       .getManyAndCount();
     return {
-      items: items.map((item) => this.toResponse(item)),
+      items: await Promise.all(items.map((r) => this.toResponse(r, actor.sub))),
       total,
       page,
       pageSize,
@@ -265,86 +336,185 @@ export class ResourceService {
   }
 
   async search(
-    teacherId: number,
+    actorInput: JwtTeacherPayload | number,
     keyword: string,
     resourceType?: ResourceType,
   ): Promise<ResourceSearchResult[]> {
-    const normalizedKeyword = normalizeText(keyword.trim());
-    if (!normalizedKeyword) throw new BadRequestException('搜索关键词不能为空');
-    const page = await this.list(teacherId, {
+    const actor = this.asActor(actorInput);
+    const normalized = normalizeText(keyword.trim());
+    if (!normalized) throw new BadRequestException('搜索关键词不能为空');
+    const page = await this.list(actor, {
       keyword,
       resourceType,
       page: 1,
       pageSize: 100,
     });
     return page.items
-      .map((resource) => ({
-        ...resource,
-        score: this.searchScore(resource, normalizedKeyword),
-      }))
-      .filter((resource) => resource.score > 0)
+      .map((r) => ({ ...r, score: this.searchScore(r, normalized) }))
+      .filter((r) => r.score > 0)
       .sort(
-        (left, right) =>
-          right.score - left.score ||
-          right.createdAt.getTime() - left.createdAt.getTime(),
+        (a, b) =>
+          b.score - a.score ||
+          b.createdAt.getTime() - a.createdAt.getTime() ||
+          b.id - a.id,
       );
   }
 
-  async getOne(teacherId: number, id: number): Promise<ResourceResponse> {
-    const entity = await this.resourceRepository.findOne({
-      where: [
-        { id, ownerType: OwnerType.Teacher, ownerId: String(teacherId) },
-        {
-          id,
-          ownerType: OwnerType.Teacher,
-          ownerId: this.sharedOwnerId,
-          reviewStatus: ResourceReviewStatus.Approved,
-        },
-      ],
-    });
-    if (!entity) throw new NotFoundException('资源不存在或无权访问');
-    return this.toResponse(entity);
+  async getOne(
+    actorInput: JwtTeacherPayload | number,
+    id: number,
+  ): Promise<ResourceResponse> {
+    const actor = this.asActor(actorInput);
+    return this.toResponse(await this.findAccessible(actor, id), actor.sub);
   }
 
   async upload(
-    teacherId: number,
+    actor: JwtTeacherPayload,
     dto: UploadResourceDto,
     file?: Express.Multer.File,
   ): Promise<ResourceResponse> {
     try {
-      const rule = validateUploadedFile(file);
-      const uploadedFile = file!;
-      const entity = this.resourceRepository.create({
-        title: dto.title.trim(),
-        aliases: JSON.stringify(normalizedStringList(dto.aliases)),
-        description: dto.description?.trim() || null,
-        resourceType: rule.resourceType,
-        category: dto.category.trim(),
-        ageGroup: dto.ageGroup,
-        tags: JSON.stringify(normalizedStringList(dto.tags)),
-        fileUrl: `/uploads/resources/${uploadedFile.filename}`,
-        coverUrl: null,
-        fileName: uploadedFile.originalname,
-        mimeType: uploadedFile.mimetype,
-        fileSize: uploadedFile.size,
-        duration: dto.duration ?? null,
-        reviewStatus: ResourceReviewStatus.Pending,
-        ownerType: OwnerType.Teacher,
-        ownerId: String(teacherId),
+      const rule = await validateUploadedFile(file, dto.resourceType);
+      const uploaded = file!;
+      const sha256 = await this.hashFile(uploaded.path);
+      const saved = await this.dataSource.transaction(async (manager) => {
+        const resourceRepo = manager.getRepository(TeachingResource),
+          versionRepo = manager.getRepository(ResourceVersion);
+        let resource = await resourceRepo.save(
+          resourceRepo.create({
+            title: dto.title.trim(),
+            aliases: JSON.stringify(normalizedStringList(dto.aliases)),
+            description: dto.description?.trim() || null,
+            schoolId: actor.schoolId ?? null,
+            resourceType: rule.resourceType,
+            category: dto.category.trim(),
+            categoryId: dto.categoryId ?? null,
+            ageGroup: dto.ageGroup,
+            domain: dto.domain?.trim() || null,
+            tags: JSON.stringify(normalizedStringList(dto.tags)),
+            fileUrl: '',
+            coverUrl: null,
+            fileName: uploaded.originalname,
+            mimeType: rule.mimeType,
+            fileSize: uploaded.size,
+            duration: dto.duration ?? null,
+            currentVersionId: null,
+            aiTeachingGoals: null,
+            aiActivitySuggestions: null,
+            reviewStatus: ResourceReviewStatus.Draft,
+            deletedAt: null,
+            ownerType:
+              actor.userType === AuthUserType.Administrator
+                ? OwnerType.Administrator
+                : OwnerType.Teacher,
+            ownerId: String(actor.sub),
+            type: null,
+            url: null,
+          }),
+        );
+        const version = await versionRepo.save(
+          versionRepo.create({
+            resourceId: resource.id,
+            versionNo: 1,
+            originalName: uploaded.originalname,
+            storageName: uploaded.filename,
+            storagePath: uploaded.filename,
+            sha256,
+            mimeType: rule.mimeType,
+            fileSize: uploaded.size,
+            duration: dto.duration ?? null,
+            createdBy: actor.sub,
+            createdByType: actor.userType,
+          }),
+        );
+        resource.currentVersionId = version.id;
+        resource.fileUrl = `/resources/${resource.id}/download`;
+        resource = await resourceRepo.save(resource);
+        return resource;
       });
-      const saved = await this.resourceRepository.save(entity);
-      this.logger.log(
-        `resource.upload teacher=${teacherId} resource=${saved.id} type=${saved.resourceType} size=${saved.fileSize}`,
-      );
-      return this.toResponse(saved);
+      try {
+        await this.syncTags(saved.id, dto.tags ?? []);
+      } catch (error) {
+        await this.versions.delete({ resourceId: saved.id });
+        await this.resources.delete(saved.id);
+        throw error;
+      }
+      await this.audit.write(actor, {
+        action: 'resource.upload',
+        targetType: 'resource',
+        targetId: saved.id,
+        metadata: {
+          resourceType: saved.resourceType,
+          fileSize: saved.fileSize,
+          sha256,
+        },
+      });
+      return this.toResponse(saved, actor.sub);
     } catch (error) {
       if (file?.path) await this.safeUnlink(file.path);
       if (error instanceof HttpException) throw error;
       this.logger.error(
-        `resource.upload.failed teacher=${teacherId}`,
+        'resource.upload.failed',
         error instanceof Error ? error.stack : String(error),
       );
       throw new InternalServerErrorException('资源上传失败，请稍后重试');
+    }
+  }
+
+  async addVersion(
+    actor: JwtTeacherPayload,
+    id: number,
+    file?: Express.Multer.File,
+    requestedType?: ResourceType,
+  ): Promise<ResourceResponse> {
+    const resource = await this.findManageable(actor, id);
+    try {
+      const rule = await validateUploadedFile(
+        file,
+        requestedType ?? resource.resourceType,
+      );
+      const uploaded = file!;
+      const sha256 = await this.hashFile(uploaded.path);
+      const { version, saved } = await this.dataSource.transaction(
+        async (manager) => {
+          const versionRepo = manager.getRepository(ResourceVersion);
+          const resourceRepo = manager.getRepository(TeachingResource);
+          const count = await versionRepo.count({ where: { resourceId: id } });
+          const version = await versionRepo.save(
+            versionRepo.create({
+              resourceId: id,
+              versionNo: count + 1,
+              originalName: uploaded.originalname,
+              storageName: uploaded.filename,
+              storagePath: uploaded.filename,
+              sha256,
+              mimeType: rule.mimeType,
+              fileSize: uploaded.size,
+              duration: null,
+              createdBy: actor.sub,
+              createdByType: actor.userType,
+            }),
+          );
+          resource.currentVersionId = version.id;
+          resource.fileName = uploaded.originalname;
+          resource.mimeType = rule.mimeType;
+          resource.fileSize = uploaded.size;
+          resource.resourceType = rule.resourceType;
+          resource.reviewStatus = ResourceReviewStatus.Draft;
+          const saved = await resourceRepo.save(resource);
+          return { version, saved };
+        },
+      );
+      await this.audit.write(actor, {
+        action: 'resource.version.create',
+        targetType: 'resource',
+        targetId: id,
+        metadata: { versionNo: version.versionNo, sha256 },
+      });
+      return this.toResponse(saved, actor.sub);
+    } catch (error) {
+      if (file?.path) await this.safeUnlink(file.path);
+      throw error;
     }
   }
 
@@ -353,198 +523,813 @@ export class ResourceService {
     id: number,
     dto: UpdateResourceDto,
   ): Promise<ResourceResponse> {
-    const entity = await this.findManageable(actor, id);
-    if (dto.title !== undefined) entity.title = dto.title.trim();
+    const r = await this.findManageable(actor, id);
+    if (dto.title !== undefined) r.title = dto.title.trim();
     if (dto.aliases !== undefined)
-      entity.aliases = JSON.stringify(normalizedStringList(dto.aliases));
+      r.aliases = JSON.stringify(normalizedStringList(dto.aliases));
     if (dto.description !== undefined)
-      entity.description = dto.description.trim() || null;
-    if (dto.category !== undefined) entity.category = dto.category.trim();
-    if (dto.ageGroup !== undefined) entity.ageGroup = dto.ageGroup;
-    if (dto.tags !== undefined)
-      entity.tags = JSON.stringify(normalizedStringList(dto.tags));
-    const saved = await this.resourceRepository.save(entity);
-    this.logger.log(`resource.update teacher=${actor.sub} resource=${id}`);
-    return this.toResponse(saved);
+      r.description = dto.description.trim() || null;
+    if (dto.category !== undefined) r.category = dto.category.trim();
+    if (dto.categoryId !== undefined) r.categoryId = dto.categoryId;
+    if (dto.ageGroup !== undefined) r.ageGroup = dto.ageGroup;
+    if (dto.domain !== undefined) r.domain = dto.domain.trim() || null;
+    if (dto.tags !== undefined) {
+      r.tags = JSON.stringify(normalizedStringList(dto.tags));
+      await this.syncTags(id, dto.tags);
+    }
+    const saved = await this.resources.save(r);
+    await this.audit.write(actor, {
+      action: 'resource.update',
+      targetType: 'resource',
+      targetId: id,
+    });
+    return this.toResponse(saved, actor.sub);
   }
 
-  async remove(actor: JwtTeacherPayload, id: number): Promise<void> {
-    const entity = await this.findManageable(actor, id);
-    const physicalPath = this.resolveManagedFile(entity.fileUrl);
-    if (physicalPath) await this.safeUnlink(physicalPath, true);
-    await this.resourceRepository.remove(entity);
-    this.logger.log(`resource.delete teacher=${actor.sub} resource=${id}`);
+  async remove(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<{ referenceCount: number }> {
+    const resource = await this.findManageable(actor, id);
+    const referenceCount = await this.references.count({
+      where: { resourceId: id },
+    });
+    if (referenceCount)
+      throw new ConflictException({
+        message: '资源正在被引用，无法删除',
+        referenceCount,
+      });
+    const versions = await this.versions.find({ where: { resourceId: id } });
+    for (const version of versions)
+      await this.safeUnlink(
+        resolveInside(RESOURCE_UPLOAD_DIRECTORY, version.storagePath),
+        true,
+      );
+    if (!versions.length && resource.fileUrl.startsWith('/uploads/resources/'))
+      await this.safeUnlink(
+        resolveInside(
+          RESOURCE_UPLOAD_DIRECTORY,
+          resource.fileUrl.slice('/uploads/resources/'.length),
+        ),
+        true,
+      );
+    resource.deletedAt = new Date();
+    resource.reviewStatus = ResourceReviewStatus.Disabled;
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(ResourceFavorite).delete({ resourceId: id });
+      await manager
+        .getRepository(ResourceTagRelation)
+        .delete({ resourceId: id });
+      await manager.getRepository(TeachingResource).save(resource);
+    });
+    await this.audit.write(actor, {
+      action: 'resource.delete',
+      targetType: 'resource',
+      targetId: id,
+    });
+    return { referenceCount: 0 };
+  }
+
+  async favorite(actor: JwtTeacherPayload, id: number): Promise<void> {
+    await this.findAccessible(actor, id);
+    const found = await this.favorites.findOne({
+      where: { teacherId: actor.sub, resourceId: id },
+    });
+    if (!found)
+      await this.favorites.save(
+        this.favorites.create({ teacherId: actor.sub, resourceId: id }),
+      );
+  }
+  async unfavorite(actor: JwtTeacherPayload, id: number): Promise<void> {
+    await this.favorites.delete({ teacherId: actor.sub, resourceId: id });
+  }
+  async addReference(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: ResourceReferenceDto,
+  ) {
+    await this.findAccessible(actor, id);
+    const existing = await this.references.findOne({
+      where: {
+        resourceId: id,
+        referenceType: dto.referenceType,
+        referenceId: dto.referenceId,
+      },
+    });
+    return (
+      existing ??
+      this.references.save(
+        this.references.create({
+          resourceId: id,
+          ...dto,
+          createdBy: actor.sub,
+        }),
+      )
+    );
+  }
+  async removeReference(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: ResourceReferenceDto,
+  ): Promise<void> {
+    const resource = await this.findAccessible(actor, id);
+    if (resource.ownerId !== String(actor.sub) && !this.isAdmin(actor))
+      throw new ForbiddenException('无权取消该引用');
+    await this.references.delete({
+      resourceId: id,
+      referenceType: dto.referenceType,
+      referenceId: dto.referenceId,
+    });
+  }
+
+  async submitReview(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<ResourceResponse> {
+    const r = await this.findManageable(actor, id);
+    if (r.reviewStatus === ResourceReviewStatus.Disabled)
+      throw new ConflictException('已停用资源不能提交审核');
+    r.reviewStatus = ResourceReviewStatus.Pending;
+    const saved = await this.resources.save(r);
+    await this.audit.write(actor, {
+      action: 'resource.review.submit',
+      targetType: 'resource',
+      targetId: id,
+    });
+    return this.toResponse(saved, actor.sub);
+  }
+  async review(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: ResourceReviewDto,
+  ): Promise<ResourceResponse> {
+    if (!this.isAdmin(actor))
+      throw new ForbiddenException('仅管理员可审核资源');
+    if (
+      ![
+        ResourceReviewStatus.Approved,
+        ResourceReviewStatus.Rejected,
+        ResourceReviewStatus.Disabled,
+      ].includes(dto.status)
+    )
+      throw new BadRequestException('审核结果不合法');
+    const r = await this.findManageable(actor, id);
+    if (
+      dto.status !== ResourceReviewStatus.Disabled &&
+      r.reviewStatus !== ResourceReviewStatus.Pending
+    )
+      throw new ConflictException('资源尚未由教师提交审核');
+    r.reviewStatus = dto.status;
+    const saved = await this.resources.save(r);
+    await this.reviews.save(
+      this.reviews.create({
+        resourceId: id,
+        reviewerId: actor.sub,
+        status: dto.status,
+        comment: dto.comment?.trim() || null,
+        reviewedAt: new Date(),
+      }),
+    );
+    await this.audit.write(actor, {
+      action: 'resource.review',
+      targetType: 'resource',
+      targetId: id,
+      metadata: { status: dto.status },
+    });
+    return this.toResponse(saved, actor.sub);
+  }
+
+  async download(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<{
+    path: string;
+    size: number;
+    mimeType: string;
+    fileName: string;
+  }> {
+    const resource = await this.findAccessible(actor, id);
+    if (!resource.currentVersionId) {
+      const legacyPrefix = '/uploads/resources/';
+      if (!resource.fileUrl.startsWith(legacyPrefix))
+        throw new NotFoundException('资源版本不存在');
+      const path = resolveInside(
+        RESOURCE_UPLOAD_DIRECTORY,
+        resource.fileUrl.slice(legacyPrefix.length),
+      );
+      const info = await stat(path).catch(() => null);
+      if (!info?.isFile()) throw new NotFoundException('资源文件不存在');
+      return {
+        path,
+        size: info.size,
+        mimeType: resource.mimeType,
+        fileName: resource.fileName,
+      };
+    }
+    const version = await this.versions.findOne({
+      where: { id: resource.currentVersionId, resourceId: id },
+    });
+    if (!version) throw new NotFoundException('资源版本不存在');
+    const path = resolveInside(RESOURCE_UPLOAD_DIRECTORY, version.storagePath);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) throw new NotFoundException('资源文件不存在');
+    return {
+      path,
+      size: info.size,
+      mimeType: version.mimeType,
+      fileName: version.originalName,
+    };
+  }
+
+  async createCategory(actor: JwtTeacherPayload, dto: CreateCategoryDto) {
+    if (!this.isAdmin(actor))
+      throw new ForbiddenException('仅管理员可管理分类');
+    if (
+      dto.parentId &&
+      !(await this.categories.findOne({ where: { id: dto.parentId } }))
+    )
+      throw new NotFoundException('上级分类不存在');
+    return this.categories.save(
+      this.categories.create({
+        name: dto.name.trim(),
+        parentId: dto.parentId ?? null,
+        sort: dto.sort ?? 0,
+        enabled: true,
+      }),
+    );
+  }
+  listCategories() {
+    return this.categories.find({
+      where: { enabled: true },
+      order: { sort: 'ASC', id: 'ASC' },
+    });
+  }
+
+  async createUploadSession(
+    actor: JwtTeacherPayload,
+    dto: CreateUploadSessionDto,
+  ) {
+    const resourceType = dto.resourceType;
+    if (!resourceType)
+      throw new BadRequestException('分片上传必须指定 resourceType');
+    const rule = validateDeclaredFile(
+      { originalname: dto.originalName, mimetype: dto.declaredMime },
+      resourceType,
+    );
+    if (dto.totalSize > RESOURCE_SIZE_LIMITS[resourceType])
+      throw new BadRequestException('文件大小超限');
+    const totalChunks = Math.ceil(dto.totalSize / dto.chunkSize);
+    const session = await this.uploadSessions.save(
+      this.uploadSessions.create({
+        userId: actor.sub,
+        userType: actor.userType,
+        schoolId: actor.schoolId ?? null,
+        title: dto.title.trim(),
+        originalName: dto.originalName,
+        declaredMime: dto.declaredMime,
+        resourceType: rule.resourceType,
+        category: dto.category.trim(),
+        ageGroup: dto.ageGroup,
+        totalSize: dto.totalSize,
+        chunkSize: dto.chunkSize,
+        totalChunks,
+        expectedSha256: dto.expectedSha256?.toLowerCase() ?? null,
+        status: UploadSessionStatus.Active,
+        expiresAt: new Date(Date.now() + 24 * 3600 * 1000),
+      }),
+    );
+    await mkdir(join(RESOURCE_CHUNK_DIRECTORY, session.id), {
+      recursive: true,
+    });
+    return { ...session, uploadedChunks: [] };
+  }
+  async listUploadedChunks(actor: JwtTeacherPayload, id: string) {
+    const session = await this.requireUploadSession(actor, id);
+    const chunks = await this.uploadChunks.find({
+      where: { sessionId: id },
+      order: { chunkNo: 'ASC' },
+    });
+    return {
+      sessionId: id,
+      status: session.status,
+      totalChunks: session.totalChunks,
+      uploadedChunks: chunks.map((c) => ({
+        chunkNo: c.chunkNo,
+        fileSize: c.fileSize,
+        sha256: c.sha256,
+      })),
+    };
+  }
+  async uploadChunk(
+    actor: JwtTeacherPayload,
+    id: string,
+    chunkNo: number,
+    expectedHash: string,
+    file?: Express.Multer.File,
+  ) {
+    const session = await this.requireActiveSession(actor, id);
+    if (!file) throw new BadRequestException('缺少分片文件');
+    try {
+      if (chunkNo < 0 || chunkNo >= session.totalChunks)
+        throw new BadRequestException('分片编号超出范围');
+      const expectedSize =
+        chunkNo === session.totalChunks - 1
+          ? session.totalSize - session.chunkSize * (session.totalChunks - 1)
+          : session.chunkSize;
+      if (file.size !== expectedSize)
+        throw new BadRequestException('分片大小不正确');
+      const actual = await this.hashFile(file.path);
+      if (actual !== expectedHash.toLowerCase())
+        throw new BadRequestException('分片 SHA256 不匹配');
+      const existing = await this.uploadChunks.findOne({
+        where: { sessionId: id, chunkNo },
+      });
+      if (existing) {
+        if (existing.sha256 === actual && existing.fileSize === file.size) {
+          await this.safeUnlink(file.path);
+          return existing;
+        }
+        throw new ConflictException('该分片已存在且内容不同');
+      }
+      const folder = join(RESOURCE_CHUNK_DIRECTORY, id);
+      await mkdir(folder, { recursive: true });
+      const finalPath = resolveInside(folder, `${chunkNo}.part`);
+      await rename(file.path, finalPath);
+      return this.uploadChunks.save(
+        this.uploadChunks.create({
+          sessionId: id,
+          chunkNo,
+          fileSize: file.size,
+          sha256: actual,
+          storagePath: relative(RESOURCE_CHUNK_DIRECTORY, finalPath),
+        }),
+      );
+    } catch (error) {
+      if (file?.path) await this.safeUnlink(file.path);
+      throw error;
+    }
+  }
+  async completeUpload(
+    actor: JwtTeacherPayload,
+    id: string,
+  ): Promise<ResourceResponse> {
+    const session = await this.requireActiveSession(actor, id);
+    const chunks = await this.uploadChunks.find({
+      where: { sessionId: id },
+      order: { chunkNo: 'ASC' },
+    });
+    if (
+      chunks.length !== session.totalChunks ||
+      chunks.some((c, i) => c.chunkNo !== i)
+    )
+      throw new ConflictException('分片不完整，无法合并');
+    const locked = await this.uploadSessions
+      .createQueryBuilder()
+      .update()
+      .set({ status: UploadSessionStatus.Merging })
+      .where('id = :id AND status = :status', {
+        id,
+        status: UploadSessionStatus.Active,
+      })
+      .execute();
+    if (locked.affected !== 1)
+      throw new ConflictException('上传会话正在合并或已完成');
+    const extension = validateSafeFileName(session.originalName);
+    const storageName = `${id}${extension}`;
+    const finalPath = resolveInside(RESOURCE_UPLOAD_DIRECTORY, storageName);
+    try {
+      const output = await open(finalPath, 'w');
+      try {
+        for (const chunk of chunks) {
+          const input = await open(
+            resolveInside(RESOURCE_CHUNK_DIRECTORY, chunk.storagePath),
+            'r',
+          );
+          try {
+            for await (const data of input.createReadStream())
+              await output.write(data as Buffer);
+          } finally {
+            await input.close();
+          }
+        }
+      } finally {
+        await output.close();
+      }
+      const info = await stat(finalPath);
+      if (info.size !== session.totalSize)
+        throw new Error('合并后文件大小不匹配');
+      const sha256 = await this.hashFile(finalPath);
+      if (session.expectedSha256 && sha256 !== session.expectedSha256)
+        throw new BadRequestException('合并文件 SHA256 不匹配');
+      const validation = await validateUploadedFile(
+        {
+          path: finalPath,
+          size: info.size,
+          originalname: session.originalName,
+          mimetype: session.declaredMime,
+        } as Express.Multer.File,
+        session.resourceType,
+      );
+      const resource = await this.persistMerged(
+        actor,
+        session,
+        storageName,
+        sha256,
+        validation.mimeType,
+      );
+      session.status = UploadSessionStatus.Completed;
+      await this.uploadSessions.save(session);
+      await this.cleanupSessionFiles(id, chunks);
+      return this.toResponse(resource, actor.sub);
+    } catch (error) {
+      await this.safeUnlink(finalPath);
+      session.status = UploadSessionStatus.Failed;
+      await this.uploadSessions.save(session);
+      await this.cleanupSessionFiles(id, chunks);
+      throw error;
+    }
+  }
+  async abortUpload(actor: JwtTeacherPayload, id: string): Promise<void> {
+    const session = await this.requireUploadSession(actor, id);
+    if (session.status === UploadSessionStatus.Completed)
+      throw new ConflictException('已完成会话不能中止');
+    const chunks = await this.uploadChunks.find({ where: { sessionId: id } });
+    await this.cleanupSessionFiles(id, chunks);
+    session.status = UploadSessionStatus.Aborted;
+    await this.uploadSessions.save(session);
+  }
+  async cleanupExpiredUploads(): Promise<number> {
+    const expired = await this.uploadSessions
+      .createQueryBuilder('s')
+      .where('s.expires_at <= :now', { now: new Date() })
+      .andWhere('s.status = :status', { status: UploadSessionStatus.Active })
+      .getMany();
+    for (const s of expired) {
+      const chunks = await this.uploadChunks.find({
+        where: { sessionId: s.id },
+      });
+      await this.cleanupSessionFiles(s.id, chunks);
+      s.status = UploadSessionStatus.Expired;
+      await this.uploadSessions.save(s);
+    }
+    return expired.length;
+  }
+
+  @Interval(60 * 60 * 1000)
+  async scheduledUploadCleanup(): Promise<void> {
+    try {
+      await this.cleanupExpiredUploads();
+    } catch (error) {
+      this.logger.error(
+        'resource.upload.cleanup.failed',
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  async aiSuggestion(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<ResourceAiSuggestion> {
+    const r = await this.findManageable(actor, id);
+    return this.resourceAi.suggest(actor, {
+      title: r.title,
+      description: r.description,
+      resourceType: r.resourceType,
+      existingTags: parseStoredList(r.tags),
+    });
+  }
+  async confirmAiSuggestion(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: ConfirmAiSuggestionDto,
+  ): Promise<ResourceResponse> {
+    const r = await this.findManageable(actor, id);
+    r.tags = JSON.stringify(normalizedStringList(dto.tags));
+    r.ageGroup = dto.ageGroup;
+    r.aiTeachingGoals = dto.teachingGoals.trim();
+    r.aiActivitySuggestions = dto.activitySuggestions.trim();
+    await this.syncTags(id, dto.tags);
+    const saved = await this.resources.save(r);
+    await this.audit.write(actor, {
+      action: 'resource.ai_suggestion.confirm',
+      targetType: 'resource',
+      targetId: id,
+    });
+    return this.toResponse(saved, actor.sub);
   }
 
   async getFile(id: string): Promise<{ path: string; size: number }> {
-    const resource = (await this.scanLegacyLibrary()).find(
-      (item) => item.id === id,
-    );
+    const resource = (await this.scanLegacyLibrary()).find((r) => r.id === id);
     if (!resource) throw new NotFoundException('资源不存在或已被移动');
-    const fileStat = await stat(resource.absolutePath);
-    return { path: resource.absolutePath, size: fileStat.size };
+    const info = await stat(resource.absolutePath);
+    return { path: resource.absolutePath, size: info.size };
   }
-
   async handleCommand(text: string): Promise<ResourceCommandResult | null> {
-    const wantsPlay = PLAY_INTENT.test(text);
-    const wantsSearch = SEARCH_INTENT.test(text);
+    const wantsPlay = PLAY_INTENT.test(text),
+      wantsSearch = SEARCH_INTENT.test(text);
     if (!wantsPlay && !wantsSearch) return null;
-    const resources = (await this.scanLegacyLibrary()).map(
-      ({ absolutePath: _absolutePath, ...resource }) => resource,
+    const resources = (await this.scanLegacyLibrary()).map((item) =>
+      this.withoutAbsolutePath(item),
     );
-    const normalizedInput = normalizeText(text);
+    const input = normalizeText(text);
     const scored = resources
-      .map((resource) => {
-        const matches = [resource.title, ...resource.aliases]
-          .map(normalizeText)
-          .filter(
-            (candidate) => candidate && normalizedInput.includes(candidate),
-          );
-        return {
-          resource,
-          score: Math.max(0, ...matches.map((match) => match.length)),
+      .map((resource) => ({
+        resource,
+        score: Math.max(
+          0,
+          ...[resource.title, ...resource.aliases]
+            .map(normalizeText)
+            .filter((v) => v && input.includes(v))
+            .map((v) => v.length),
+        ),
+      }))
+      .filter((i) => i.score > 0)
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length)
+      return RESOURCE_WORD.test(text)
+        ? {
+            reply:
+              '我在个人资源中没有找到这个内容。你可以试试说完整的资源名称。',
+          }
+        : null;
+    const best = scored.filter((i) => i.score === scored[0].score);
+    if (best.length > 1)
+      return {
+        reply: `找到了几个相似资源：${best
+          .slice(0, 3)
+          .map((i) => `《${i.resource.title}》`)
+          .join('、')}。请告诉我你想要哪一个。`,
+      };
+    const resource = best[0].resource;
+    return wantsPlay && resource.mediaType === 'audio'
+      ? {
+          reply: `已为你播放《${resource.title}》。`,
+          action: { type: 'play', resource },
+        }
+      : {
+          reply: `已找到《${resource.title}》，位于个人资源的“${resource.category}”分类中。`,
         };
-      })
-      .filter((item) => item.score > 0)
-      .sort((left, right) => right.score - left.score);
-    if (!scored.length) {
-      if (!RESOURCE_WORD.test(text)) return null;
-      return {
-        reply: '我在个人资源中没有找到这个内容。你可以试试说完整的资源名称。',
-      };
-    }
-    const bestScore = scored[0]?.score ?? 0;
-    const bestMatches = scored.filter((item) => item.score === bestScore);
-    if (bestMatches.length > 1) {
-      const names = bestMatches
-        .slice(0, 3)
-        .map(({ resource }) => `《${resource.title}》`)
-        .join('、');
-      return { reply: `找到了几个相似资源：${names}。请告诉我你想要哪一个。` };
-    }
-    const resource = bestMatches[0]!.resource;
-    if (wantsPlay && resource.mediaType === 'audio') {
-      return {
-        reply: `已为你播放《${resource.title}》。`,
-        action: { type: 'play', resource },
-      };
-    }
-    return {
-      reply: `已找到《${resource.title}》，位于个人资源的“${resource.category}”分类中。`,
-    };
   }
 
-  private async findOwned(
-    teacherId: number,
-    id: number,
-  ): Promise<TeachingResource> {
-    const entity = await this.resourceRepository.findOne({
-      where: { id, ownerType: OwnerType.Teacher, ownerId: String(teacherId) },
+  private isAdmin(actor: JwtTeacherPayload) {
+    return (
+      actor.userType === AuthUserType.Administrator ||
+      actor.role === TeacherRole.Admin
+    );
+  }
+
+  private asActor(actor: JwtTeacherPayload | number): JwtTeacherPayload {
+    if (typeof actor !== 'number') return actor;
+    return {
+      sub: actor,
+      account: '',
+      name: '',
+      role: TeacherRole.Teacher,
+      userType: AuthUserType.Teacher,
+      tokenVersion: 0,
+      schoolId: null,
+    };
+  }
+  private async findAccessible(actor: JwtTeacherPayload, id: number) {
+    const r = await this.resources.findOne({
+      where: { id, deletedAt: IsNull() },
     });
-    if (!entity) throw new NotFoundException('资源不存在或无权访问');
-    return entity;
+    if (!r) throw new NotFoundException('资源不存在');
+    if (this.isAdmin(actor)) {
+      if (actor.schoolId && r.schoolId && actor.schoolId !== r.schoolId)
+        throw new ForbiddenException('无权访问其他园所资源');
+      return r;
+    }
+    if (r.ownerType === OwnerType.Teacher && r.ownerId === String(actor.sub))
+      return r;
+    if (
+      r.reviewStatus === ResourceReviewStatus.Approved &&
+      (r.ownerId === this.sharedOwnerId ||
+        Boolean(actor.schoolId && r.schoolId === actor.schoolId))
+    )
+      return r;
+    throw new NotFoundException('资源不存在或无权访问');
   }
-
-  private async findManageable(
-    actor: JwtTeacherPayload,
-    id: number,
-  ): Promise<TeachingResource> {
-    if (actor.role !== TeacherRole.Admin) return this.findOwned(actor.sub, id);
-    const entity = await this.resourceRepository.findOne({ where: { id } });
-    if (!entity) throw new NotFoundException('资源不存在');
-    return entity;
+  private async findManageable(actor: JwtTeacherPayload, id: number) {
+    const r = await this.resources.findOne({
+      where: { id, deletedAt: IsNull() },
+    });
+    if (!r) throw new NotFoundException('资源不存在');
+    if (
+      !this.isAdmin(actor) &&
+      !(r.ownerType === OwnerType.Teacher && r.ownerId === String(actor.sub))
+    )
+      throw new NotFoundException('资源不存在或无权管理');
+    if (
+      this.isAdmin(actor) &&
+      actor.schoolId &&
+      r.schoolId &&
+      actor.schoolId !== r.schoolId
+    )
+      throw new ForbiddenException('无权管理其他园所资源');
+    return r;
   }
-
-  private toResponse(entity: TeachingResource): ResourceResponse {
+  private async toResponse(
+    r: TeachingResource,
+    teacherId: number,
+  ): Promise<ResourceResponse> {
+    const version = r.currentVersionId
+      ? await this.versions.findOne({ where: { id: r.currentVersionId } })
+      : null;
+    const [referenceCount, favorite] = await Promise.all([
+      this.references.count({ where: { resourceId: r.id } }),
+      this.favorites.findOne({ where: { teacherId, resourceId: r.id } }),
+    ]);
     return {
-      id: entity.id,
-      title: entity.title,
-      aliases: parseStoredList(entity.aliases),
-      description: entity.description,
-      resourceType: entity.resourceType,
-      category: entity.category,
-      ageGroup: entity.ageGroup,
-      tags: parseStoredList(entity.tags),
-      fileUrl: entity.fileUrl,
-      coverUrl: entity.coverUrl,
-      fileName: entity.fileName,
-      mimeType: entity.mimeType,
-      fileSize: entity.fileSize,
-      duration: entity.duration,
-      reviewStatus: entity.reviewStatus,
-      ownerType: entity.ownerType,
-      ownerId: entity.ownerId,
-      createdAt: entity.createdAt,
-      updatedAt: entity.updatedAt,
+      id: r.id,
+      title: r.title,
+      aliases: parseStoredList(r.aliases),
+      description: r.description,
+      resourceType: r.resourceType,
+      category: r.category,
+      categoryId: r.categoryId,
+      ageGroup: r.ageGroup,
+      domain: r.domain,
+      tags: parseStoredList(r.tags),
+      fileUrl: `/resources/${r.id}/download`,
+      coverUrl: r.coverUrl,
+      fileName: r.fileName,
+      mimeType: r.mimeType,
+      fileSize: r.fileSize,
+      duration: r.duration,
+      sha256: version?.sha256 ?? null,
+      currentVersionId: r.currentVersionId,
+      reviewStatus: r.reviewStatus,
+      ownerType: r.ownerType,
+      ownerId: r.ownerId,
+      schoolId: r.schoolId,
+      referenceCount,
+      isFavorite: Boolean(favorite),
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
     };
   }
-
-  private searchScore(resource: ResourceResponse, keyword: string): number {
-    const title = normalizeText(resource.title);
-    if (title === keyword) return 1000;
-    const aliases = resource.aliases.map(normalizeText);
-    if (aliases.includes(keyword)) return 900;
-    const tags = resource.tags.map(normalizeText);
-    if (tags.includes(keyword)) return 800;
-    if (title.includes(keyword)) return 700;
-    if (aliases.some((value) => value.includes(keyword))) return 600;
-    if (tags.some((value) => value.includes(keyword))) return 500;
-    return 0;
+  private async syncTags(resourceId: number, names: string[]) {
+    await this.dataSource.transaction(async (manager) => {
+      const relRepo = manager.getRepository(ResourceTagRelation),
+        tagRepo = manager.getRepository(ResourceTag);
+      await relRepo.delete({ resourceId });
+      for (const name of normalizedStringList(names)) {
+        let tag = await tagRepo.findOne({ where: { name } });
+        if (!tag) tag = await tagRepo.save(tagRepo.create({ name }));
+        await relRepo.save(relRepo.create({ resourceId, tagId: tag.id }));
+      }
+    });
   }
-
-  private escapeLike(value: string): string {
-    return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+  private async persistMerged(
+    actor: JwtTeacherPayload,
+    s: UploadSession,
+    storageName: string,
+    sha256: string,
+    mimeType: string,
+  ) {
+    return this.dataSource.transaction(async (manager) => {
+      const rr = manager.getRepository(TeachingResource),
+        vr = manager.getRepository(ResourceVersion);
+      let r = await rr.save(
+        rr.create({
+          title: s.title,
+          aliases: '[]',
+          description: null,
+          schoolId: s.schoolId,
+          resourceType: s.resourceType,
+          category: s.category,
+          categoryId: null,
+          ageGroup: s.ageGroup,
+          domain: null,
+          tags: '[]',
+          fileUrl: '',
+          coverUrl: null,
+          fileName: s.originalName,
+          mimeType,
+          fileSize: s.totalSize,
+          duration: null,
+          currentVersionId: null,
+          aiTeachingGoals: null,
+          aiActivitySuggestions: null,
+          reviewStatus: ResourceReviewStatus.Draft,
+          deletedAt: null,
+          ownerType:
+            actor.userType === AuthUserType.Administrator
+              ? OwnerType.Administrator
+              : OwnerType.Teacher,
+          ownerId: String(actor.sub),
+          type: null,
+          url: null,
+        }),
+      );
+      const v = await vr.save(
+        vr.create({
+          resourceId: r.id,
+          versionNo: 1,
+          originalName: s.originalName,
+          storageName,
+          storagePath: storageName,
+          sha256,
+          mimeType,
+          fileSize: s.totalSize,
+          duration: null,
+          createdBy: actor.sub,
+          createdByType: actor.userType,
+        }),
+      );
+      r.currentVersionId = v.id;
+      r.fileUrl = `/resources/${r.id}/download`;
+      return rr.save(r);
+    });
   }
-
-  private resolveManagedFile(fileUrl: string): string | null {
-    const prefix = '/uploads/resources/';
-    if (!fileUrl.startsWith(prefix)) return null;
-    const fileName = fileUrl.slice(prefix.length);
-    if (!fileName || fileName.includes('/') || fileName.includes('\\')) {
-      throw new InternalServerErrorException('资源文件路径无效');
+  private async requireUploadSession(actor: JwtTeacherPayload, id: string) {
+    const s = await this.uploadSessions.findOne({ where: { id } });
+    if (!s) throw new NotFoundException('上传会话不存在');
+    if (
+      (s.userId !== actor.sub || s.userType !== actor.userType) &&
+      !this.isAdmin(actor)
+    )
+      throw new ForbiddenException('无权访问其他教师的上传会话');
+    return s;
+  }
+  private async requireActiveSession(actor: JwtTeacherPayload, id: string) {
+    const s = await this.requireUploadSession(actor, id);
+    if (s.expiresAt.getTime() <= Date.now()) {
+      const chunks = await this.uploadChunks.find({ where: { sessionId: id } });
+      await this.cleanupSessionFiles(id, chunks);
+      s.status = UploadSessionStatus.Expired;
+      await this.uploadSessions.save(s);
+      throw new BadRequestException('上传会话已过期');
     }
-    const filePath = resolve(RESOURCE_UPLOAD_DIRECTORY, fileName);
-    const relation = relative(RESOURCE_UPLOAD_DIRECTORY, filePath);
-    if (!relation || relation.startsWith('..') || isAbsolute(relation)) {
-      throw new InternalServerErrorException('资源文件路径无效');
-    }
-    return filePath;
+    if (s.status !== UploadSessionStatus.Active)
+      throw new ConflictException('上传会话不可用');
+    return s;
   }
-
-  private async safeUnlink(
-    filePath: string,
-    failOnError = false,
-  ): Promise<void> {
+  private async cleanupSessionFiles(id: string, chunks: UploadChunk[]) {
+    for (const c of chunks)
+      await this.safeUnlink(
+        resolveInside(RESOURCE_CHUNK_DIRECTORY, c.storagePath),
+      );
+    await this.uploadChunks.delete({ sessionId: id });
+    await rm(join(RESOURCE_CHUNK_DIRECTORY, id), {
+      recursive: true,
+      force: true,
+    });
+  }
+  private async hashFile(path: string) {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(path))
+      hash.update(chunk as Buffer);
+    return hash.digest('hex');
+  }
+  private async safeUnlink(path: string, fail = false) {
     try {
-      await unlink(filePath);
+      await unlink(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      this.logger.error(
-        `resource.file.delete.failed path=${filePath}`,
-        error instanceof Error ? error.stack : String(error),
-      );
-      if (failOnError)
-        throw new InternalServerErrorException('资源文件删除失败，请稍后重试');
+      if (fail) throw new InternalServerErrorException('资源文件删除失败');
     }
   }
-
+  private searchScore(r: ResourceResponse, k: string) {
+    const title = normalizeText(r.title),
+      aliases = r.aliases.map(normalizeText),
+      tags = r.tags.map(normalizeText);
+    if (title === k) return 1000;
+    if (aliases.includes(k)) return 900;
+    if (tags.includes(k)) return 800;
+    if (title.includes(k)) return 700;
+    if (aliases.some((v) => v.includes(k))) return 600;
+    if (tags.some((v) => v.includes(k))) return 500;
+    return 0;
+  }
+  private escapeLike(v: string) {
+    return v.replace(/[\\%_]/g, (m) => `\\${m}`);
+  }
   private async scanLegacyLibrary(): Promise<ResourceRecord[]> {
     if (!existsSync(this.libraryDirectory)) return [];
     const entries = await readdir(this.libraryDirectory, {
       withFileTypes: true,
     });
     return entries
-      .filter((entry) => entry.isFile())
-      .map((entry) => this.toLegacyResource(entry.name))
-      .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'));
+      .filter((e) => e.isFile())
+      .map((e) => this.toLegacyResource(e.name))
+      .sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
   }
-
   private toLegacyResource(fileName: string): ResourceRecord {
     const mediaType =
-      EXTENSION_MEDIA_TYPES[extname(fileName).toLocaleLowerCase()] ?? 'other';
+      EXTENSION_MEDIA_TYPES[extname(fileName).toLowerCase()] ?? 'other';
     const bvid = fileName.match(/\[(BV[a-zA-Z0-9]+)]/)?.[1];
     const metadata = bvid ? SONG_METADATA[bvid] : undefined;
-    const title = metadata?.title || cleanFileTitle(fileName) || fileName;
+    const title =
+      metadata?.title ||
+      parse(fileName)
+        .name.replace(/\s*\[[^\]]+]\s*$/, '')
+        .replace(/^(?:《|「)/, '')
+        .replace(/(?:》|」).*$/, '')
+        .trim() ||
+      fileName;
     const id =
       bvid ?? createHash('sha1').update(fileName).digest('hex').slice(0, 16);
     return {
@@ -561,5 +1346,11 @@ export class ResourceService {
       contentUrl: `/resources/${encodeURIComponent(id)}/content`,
       absolutePath: join(this.libraryDirectory, fileName),
     };
+  }
+
+  private withoutAbsolutePath(resource: ResourceRecord): PersonalResource {
+    const result: Partial<ResourceRecord> = { ...resource };
+    delete result.absolutePath;
+    return result as PersonalResource;
   }
 }

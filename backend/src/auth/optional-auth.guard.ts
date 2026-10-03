@@ -7,10 +7,14 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import type { AuthenticatedRequest, JwtTeacherPayload } from './auth.types';
+import { AuthService } from './auth.service';
 
 @Injectable()
 export class OptionalAuthGuard implements CanActivate {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly authService: AuthService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -27,7 +31,8 @@ export class OptionalAuthGuard implements CanActivate {
     try {
       const payload =
         await this.jwtService.verifyAsync<JwtTeacherPayload>(token);
-      (request as AuthenticatedRequest).user = payload;
+      (request as AuthenticatedRequest).user =
+        await this.authService.validateAccessPayload(payload);
       return true;
     } catch {
       throw new UnauthorizedException('Token 无效或已过期');

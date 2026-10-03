@@ -17,12 +17,15 @@ backend/data/*.sqlite-shm
 backend/data/*.sqlite-wal
 backend/uploads/resources/*
 !backend/uploads/resources/.gitkeep
+backend/uploads/avatars/*
+!backend/uploads/avatars/.gitkeep
 
 # Logs and test output
 **/*.log
 frontend/playwright-report/
 frontend/test-results/
 frontend/.tmp/
+/.tmp/
 
 # Local media and temporary working files
 test-resources/*
@@ -36,6 +39,13 @@ Java对象引用工作原理图*.png
 local_audio_transcribe.ps1
 local_wav_recognize.ps1
 
+# Generated document review artifacts
+.docx-review-content.txt
+.docx-review-pages/
+temp-docx-source-render/
+temp-two-person-docx-render*/
+temp_extract_docx.py
+
 # Editor and operating-system files
 .DS_Store
 Thumbs.db
@@ -45,4 +55,3 @@ Thumbs.db
 !**/.vscode/settings.json
 !**/.vscode/tasks.json
 !**/.vscode/launch.json
-
