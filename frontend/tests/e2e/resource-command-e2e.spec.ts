@@ -29,25 +29,12 @@ const TEACHER_NAME = '端到端测试老师'
 const ADMIN_ACCOUNT = 'e2e_admin'
 const ADMIN_PASSWORD = 'E2eAdmin123!'
 
-const REAL_MP4_A = resolve(
+const TINY_MP4 = resolve(
   import.meta.dirname,
   '..',
-  '..',
-  '..',
-  'backend',
-  'uploads',
-  'resources',
-  'e56fc7eb-ced7-4760-bd17-e2a07e1e7a7f.mp4',
-)
-const REAL_MP4_B = resolve(
-  import.meta.dirname,
-  '..',
-  '..',
-  '..',
-  'backend',
-  'uploads',
-  'resources',
-  'f44761ae-479f-46ae-ab7c-235eb86a18a4.mp4',
+  'fixtures',
+  'media',
+  'tiny.mp4',
 )
 /** 1×1 透明 PNG（真实可解码）。 */
 const PNG_1X1 = Buffer.from(
@@ -180,7 +167,7 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
       tags: ['忍者', '动画'],
       fileName: 'ninja.mp4',
       mimeType: 'video/mp4',
-      buffer: readFileSync(REAL_MP4_A),
+      buffer: readFileSync(TINY_MP4),
     })
     numVideoId = await uploadResource(request, {
       title: '数字1的视频',
@@ -190,7 +177,7 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
       tags: ['数字'],
       fileName: 'number-one.mp4',
       mimeType: 'video/mp4',
-      buffer: readFileSync(REAL_MP4_B),
+      buffer: readFileSync(TINY_MP4),
     })
     numCardId = await uploadResource(request, {
       title: '数字1练习卡',
