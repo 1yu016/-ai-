@@ -121,7 +121,7 @@ export class StudentRewardService {
           runId,
           manager,
         );
-        const rewardState = { ...(previous?.rewardState ?? {}) };
+        const rewardState = { ...previous?.rewardState };
         rewardState[student.id] =
           Number(rewardState[student.id] ?? 0) + stars;
         const captured = await this.snapshotService.capture(

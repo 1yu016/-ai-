@@ -65,7 +65,6 @@ export class ClassroomSnapshotService {
         const runs = manager?.getRepository(ClassroomRun) ?? this.runs;
         const snapshots =
           manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
-        const events = manager?.getRepository(ClassroomEvent) ?? this.events;
         const run = await runs.findOne({ where: { id: classroomRunId } });
         if (!run) return null;
         const previous = await this.loadLatestValid(classroomRunId, manager);
