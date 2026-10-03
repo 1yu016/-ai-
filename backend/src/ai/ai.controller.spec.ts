@@ -220,7 +220,11 @@ describe('POST /ai/chat', () => {
         expect(body.requiresConfirmation).toBe(false);
       });
 
-    expect(search).toHaveBeenCalledWith(7, '一闪一闪亮晶晶', 'audio');
+    expect(search).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 7, role: 'teacher' }),
+      '一闪一闪亮晶晶',
+      'audio',
+    );
   });
 
   it('does not execute a low-confidence control command', async () => {
