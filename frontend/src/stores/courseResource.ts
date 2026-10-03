@@ -202,6 +202,45 @@ export const useCourseResourceStore = defineStore('courseResource', () => {
   const total = ref(0)
   let initialized = false
   let refreshSequence = 0
+  // Stage 6.6：单资源按 id 解析（备课回显 / 课堂播放 fallback）。
+  // 查找顺序：已加载列表 → 按 id 缓存 → GET /resources/:id。
+  // 同一 resourceId 的并发请求合并（in-flight 去重），避免重复请求同一个资源。
+  const resourceByIdCache = new Map<number, CourseResource>()
+  const resourceFetchInFlight = new Map<number, Promise<CourseResource>>()
+
+  function getResourceById(id: number | string): CourseResource | null {
+    const numericId = Number(id)
+    if (!Number.isInteger(numericId) || numericId <= 0) return null
+    const known =
+      serverResources.value.find((item) => Number(item.id) === numericId) ??
+      resourceByIdCache.get(numericId) ??
+      legacyResources.value.find((item) => Number(item.id) === numericId)
+    return known ?? null
+  }
+
+  async function ensureResourceById(id: number): Promise<CourseResource> {
+    const known = getResourceById(id)
+    if (known) return known
+    const inFlight = resourceFetchInFlight.get(id)
+    if (inFlight) return inFlight
+    const task = (async () => {
+      const { data } = await http.get<ServerResource>(`/resources/${id}`)
+      const resource = normalizeServerResource(data)
+      if (!resource) throw new Error('该教学资源的数据格式不兼容，无法打开。')
+      resourceByIdCache.set(id, resource)
+      // 同步进已加载列表，让 sortedResources 也能命中，避免重复查询。
+      if (!serverResources.value.some((item) => Number(item.id) === id)) {
+        serverResources.value.push(resource)
+      }
+      return resource
+    })()
+    resourceFetchInFlight.set(id, task)
+    try {
+      return await task
+    } finally {
+      resourceFetchInFlight.delete(id)
+    }
+  }
 
   const resources = computed(() => [...serverResources.value, ...legacyResources.value])
   const sortedResources = computed(() => [...resources.value].sort((left, right) => {
@@ -332,6 +371,8 @@ export const useCourseResourceStore = defineStore('courseResource', () => {
     total,
     initialize,
     refreshLibrary,
+    getResourceById,
+    ensureResourceById,
     uploadResource,
     updateResource,
     deleteResource,

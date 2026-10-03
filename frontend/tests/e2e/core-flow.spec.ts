@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { expect, test } from '@playwright/test'
 
 test.describe.serial('正式冻结核心流程', () => {
@@ -20,10 +21,70 @@ test.describe.serial('正式冻结核心流程', () => {
         ageGroup: 'middle',
         aliases: '[]',
         tags: '["e2e"]',
-        file: { name: 'e2e-spring.png', mimeType: 'image/png', buffer: Buffer.from('e2e-png') },
+        file: {
+          name: 'e2e-spring.png',
+          mimeType: 'image/png',
+          // 真实 PNG：含 8-byte 签名 89 50 4E 47 0D 0A 1A 0A（1×1 透明像素），
+          // 通过后端 detectContentType 字节校验，否则上传返回 400「无法识别文件真实类型」。
+          buffer: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+            'base64',
+          ),
+        },
       },
     })
     expect(upload.ok()).toBeTruthy()
+    const uploadBody = (await upload.json()) as { id: number }
+
+    // 正式课堂要求资源已审核通过（draft 不能用于课堂），走 提交审核 → 管理员通过。
+    const submitReview = await request.post(`/resources/${uploadBody.id}/submit-review`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    expect(submitReview.ok()).toBeTruthy()
+    const adminLogin = await request.post('/auth/admin/login', {
+      data: { account: 'e2e_admin', password: 'E2eAdmin123!' },
+    })
+    expect(adminLogin.ok()).toBeTruthy()
+    const adminBody = (await adminLogin.json()) as { access_token: string }
+    const adminHeaders = { Authorization: `Bearer ${adminBody.access_token}` }
+    const review = await request.post(`/resources/${uploadBody.id}/review`, {
+      headers: adminHeaders,
+      data: { status: 'approved', comment: 'E2E 通过' },
+    })
+    expect(review.ok()).toBeTruthy()
+    const profile = await request.get('/auth/profile', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    expect(profile.ok()).toBeTruthy()
+    const profileBody = (await profile.json()) as { teacherId: number }
+    const classRes = await request.post('/classes', {
+      headers: adminHeaders,
+      data: { name: 'E2E冻结班', schoolYear: '2026' },
+    })
+    expect(classRes.ok()).toBeTruthy()
+    const classBody = (await classRes.json()) as { id: number }
+    const classroomRes = await request.post('/classrooms', {
+      headers: adminHeaders,
+      data: { name: 'E2E冻结教室' },
+    })
+    expect(classroomRes.ok()).toBeTruthy()
+    const classroomBody = (await classroomRes.json()) as { id: number }
+    const deviceRes = await request.post('/devices', {
+      headers: adminHeaders,
+      data: { deviceCode: 'E2E-DEV-CF01', name: 'E2E冻结大屏', type: 'classroom_screen' },
+    })
+    expect(deviceRes.ok()).toBeTruthy()
+    const deviceBody = (await deviceRes.json()) as { id: number }
+    const bindTeacher = await request.post(`/classes/${classBody.id}/teachers`, {
+      headers: adminHeaders,
+      data: { teacherId: profileBody.teacherId, role: 'lead' },
+    })
+    expect(bindTeacher.ok()).toBeTruthy()
+    const bindDevice = await request.post('/device-bindings', {
+      headers: adminHeaders,
+      data: { deviceId: deviceBody.id, classroomId: classroomBody.id, classId: classBody.id },
+    })
+    expect(bindDevice.ok()).toBeTruthy()
 
     await page.goto('/lesson-plans/new')
     await page.locator('.el-form-item').filter({ hasText: '教案标题' }).locator('input').fill('E2E冻结教案')
@@ -31,7 +92,7 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.locator('.el-form-item').filter({ hasText: '教学目标' }).locator('textarea').fill('观察并表达春天的颜色')
 
     const leaveWarning = page.waitForEvent('dialog')
-    await page.evaluate(() => history.back())
+    await page.evaluate(() => (globalThis as unknown as { history: { back(): void } }).history.back())
     const dialog = await leaveWarning
     expect(['beforeunload', 'confirm']).toContain(dialog.type())
     if (dialog.type() === 'confirm') expect(dialog.message()).toContain('未保存')
@@ -64,6 +125,13 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.goto('/lesson-plans')
     const card = page.locator('.el-card').filter({ hasText: 'E2E冻结教案' })
     await card.getByRole('button', { name: '开始上课' }).click()
+    // 新版「开始上课」先进入 preflight（选择班级/教室/设备），再启动课堂。
+    await expect(page).toHaveURL(/\/classroom\/preflight\/\d+$/)
+    await page.locator('.selectors label').filter({ hasText: '班级' }).locator('.el-select').click()
+    await page.getByRole('option', { name: 'E2E冻结班' }).click()
+    // 选择班级后自动填充已绑定教室/设备（classDeviceBindings）。
+    await expect(page.getByText('已完成')).toBeVisible()
+    await page.getByRole('button', { name: '进入课堂' }).click()
     await expect(page).toHaveURL(/\/classroom\/lesson\/\d+$/)
     await expect(page.getByRole('heading', { name: '观察图片' })).toBeVisible()
 

@@ -1,14 +1,20 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 export type TeacherInfo = {
-  teacherId: number
+  userId?: number
+  teacherId?: number
+  administratorId?: number
   account: string
   name: string
+  role?: string
+  userType?: 'teacher' | 'administrator'
+  schoolId?: string | null
 }
 
 const STORAGE_KEYS = {
   accessToken: 'kindergarten-ai-access-token',
+  refreshToken: 'kindergarten-ai-refresh-token',
   teacherInfo: 'kindergarten-ai-teacher-info',
   visitorId: 'kindergarten-ai-visitor-id',
 } as const
@@ -33,7 +39,6 @@ function isTeacherInfo(value: unknown): value is TeacherInfo {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<TeacherInfo>
   return (
-    Number.isInteger(candidate.teacherId) &&
     typeof candidate.account === 'string' &&
     candidate.account.length > 0 &&
     typeof candidate.name === 'string' &&
@@ -56,7 +61,14 @@ export const useUserStore = defineStore('user', () => {
   const isLogin = ref(false)
   const teacherInfo = ref<TeacherInfo | null>(null)
   const accessToken = ref('')
+  const refreshToken = ref('')
   const visitorId = ref('')
+
+  const isAdmin = computed(
+    () =>
+      teacherInfo.value?.userType === 'administrator' ||
+      teacherInfo.value?.role === 'admin',
+  )
   let initialized = false
 
   function initialize() {
@@ -71,31 +83,48 @@ export const useUserStore = defineStore('user', () => {
 
     const savedToken =
       localStorage.getItem(STORAGE_KEYS.accessToken)?.trim() || ''
+    const savedRefreshToken =
+      localStorage.getItem(STORAGE_KEYS.refreshToken)?.trim() || ''
     const savedTeacherInfo = readTeacherInfo()
     if (savedToken && savedTeacherInfo) {
       accessToken.value = savedToken
+      refreshToken.value = savedRefreshToken
       teacherInfo.value = savedTeacherInfo
       isLogin.value = true
       return
     }
 
     localStorage.removeItem(STORAGE_KEYS.accessToken)
+    localStorage.removeItem(STORAGE_KEYS.refreshToken)
     localStorage.removeItem(STORAGE_KEYS.teacherInfo)
   }
 
-  function setLogin(token: string, info: TeacherInfo) {
+  function setLogin(token: string, info: TeacherInfo, refreshTokenValue = '') {
     accessToken.value = token
+    refreshToken.value = refreshTokenValue
     teacherInfo.value = info
     isLogin.value = true
     localStorage.setItem(STORAGE_KEYS.accessToken, token)
+    localStorage.setItem(STORAGE_KEYS.refreshToken, refreshTokenValue)
     localStorage.setItem(STORAGE_KEYS.teacherInfo, JSON.stringify(info))
+  }
+
+  function updateTokens(token: string, newRefreshToken = '') {
+    accessToken.value = token
+    if (newRefreshToken) refreshToken.value = newRefreshToken
+    localStorage.setItem(STORAGE_KEYS.accessToken, token)
+    if (newRefreshToken) {
+      localStorage.setItem(STORAGE_KEYS.refreshToken, newRefreshToken)
+    }
   }
 
   function logout() {
     isLogin.value = false
     accessToken.value = ''
+    refreshToken.value = ''
     teacherInfo.value = null
     localStorage.removeItem(STORAGE_KEYS.accessToken)
+    localStorage.removeItem(STORAGE_KEYS.refreshToken)
     localStorage.removeItem(STORAGE_KEYS.teacherInfo)
   }
 
@@ -103,9 +132,12 @@ export const useUserStore = defineStore('user', () => {
     isLogin,
     teacherInfo,
     accessToken,
+    refreshToken,
     visitorId,
+    isAdmin,
     initialize,
     setLogin,
+    updateTokens,
     logout,
   }
 })

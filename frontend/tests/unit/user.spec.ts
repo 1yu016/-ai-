@@ -39,4 +39,38 @@ describe('user store', () => {
     expect(store.isLogin).toBe(false)
     expect(localStorage.getItem(USER_STORAGE_KEYS.accessToken)).toBeNull()
   })
+
+  it('persists and rotates the refresh token via setLogin/updateTokens', () => {
+    const store = useUserStore()
+    store.setLogin('token-1', { teacherId: 1, account: 't', name: '老师' }, 'refresh-1')
+    expect(store.refreshToken).toBe('refresh-1')
+    expect(localStorage.getItem(USER_STORAGE_KEYS.refreshToken)).toBe('refresh-1')
+
+    store.updateTokens('token-2', 'refresh-2')
+    expect(store.accessToken).toBe('token-2')
+    expect(store.refreshToken).toBe('refresh-2')
+    expect(localStorage.getItem(USER_STORAGE_KEYS.accessToken)).toBe('token-2')
+    expect(localStorage.getItem(USER_STORAGE_KEYS.refreshToken)).toBe('refresh-2')
+  })
+
+  it('restores the refresh token on initialize and clears it on logout', () => {
+    localStorage.setItem(USER_STORAGE_KEYS.accessToken, 'token-1')
+    localStorage.setItem(USER_STORAGE_KEYS.refreshToken, 'refresh-1')
+    localStorage.setItem(USER_STORAGE_KEYS.teacherInfo, JSON.stringify({ teacherId: 1, account: 't', name: '老师' }))
+    const store = useUserStore()
+    store.initialize()
+    expect(store.refreshToken).toBe('refresh-1')
+    store.logout()
+    expect(store.refreshToken).toBe('')
+    expect(localStorage.getItem(USER_STORAGE_KEYS.refreshToken)).toBeNull()
+  })
+
+  it('keeps the refresh token when updateTokens is called without a new one', () => {
+    const store = useUserStore()
+    store.setLogin('token-1', { teacherId: 1, account: 't', name: '老师' }, 'refresh-1')
+    store.updateTokens('token-2')
+    expect(store.accessToken).toBe('token-2')
+    expect(store.refreshToken).toBe('refresh-1')
+    expect(localStorage.getItem(USER_STORAGE_KEYS.refreshToken)).toBe('refresh-1')
+  })
 })

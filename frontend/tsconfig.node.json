@@ -6,7 +6,9 @@
     "vitest.config.*",
     "cypress.config.*",
     "playwright.config.*",
-    "eslint.config.*"
+    "eslint.config.*",
+    "tests/e2e/**/*",
+    "tests/node-avatar/**/*"
   ],
   "compilerOptions": {
     // Most tools use transpilation instead of Node.js's native type-stripping.
@@ -17,6 +19,11 @@
 
     // Include Node.js types and avoid accidentally including other `@types/*` packages.
     "types": ["node"],
+
+    // Path mapping for cleaner imports (used by node-side avatar model tests).
+    "paths": {
+      "@/*": ["./src/*"]
+    },
 
     // Disable emitting output during `vue-tsc --build`, which is used for type-checking only.
     "noEmit": true,

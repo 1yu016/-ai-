@@ -1,5 +1,9 @@
 ## AI 助教接口
 
+## 阶段一平台基础
+
+账号、Refresh Token、班级学生、教室设备、一次性课堂凭证、监护人授权和审计接口见 [`docs/stage-one-api.md`](docs/stage-one-api.md)。新增数据库结构通过启动迁移增量创建，不会清空现有 SQLite 数据。
+
 在 `backend` 目录运行 `npm install`，复制 `.env.example` 为 `.env`，将 `API_KEY` 改为你的 DeepSeek API Key，然后运行 `npm run start:dev`。
 
 `POST http://localhost:3001/ai/chat` 接收 JSON：
