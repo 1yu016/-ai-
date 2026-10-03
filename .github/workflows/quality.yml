@@ -14,6 +14,16 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CI: true
+      JWT_ACCESS_SECRET: ci-only-access-secret-please-do-not-use
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 30d
+      VOLC_API_KEY: ci-placeholder
+      ARK_API_KEY: ci-placeholder
+      ARK_ENDPOINT_ID: ci-placeholder
+      DB_SYNCHRONIZE: true
+      DB_MIGRATIONS_RUN: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
