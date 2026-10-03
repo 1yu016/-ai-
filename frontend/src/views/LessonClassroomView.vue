@@ -5,12 +5,15 @@ import { storeToRefs } from 'pinia'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElProgress, ElTag } from 'element-plus'
 import { apiErrorMessage, http } from '@/api/http'
 import ResourcePlayer from '@/components/ResourcePlayer.vue'
+import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 import { useLessonRunStore } from '@/stores/lessonRun'
 import { useClassroomAssistantStore, type AssistantTool } from '@/stores/classroomAssistant'
 import { useCourseResourceStore } from '@/stores/courseResource'
+import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import { RECORDING_MIME_TYPE, isRecordingSupported, webmToWav } from '@/services/recordingAudio'
 
 const route = useRoute(); const router = useRouter(); const store = useLessonRunStore(); const assistant = useClassroomAssistantStore(); const resources = useCourseResourceStore()
+const digitalHuman = useDigitalHumanStore()
 const { run, currentStep, currentResource, progress, elapsedSeconds, loading, busy, error } = storeToRefs(store)
 const { draftReply, teacherTip, loading: assistantLoading, attemptCount, requiresTeacherConfirmation } = storeToRefs(assistant)
 const teacherPrompt = ref(''); const childReply = ref(''); const assistantEnabled = ref(false)
@@ -35,9 +38,9 @@ async function startChildRecording() { if (!isRecordingSupported()) throw new Er
 function stopChildRecording() { if (!childMediaRecorder || childMediaRecorder.state === 'inactive') return; childRecording.value = false; childRecognizing.value = true; childMediaRecorder.stop() }
 async function toggleChildRecording() { if (childRecording.value) return stopChildRecording(); if (childRequestingMicrophone.value || childRecognizing.value || assistantLoading.value) return; try { await startChildRecording() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '无法使用麦克风，请稍后重试。') } }
 function stopAssistantSpeech() { if (assistantAudio) { assistantAudio.pause(); assistantAudio.src = ''; assistantAudio = null } assistantSpeechLoading.value = false; assistantSpeaking.value = false }
-async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value) return; stopAssistantSpeech(); assistantSpeechLoading.value = true; try { const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); const audio = new Audio(data.audioUrl.trim()); assistantAudio = audio; const release = () => { if (assistantAudio === audio) stopAssistantSpeech() }; audio.addEventListener('ended', release, { once: true }); audio.addEventListener('error', release, { once: true }); await audio.play(); assistantSpeaking.value = true; draftAccepted.value = true } catch (e) { stopAssistantSpeech(); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { assistantSpeechLoading.value = false } }
-function acceptDraftAsText() { draftAccepted.value = true; ElMessage.success('已由教师确认，可自行讲述给孩子听') }
-function discardAssistantDraft() { stopAssistantSpeech(); draftAccepted.value = false; assistant.endInteraction() }
+async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value) return; stopAssistantSpeech(); assistantSpeechLoading.value = true; digitalHuman.setAction('thinking'); try { const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); const audio = new Audio(data.audioUrl.trim()); assistantAudio = audio; const release = () => { if (assistantAudio === audio) { stopAssistantSpeech(); digitalHuman.setAction('idle') } }; audio.addEventListener('ended', release, { once: true }); audio.addEventListener('error', release, { once: true }); await audio.play(); assistantSpeaking.value = true; digitalHuman.setAction('talk'); draftAccepted.value = true } catch (e) { stopAssistantSpeech(); digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { assistantSpeechLoading.value = false } }
+function acceptDraftAsText() { draftAccepted.value = true; digitalHuman.setAction('encourage'); ElMessage.success('已由教师确认，可自行讲述给孩子听') }
+function discardAssistantDraft() { stopAssistantSpeech(); digitalHuman.setAction('idle'); draftAccepted.value = false; assistant.endInteraction() }
 function beforeUnload(event: BeforeUnloadEvent) { if (!isActive.value) return; event.preventDefault(); event.returnValue = '' }
 onBeforeRouteLeave(() => !isActive.value || window.confirm('课堂仍在进行中，确定离开吗？进度已由后端保存。'))
 watch(currentStep, (step, previous) => {
@@ -49,9 +52,13 @@ watch(currentStep, (step, previous) => {
   assistant.objective = run.value.lessonObjectives
   assistant.currentStep = `${step.title}：${step.content}`
 })
+watch(currentResource, (resource) => {
+  // 资源环节打开时数字人缩小到角落，避免遮挡课件；其他环节恢复主展示状态。
+  digitalHuman.setCompact(Boolean(resource))
+}, { immediate: true })
 watch(draftReply, () => { draftAccepted.value = false; stopAssistantSpeech() })
 onMounted(async () => { window.addEventListener('beforeunload', beforeUnload); await store.load(Number(route.params.runId)).catch(() => undefined) })
-onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); stopAssistantSpeech(); assistant.endInteraction() })
+onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
 </script>
 
 <template>
@@ -66,6 +73,7 @@ onBeforeUnmount(() => { componentUnmounted = true; window.removeEventListener('b
       <footer><ElButton size="large" :disabled="paused || busy || run.currentStepIndex <= 0" @click="safe(store.previous)">上一步</ElButton><ElButton size="large" :disabled="paused || busy" @click="store.repeat">重复本环节</ElButton><ElButton size="large" type="primary" :disabled="paused || busy || run.currentStepIndex >= run.steps.length - 1" @click="safe(store.next)">下一步</ElButton><ElButton v-if="!paused" size="large" type="warning" :loading="busy" :disabled="busy" @click="safe(store.pause)">暂停课堂</ElButton><ElButton v-else size="large" type="success" :loading="busy" :disabled="busy" @click="safe(store.resume)">继续课堂</ElButton><ElButton size="large" type="danger" :loading="busy" :disabled="busy" @click="finish('complete')">结束课堂</ElButton><ElButton size="large" plain :disabled="busy" @click="finish('cancel')">中止</ElButton></footer>
       <ResourcePlayer :resources="currentResource ? [currentResource] : resources.sortedResources" />
     </template>
+    <DigitalHumanStage v-if="isActive" />
     <div v-else-if="run" class="center ended">
       <h1>{{ run.status === 'completed' ? '本节课堂已完成' : run.status === 'failed' ? '课堂运行异常' : '本节课堂已中止' }}</h1>
       <p>课堂记录已保存，当前页面为只读状态。</p>

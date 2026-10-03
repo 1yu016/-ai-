@@ -5,8 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'node:crypto';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { Teacher } from '../auth/entities/teacher.entity';
 import {
@@ -18,13 +19,16 @@ import {
   CreateClassroomDto,
   CreateDeviceDto,
   CreateStudentDto,
+  CreateTeacherDto,
   CreateTicketDto,
   StudentQueryDto,
   SyncStudentsDto,
+  TeacherQueryDto,
   UpdateClassDto,
   UpdateClassroomDto,
   UpdateDeviceDto,
   UpdateStudentDto,
+  UpdateTeacherDto,
   UpsertConsentDto,
 } from './dto/platform.dto';
 import { AiCallLog } from './entities/ai-call-log.entity';
@@ -193,6 +197,100 @@ export class PlatformService {
       ])
       .where('tc.class_id = :classId', { classId })
       .getRawMany();
+  }
+
+  async listTeachers(actor: JwtTeacherPayload, query: TeacherQueryDto) {
+    this.access.requireAdministrator(actor);
+    const builder = this.teachers.createQueryBuilder('t');
+    if (actor.schoolId) builder.andWhere('t.school_id = :schoolId', { schoolId: actor.schoolId });
+    if (query.status) builder.andWhere('t.status = :status', { status: query.status });
+    if (query.keyword) {
+      builder.andWhere(
+        '(t.account LIKE :k OR t.name LIKE :k)',
+        { k: `%${query.keyword}%` },
+      );
+    }
+    const [teachers, total] = await builder
+      .orderBy('t.id', 'DESC')
+      .skip((query.page - 1) * query.pageSize)
+      .take(query.pageSize)
+      .getManyAndCount();
+    const classMap = await this.buildTeacherClassMap(teachers.map((t) => t.id));
+    const items = teachers.map((t) => ({
+      id: t.id,
+      account: t.account,
+      name: t.name,
+      role: t.role,
+      status: t.status,
+      schoolId: t.schoolId,
+      classes: classMap.get(t.id) ?? [],
+    }));
+    return { items, total, page: query.page, pageSize: query.pageSize };
+  }
+
+  async createTeacherAccount(actor: JwtTeacherPayload, dto: CreateTeacherDto) {
+    this.access.requireAdministrator(actor);
+    const existing = await this.teachers.findOne({
+      where: { account: dto.account },
+    });
+    if (existing) throw new ConflictException('账号已存在');
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const saved = await this.teachers.save(
+      this.teachers.create({
+        account: dto.account,
+        passwordHash,
+        name: dto.name,
+        role: dto.role,
+        schoolId: actor.schoolId ?? dto.schoolId ?? null,
+      }),
+    );
+    await this.audit.write(actor, {
+      action: 'teacher.create',
+      targetType: 'teacher',
+      targetId: saved.id,
+    });
+    return { id: saved.id, account: saved.account, name: saved.name, role: saved.role, status: saved.status };
+  }
+
+  async updateTeacher(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: UpdateTeacherDto,
+  ) {
+    this.access.requireAdministrator(actor);
+    const entity = await this.teachers.findOne({ where: { id } });
+    if (!entity) throw new NotFoundException('教师不存在');
+    const saved = await this.teachers.save(this.teachers.merge(entity, dto));
+    await this.audit.write(actor, {
+      action: 'teacher.update',
+      targetType: 'teacher',
+      targetId: id,
+    });
+    return { id: saved.id, account: saved.account, name: saved.name, role: saved.role, status: saved.status };
+  }
+
+  private async buildTeacherClassMap(
+    teacherIds: number[],
+  ): Promise<Map<number, { classId: number; className: string; role: string }[]>> {
+    const map = new Map<number, { classId: number; className: string; role: string }[]>();
+    if (!teacherIds.length) return map;
+    const rows = await this.teacherClasses
+      .createQueryBuilder('tc')
+      .innerJoin(SchoolClass, 'c', 'c.id = tc.class_id')
+      .select([
+        'tc.teacher_id AS teacherId',
+        'tc.class_id AS classId',
+        'tc.role AS role',
+        'c.name AS className',
+      ])
+      .where('tc.teacher_id IN (:...ids)', { ids: teacherIds })
+      .getRawMany<{ teacherId: number; classId: number; role: string; className: string }>();
+    for (const row of rows) {
+      const list = map.get(Number(row.teacherId)) ?? [];
+      list.push({ classId: Number(row.classId), className: row.className, role: row.role });
+      map.set(Number(row.teacherId), list);
+    }
+    return map;
   }
 
   async createStudent(actor: JwtTeacherPayload, dto: CreateStudentDto) {
@@ -500,6 +598,45 @@ export class PlatformService {
       this.classes.findOne({ where: { id: binding.classId } }),
     ]);
     return { device, binding, classroom, class: schoolClass };
+  }
+
+  async listClassDeviceBindings(
+    actor: JwtTeacherPayload,
+    classId: number,
+  ) {
+    await this.access.requireClassAccess(actor, classId);
+    const bindings = await this.bindings.find({
+      where: { classId, status: BindingStatus.Active },
+      order: { id: 'ASC' },
+    });
+    if (!bindings.length) return [];
+    const [devices, classrooms] = await Promise.all([
+      this.devices.find({ where: { id: In(bindings.map((b) => b.deviceId)) } }),
+      this.classrooms.find({
+        where: { id: In(bindings.map((b) => b.classroomId)) },
+      }),
+    ]);
+    const deviceById = new Map(devices.map((d) => [d.id, d]));
+    const classroomById = new Map(classrooms.map((c) => [c.id, c]));
+    return bindings.map((b) => {
+      const device = deviceById.get(b.deviceId);
+      const classroom = classroomById.get(b.classroomId);
+      return {
+        id: b.id,
+        classId: b.classId,
+        classroomId: b.classroomId,
+        classroom: classroom ? { id: classroom.id, name: classroom.name } : null,
+        deviceId: b.deviceId,
+        device: device
+          ? {
+              id: device.id,
+              name: device.name,
+              type: device.type,
+              status: device.status,
+            }
+          : null,
+      };
+    });
   }
 
   async createTicket(actor: JwtTeacherPayload, dto: CreateTicketDto) {

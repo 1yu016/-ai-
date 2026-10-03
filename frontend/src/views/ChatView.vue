@@ -70,7 +70,7 @@ const courseResourceStore = useCourseResourceStore()
 const resourcePlayerStore = useResourcePlayerStore()
 const classroomCommandStore = useClassroomCommandStore()
 const classroomAssistantStore = useClassroomAssistantStore()
-const { isLogin, teacherInfo } = storeToRefs(userStore)
+const { isLogin, isAdmin, teacherInfo } = storeToRefs(userStore)
 const {
   processing: commandProcessing,
   feedback: commandFeedback,
@@ -1156,10 +1156,28 @@ onBeforeUnmount(() => {
             v-if="isLogin"
             type="button"
             class="feature-nav-item"
+            @click="router.push('/my-classes')"
+          >
+            <span class="feature-nav-icon" aria-hidden="true">🏫</span>
+            <span>我的班级</span>
+          </button>
+          <button
+            v-if="isLogin"
+            type="button"
+            class="feature-nav-item"
             @click="router.push('/lesson-plans')"
           >
             <span class="feature-nav-icon" aria-hidden="true">📝</span>
             <span>备课中心</span>
+          </button>
+          <button
+            v-if="isLogin && isAdmin"
+            type="button"
+            class="feature-nav-item"
+            @click="router.push('/students')"
+          >
+            <span class="feature-nav-icon" aria-hidden="true">🧒</span>
+            <span>学生管理</span>
           </button>
         </nav>
 

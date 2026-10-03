@@ -26,15 +26,18 @@ import {
   CreateClassroomDto,
   CreateDeviceDto,
   CreateStudentDto,
+  CreateTeacherDto,
   CreateTicketDto,
   DeviceCodeParamDto,
   PageQueryDto,
   StudentQueryDto,
   SyncStudentsDto,
+  TeacherQueryDto,
   UpdateClassDto,
   UpdateClassroomDto,
   UpdateDeviceDto,
   UpdateStudentDto,
+  UpdateTeacherDto,
   UpsertConsentDto,
 } from './dto/platform.dto';
 import { PlatformService } from './platform.service';
@@ -83,6 +86,12 @@ export class PlatformController {
   ) {
     return this.platform.classTeachers(req.user, classId);
   }
+  @Get('classes/:classId/device-bindings') classDeviceBindings(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+  ) {
+    return this.platform.listClassDeviceBindings(req.user, classId);
+  }
   @Delete('classes/:classId/teachers/:teacherId')
   @HttpCode(HttpStatus.NO_CONTENT)
   unbindTeacher(
@@ -91,6 +100,26 @@ export class PlatformController {
     @Param('teacherId', ParseIntPipe) teacherId: number,
   ) {
     return this.platform.unbindTeacher(req.user, classId, teacherId);
+  }
+
+  @Get('teachers') listTeachers(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: TeacherQueryDto,
+  ) {
+    return this.platform.listTeachers(req.user, query);
+  }
+  @Post('teachers') createTeacher(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: CreateTeacherDto,
+  ) {
+    return this.platform.createTeacherAccount(req.user, dto);
+  }
+  @Patch('teachers/:id') updateTeacher(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateTeacherDto,
+  ) {
+    return this.platform.updateTeacher(req.user, id, dto);
   }
 
   @Post('students') createStudent(

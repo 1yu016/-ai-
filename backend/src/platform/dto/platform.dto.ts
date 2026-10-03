@@ -21,6 +21,7 @@ import {
   RecordStatus,
   TeacherClassRole,
 } from '../platform.types';
+import { AccountStatus, TeacherRole } from '../../auth/entities/teacher.entity';
 
 export class PageQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
@@ -157,4 +158,23 @@ export class UpsertConsentDto {
 
 export class ConsentQueryDto {
   @Type(() => Number) @IsInt() @Min(1) studentId: number;
+}
+
+export class TeacherQueryDto extends PageQueryDto {
+  @IsOptional() @IsString() @MaxLength(64) keyword?: string;
+  @IsOptional() @IsEnum(AccountStatus) status?: AccountStatus;
+}
+
+export class CreateTeacherDto {
+  @IsString() @IsNotEmpty() @MaxLength(64) account: string;
+  @IsString() @IsNotEmpty() @MaxLength(128) password: string;
+  @IsString() @IsNotEmpty() @MaxLength(100) name: string;
+  @IsOptional() @IsEnum(TeacherRole) role?: TeacherRole;
+  @IsOptional() @IsString() @MaxLength(64) schoolId?: string;
+}
+
+export class UpdateTeacherDto {
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(100) name?: string;
+  @IsOptional() @IsEnum(TeacherRole) role?: TeacherRole;
+  @IsOptional() @IsEnum(AccountStatus) status?: AccountStatus;
 }
