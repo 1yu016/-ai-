@@ -12,18 +12,53 @@ test.describe.serial('正式冻结核心流程', () => {
 
     const token = await page.evaluate(() => localStorage.getItem('kindergarten-ai-access-token'))
     expect(token).toBeTruthy()
+    const auth = { Authorization: `Bearer ${token}` }
+    const schoolClassResponse = await request.post('/classes', {
+      headers: auth,
+      data: { name: 'E2E向日葵班', grade: '中班', ageRange: '4-5', schoolYear: '2026' },
+    })
+    const schoolClassBody = await schoolClassResponse.text()
+    expect(schoolClassResponse.ok(), `创建E2E班级失败：http=${schoolClassResponse.status()} body=${schoolClassBody}`).toBeTruthy()
+    const schoolClass = JSON.parse(schoolClassBody) as { id: number }
+    const classroomResponse = await request.post('/classrooms', {
+      headers: auth,
+      data: { name: 'E2E教室', location: '测试楼层' },
+    })
+    expect(classroomResponse.ok()).toBeTruthy()
+    const classroom = await classroomResponse.json() as { id: number }
+    const deviceResponse = await request.post('/devices', {
+      headers: auth,
+      data: { deviceCode: 'E2E-SCREEN-001', name: 'E2E课堂大屏', type: 'classroom_screen' },
+    })
+    expect(deviceResponse.ok()).toBeTruthy()
+    const device = await deviceResponse.json() as { id: number }
+    expect((await request.patch(`/devices/${device.id}`, { headers: auth, data: { status: 'online' } })).ok()).toBeTruthy()
+    expect((await request.post('/device-bindings', { headers: auth, data: { classId: schoolClass.id, classroomId: classroom.id, deviceId: device.id } })).ok()).toBeTruthy()
     const upload = await request.post('/resources/upload', {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: auth,
       multipart: {
         title: 'E2E春天图片',
         category: '图片卡片',
         ageGroup: 'middle',
         aliases: '[]',
         tags: '["e2e"]',
-        file: { name: 'e2e-spring.png', mimeType: 'image/png', buffer: Buffer.from('e2e-png') },
+        file: {
+          name: 'e2e-spring.png',
+          mimeType: 'image/png',
+          buffer: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            'base64',
+          ),
+        },
       },
     })
     expect(upload.ok()).toBeTruthy()
+    const uploadedResource = await upload.json() as { id: number }
+    expect((await request.post(`/resources/${uploadedResource.id}/submit-review`, { headers: auth })).ok()).toBeTruthy()
+    expect((await request.post(`/resources/${uploadedResource.id}/review`, {
+      headers: auth,
+      data: { status: 'approved', comment: 'E2E课堂资源审核通过' },
+    })).ok()).toBeTruthy()
 
     await page.goto('/lesson-plans/new')
     await page.locator('.el-form-item').filter({ hasText: '教案标题' }).locator('input').fill('E2E冻结教案')
@@ -64,6 +99,17 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.goto('/lesson-plans')
     const card = page.locator('.el-card').filter({ hasText: 'E2E冻结教案' })
     await card.getByRole('button', { name: '开始上课' }).click()
+    await expect(page).toHaveURL(/\/classroom\/preflight\/\d+$/)
+    await page.locator('.selectors label').filter({ hasText: '班级' }).locator('.el-select').click()
+    await page.getByRole('option', { name: 'E2E向日葵班' }).click()
+    await page.locator('.selectors label').filter({ hasText: '教室' }).locator('.el-select').click()
+    await page.getByRole('option', { name: 'E2E教室' }).click()
+    await page.locator('.selectors label').filter({ hasText: '大屏设备' }).locator('.el-select').click()
+    await page.getByRole('option', { name: /E2E课堂大屏/ }).click()
+    const startResponsePromise = page.waitForResponse((response) => response.url().includes('/classroom-runs/start') && response.request().method() === 'POST')
+    await page.getByRole('button', { name: '进入课堂' }).click()
+    const startResponse = await startResponsePromise
+    expect(startResponse.ok(), `启动E2E课堂失败：http=${startResponse.status()} body=${await startResponse.text()}`).toBeTruthy()
     await expect(page).toHaveURL(/\/classroom\/lesson\/\d+$/)
     await expect(page.getByRole('heading', { name: '观察图片' })).toBeVisible()
 

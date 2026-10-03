@@ -55,6 +55,62 @@ export default defineConfig({
             ? '/index.html'
             : undefined,
       },
+      '/classroom-runs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/classes': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/students': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/guardian-consents': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/classrooms': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/devices': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/device-bindings': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/classroom-tickets': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/avatars': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/badge-definitions': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/reward-rules': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/break-runs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/audit-logs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/ai-call-logs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
       '/uploads': {
         target: 'http://localhost:3001',
         changeOrigin: true,

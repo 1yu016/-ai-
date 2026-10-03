@@ -4,13 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElButton, ElMessage, ElOption, ElSelect } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useLessonPlanStore } from '@/stores/lessonPlan'
-import { useLessonRunStore } from '@/stores/lessonRun'
 import { platformApi, type Classroom, type Device, type SchoolClass } from '@/api/platform'
 import { apiErrorMessage, http } from '@/api/http'
 
 type CheckStatus = 'checking' | 'ok' | 'degraded' | 'failed'
 type CheckItem = { key: string; label: string; detail: string; status: CheckStatus }
-const route = useRoute(); const router = useRouter(); const planStore = useLessonPlanStore(); const runStore = useLessonRunStore()
+const route = useRoute(); const router = useRouter(); const planStore = useLessonPlanStore()
 const { current: plan, loading: planLoading, error: planError } = storeToRefs(planStore)
 const classes = ref<SchoolClass[]>([]); const classrooms = ref<Classroom[]>([]); const devices = ref<Device[]>([])
 const classId = ref<number | null>(null); const classroomId = ref<number | null>(null); const deviceId = ref<number | null>(null); const checking = ref(false); const starting = ref(false); const checks = ref<CheckItem[]>([])
@@ -27,7 +26,7 @@ function buildChecks(): CheckItem[] { const online = typeof navigator === 'undef
 ] }
 async function runChecks() { checking.value = true; checks.value = buildChecks().map((item) => ({ ...item, status: 'checking' })); await new Promise((resolve) => window.setTimeout(resolve, 180)); checks.value = buildChecks(); checking.value = false }
 function newRequestId() { return globalThis.crypto?.randomUUID?.() ?? `classroom-${Date.now()}-${Math.random().toString(36).slice(2)}` }
-async function enterClassroom() { if (!canEnter.value || !plan.value || !classId.value || !classroomId.value || !deviceId.value) return; starting.value = true; try { const { data } = await http.post<{ id: number }>('/classroom-runs/start', { lessonPlanId: plan.value.id, classId: classId.value, classroomId: classroomId.value, deviceId: deviceId.value, requestId: newRequestId() }); await router.push({ name: 'lesson-classroom', params: { runId: data.id } }) } catch (cause) { ElMessage.error(apiErrorMessage(cause, '课堂启动失败，请重新选择班级、教室和设备。')) } finally { starting.value = false } }
+async function enterClassroom() { if (!canEnter.value || !plan.value || !classId.value || !classroomId.value || !deviceId.value) return; starting.value = true; try { const { data } = await http.post<{ id: number }>('/classroom-runs/start', { lessonPlanId: plan.value.id, classId: classId.value, classroomId: classroomId.value, deviceId: deviceId.value, requestId: newRequestId() }); sessionStorage.setItem(`classroom-run-device:${data.id}`, String(deviceId.value)); await router.push({ name: 'lesson-classroom', params: { runId: data.id } }) } catch (cause) { ElMessage.error(apiErrorMessage(cause, '课堂启动失败，请重新选择班级、教室和设备。')) } finally { starting.value = false } }
 onMounted(async () => { try { await planStore.load(Number(route.params.planId)); const [classRes, roomRes, deviceRes] = await Promise.all([platformApi.listClasses(), platformApi.listClassrooms(), platformApi.listDevices()]); classes.value = classRes.data.items; classrooms.value = roomRes.data; devices.value = deviceRes.data; await runChecks() } catch (cause) { ElMessage.error(apiErrorMessage(cause, '课堂准备信息加载失败')) } })
 </script>
 

@@ -20,7 +20,7 @@ import type { LessonRun } from '@/stores/lessonRun'
 
 const resource: ServerResource = { id: 12, title: '春天图片', aliases: [], description: '观察春天', resourceType: 'image', category: '图片卡片', ageGroup: 'middle', tags: ['春天'], fileUrl: '/uploads/resources/spring.jpg', coverUrl: null, fileName: 'spring.jpg', mimeType: 'image/jpeg', fileSize: 10, duration: null, reviewStatus: 'approved', createdAt: '2026-01-01' }
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天课堂', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'ready', version: 2, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
-const run: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, version: 1, status: 'running', currentStepIndex: 0, lessonTitle: '春天课堂', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ stepIndex: 0, title: '看一看', type: 'question', content: '你发现了什么？', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '总结', type: 'summary', content: '说说发现', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
+const run: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, deviceId: 6, version: 1, status: 'running', currentStepIndex: 0, lessonTitle: '春天课堂', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ stepIndex: 0, title: '看一看', type: 'question', content: '你发现了什么？', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '总结', type: 'summary', content: '说说发现', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
 
 function routerFor(path: string, routes?: RouteRecordRaw[]) {
   const router = createRouter({ history: createMemoryHistory(), routes: routes ?? [
@@ -267,7 +267,7 @@ describe('lesson components', () => {
       : { data: { mode: 'guided_dialogue', ability: 'guided_question', reply: '你的小手指像数字几呀？', teacherTip: '等待幼儿观察手指后再回答。', suggestedAction: null, requiresTeacherConfirmation: false } })
     vi.stubGlobal('Audio', class {
       src = ''
-      constructor(_source?: string) {}
+      constructor(source?: string) { this.src = source ?? '' }
       addEventListener() {}
       async play() {}
       pause() {}
