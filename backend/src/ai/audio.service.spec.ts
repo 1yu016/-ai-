@@ -103,4 +103,33 @@ describe('AudioService', () => {
       }),
     );
   });
+
+  it('splits long TTS text into provider-safe chunks and combines the audio', async () => {
+    global.fetch = jest
+      .fn<typeof fetch>()
+      .mockImplementation(async () =>
+        new Response(
+          [
+            'data: {"code":0,"message":"","data":"SUQz"}',
+            'data: {"code":20000000,"message":"OK","data":null}',
+          ].join('\n'),
+          { status: 200 },
+        ),
+      );
+    const service = createService({ VOLC_API_KEY: 'api-key' });
+
+    const result = await service.tts('童话'.repeat(200));
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(result).toBe('data:audio/mpeg;base64,SUQzSUQz');
+    for (const call of (global.fetch as jest.MockedFunction<typeof fetch>).mock
+      .calls) {
+      const body = JSON.parse(String(call[1]?.body)) as {
+        req_params: { text: string };
+      };
+      expect(Buffer.byteLength(body.req_params.text, 'utf8')).toBeLessThanOrEqual(
+        900,
+      );
+    }
+  });
 });

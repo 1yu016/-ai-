@@ -16,6 +16,7 @@ import { ClassroomSnapshot } from './entities/classroom-snapshot.entity';
 import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.entity';
 import { ClassroomSnapshotService } from './classroom-snapshot.service';
 import { AvatarModule } from '../avatars/avatar.module';
+import { BreakRun } from '../classroom-engagement/entities/break-run.entity';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
@@ -23,6 +24,7 @@ export const CLASSROOM_RUN_ENTITIES = [
   ClassroomEvent,
   ClassroomSnapshot,
   ClassroomDeviceTransfer,
+  BreakRun,
 ];
 
 @Module({

@@ -20,6 +20,7 @@ const ASR_RESOURCE_ID = 'volc.seedasr.auc';
 // 与控制台已开通的豆包语音合成模型 2.0 保持一致。
 const DEFAULT_TTS_RESOURCE_ID = 'seed-tts-2.0';
 const MAX_AUDIO_SIZE = 20 * 1024 * 1024;
+const MAX_TTS_CHUNK_BYTES = 900;
 const REQUEST_TIMEOUT_MS = 60_000;
 const ASR_POLL_INTERVAL_MS = 1_000;
 
@@ -166,38 +167,58 @@ export class AudioService {
     if (!normalizedText) {
       throw new BadRequestException('text 不能为空');
     }
-    if (Buffer.byteLength(normalizedText, 'utf8') > 1024) {
-      throw new BadRequestException('text 的 UTF-8 长度不能超过 1024 字节');
-    }
 
     try {
-      const requestId = randomUUID();
-      const response = await fetch(TTS_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Api-Key': this.apiKey,
-          'X-Api-Resource-Id': this.ttsResourceId,
-          'X-Api-Request-Id': requestId,
-        },
-        body: JSON.stringify({
-          user: { uid: 'kid-demo-001' },
-          req_params: {
-            text: normalizedText,
-            speaker: this.voiceType,
-            audio_params: {
-              format: 'mp3',
-              sample_rate: 24000,
-            },
+      const audioChunks: Buffer[] = [];
+      for (const chunk of this.splitTtsText(normalizedText)) {
+        const requestId = randomUUID();
+        const response = await fetch(TTS_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Api-Key': this.apiKey,
+            'X-Api-Resource-Id': this.ttsResourceId,
+            'X-Api-Request-Id': requestId,
           },
-        }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+          body: JSON.stringify({
+            user: { uid: 'kid-demo-001' },
+            req_params: {
+              text: chunk,
+              speaker: this.voiceType,
+              audio_params: {
+                format: 'mp3',
+                sample_rate: 24000,
+              },
+            },
+          }),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        audioChunks.push(await this.readTtsAudio(response));
+      }
 
-      return await this.readTtsAudio(response);
+      return `data:audio/mpeg;base64,${Buffer.concat(audioChunks).toString('base64')}`;
     } catch (error) {
       this.handleUpstreamError(error, '语音合成');
     }
+  }
+
+  private splitTtsText(text: string): string[] {
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const character of text) {
+      const candidate = current + character;
+      if (Buffer.byteLength(candidate, 'utf8') <= MAX_TTS_CHUNK_BYTES) {
+        current = candidate;
+        continue;
+      }
+
+      if (current) chunks.push(current);
+      current = character;
+    }
+
+    if (current) chunks.push(current);
+    return chunks;
   }
 
   private validateAudio(
@@ -236,7 +257,7 @@ export class AudioService {
     }
   }
 
-  private async readTtsAudio(response: Response): Promise<string> {
+  private async readTtsAudio(response: Response): Promise<Buffer> {
     const rawResponse = await response.text();
     const audioChunks: Buffer[] = [];
     let lastResult: TtsResponse | undefined;
@@ -268,7 +289,7 @@ export class AudioService {
       throw new BadGatewayException(`语音合成失败：${message}`);
     }
 
-    return `data:audio/mpeg;base64,${Buffer.concat(audioChunks).toString('base64')}`;
+    return Buffer.concat(audioChunks);
   }
 
   private handleUpstreamError(error: unknown, action: string): never {

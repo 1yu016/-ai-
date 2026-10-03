@@ -24,6 +24,13 @@ import { ClassroomRunModule } from './classroom-runs/classroom-run.module';
 import { AvatarCharacterAssets2026092700008 } from './migrations/202609270008-AvatarCharacterAssets';
 import { AvatarModule } from './avatars/avatar.module';
 import { AvatarConfigurationBindings2026092700009 } from './migrations/202609270009-AvatarConfigurationBindings';
+import { ClassroomDirectorSuggestions2026092700010 } from './migrations/202609270010-ClassroomDirectorSuggestions';
+import { HeuristicAssistantDrafts2026092700011 } from './migrations/202609270011-HeuristicAssistantDrafts';
+import { ClassroomCommands2026092800012 } from './migrations/202609280012-ClassroomCommands';
+import { ClassroomParticipation2026092800013 } from './migrations/202609280013-ClassroomParticipation';
+import { ClassroomParticipationModule } from './classroom-participation/classroom-participation.module';
+import { ClassroomEngagement2026093000014 } from './migrations/202609300014-ClassroomEngagement';
+import { ClassroomEngagementModule } from './classroom-engagement/classroom-engagement.module';
 
 @Module({
   imports: [
@@ -72,6 +79,11 @@ import { AvatarConfigurationBindings2026092700009 } from './migrations/202609270
             ClassroomSnapshotRecovery2026092700007,
             AvatarCharacterAssets2026092700008,
             AvatarConfigurationBindings2026092700009,
+            ClassroomDirectorSuggestions2026092700010,
+            HeuristicAssistantDrafts2026092700011,
+            ClassroomCommands2026092800012,
+            ClassroomParticipation2026092800013,
+            ClassroomEngagement2026093000014,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',
@@ -86,6 +98,8 @@ import { AvatarConfigurationBindings2026092700009 } from './migrations/202609270
     PlatformModule,
     ClassroomRunModule,
     AvatarModule,
+    ClassroomParticipationModule,
+    ClassroomEngagementModule,
   ],
   controllers: [AppController],
   providers: [AppService],
