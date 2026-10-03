@@ -1,11 +1,12 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 
 const projectRoot = resolve(import.meta.dirname, '..', '..')
 const allowedRoot = resolve(projectRoot, '.tmp')
 const target = resolve(allowedRoot, 'e2e')
-if (!target.startsWith(`${allowedRoot}\\`) && target !== allowedRoot) {
+const relativeTarget = relative(allowedRoot, target)
+if (relativeTarget.startsWith('..') || isAbsolute(relativeTarget)) {
   throw new Error(`Refusing to clean unexpected path: ${target}`)
 }
 
