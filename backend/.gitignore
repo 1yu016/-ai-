@@ -59,6 +59,9 @@ pids
 /data/*.sqlite-wal
 /uploads/resources/*
 !/uploads/resources/.gitkeep
+/uploads/avatars/*
+!/uploads/avatars/.gitkeep
+/uploads/.chunks/
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

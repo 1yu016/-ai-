@@ -9,6 +9,7 @@ import {
 } from 'vue'
 import { ElButton, ElMessage, ElSlider } from 'element-plus'
 import { storeToRefs } from 'pinia'
+import { fetchAuthedBlob } from '@/api/resources'
 import type { CourseResource } from '@/stores/courseResource'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
@@ -38,6 +39,58 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const sourceUrl = computed(
   () => currentResource.value?.contentUrl || currentResource.value?.dataUrl || '',
 )
+// 受保护媒体通过带 Authorization 的 blob 加载，供 <audio>/<video> 使用，
+// 避免原生媒体元素无法携带 token 导致 401。
+const mediaSource = ref('')
+let activeBlobRevoke: (() => void) | null = null
+// 每次进场加载都自增的世代号，用于丢弃「迟到」的过期响应：仅当本次 fetch 仍是
+// 最新一次加载时才允许写入 mediaSource，避免旧资源的晚到结果覆盖当前资源。
+let mediaLoadSeq = 0
+// 使所有在途的媒体加载失效（此后返回即视为 stale，只回收自身 blob）。用于
+// close / unmount 等「当前 pending load 已不再有效」的场景，语义与
+// releaseActiveBlob（回收已生效 blob）分离。
+function invalidateMediaLoad() {
+  mediaLoadSeq += 1
+}
+function releaseActiveBlob() {
+  if (mediaSource.value) mediaSource.value = ''
+  const revoke = activeBlobRevoke
+  activeBlobRevoke = null
+  if (revoke) {
+    // 先让 Vue 在下一次 DOM 更新中清掉 <audio>/<video> 对 blob 的 src 引用，
+    // 再回收 object URL；若在元素仍引用 blob 时 revoke，Chromium 会中止加载并
+    // 在 console 记录 net::ERR_ABORTED。
+    void nextTick(revoke)
+  }
+}
+async function loadMediaSource(resource: CourseResource) {
+  const loadId = ++mediaLoadSeq
+  if (resource.mediaType !== 'audio' && resource.mediaType !== 'video') {
+    releaseActiveBlob()
+    return null
+  }
+  try {
+    const { url, revoke } = await fetchAuthedBlob(Number(resource.id))
+    if (loadId !== mediaLoadSeq) {
+      // 已被更新的资源取代：仅回收本次自己的 object URL，绝不触碰正在使用的当前 blob。
+      revoke()
+      return null
+    }
+    // 仅在成功取得新 blob URL 后才释放上一条，避免网络往返期间 mediaSource 被置空，
+    // 使 <audio>/<video> 失去有效源导致 play() 抛 NotSupportedError。
+    releaseActiveBlob()
+    activeBlobRevoke = revoke
+    mediaSource.value = url
+    return url
+  } catch {
+    // 迟到请求的失败也不该误伤当前资源的 blob / 状态。
+    if (loadId === mediaLoadSeq) {
+      releaseActiveBlob()
+      playerStore.setStatus('error', '资源暂时无法加载，请检查网络后重试。')
+    }
+    return null
+  }
+}
 const isPresentation = computed(() => {
   const resource = currentResource.value
   if (!resource) return false
@@ -82,6 +135,14 @@ async function openResource(resource: CourseResource) {
 async function play() {
   const media = activeMedia()
   if (!media) return
+  // 受保护媒体源尚未就绪（mediaSource 为空）时不播放，避免空源 NotSupportedError。
+  if (
+    (currentResource.value?.mediaType === 'audio' ||
+      currentResource.value?.mediaType === 'video') &&
+    !mediaSource.value
+  ) {
+    return
+  }
   try {
     if (playerStatus.value === 'ended' || media.ended) {
       media.currentTime = 0
@@ -211,9 +272,15 @@ async function exitClassroomMode() {
 }
 
 async function closePlayer() {
+  invalidateMediaLoad()
   stopMediaElements()
   await exitClassroomMode()
   playerStore.close()
+  // 等 currentResource 置空后 <audio>/<video> 已从 DOM 卸载，再回收 blob。
+  // 若在元素仍引用 blob 时 revoke，Chromium 会中止加载并在 console 记录
+  // net::ERR_ABORTED。
+  await nextTick()
+  releaseActiveBlob()
 }
 
 function handleFullscreenChange() {
@@ -240,7 +307,16 @@ watch(
   () => [currentResource.value?.id, sourceUrl.value] as const,
   async ([resourceId, resourceSource], [previousResourceId, previousSource]) => {
     if (!resourceId) return
+    const resource = currentResource.value
+    if (!resource) return
     stopMediaElements()
+    const loaded = await loadMediaSource(resource)
+    if (
+      (resource.mediaType === 'audio' || resource.mediaType === 'video') &&
+      !loaded
+    ) {
+      return
+    }
     await nextTick()
     const media = activeMedia()
     if (!media) return
@@ -303,7 +379,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  invalidateMediaLoad()
   stopMediaElements()
+  releaseActiveBlob()
   if (playerStatus.value === 'playing') playerStore.setStatus('paused')
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
   document.removeEventListener('keydown', handleKeydown)
@@ -391,7 +469,7 @@ defineExpose({
         <p>{{ currentResource.description || '幼儿园课程音频' }}</p>
         <audio
           ref="audioRef"
-          :src="sourceUrl"
+          :src="mediaSource"
           preload="metadata"
           @loadedmetadata="updateDuration"
           @timeupdate="updateProgress"
@@ -406,7 +484,7 @@ defineExpose({
         v-else-if="currentResource.mediaType === 'video'"
         ref="videoRef"
         class="stage-video"
-        :src="sourceUrl"
+        :src="mediaSource"
         :poster="currentResource.coverUrl || undefined"
         playsinline
         preload="metadata"

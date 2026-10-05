@@ -25,12 +25,18 @@ describe('public endpoint throttling metadata', () => {
     );
   });
 
-  it.each(['login', 'profile'])(
-    'does not throttle AuthController.%s',
+  it.each(['login', 'adminLogin', 'refresh'])(
+    'rate limits AuthController.%s',
     (methodName) => {
-      expect(guardsFor(AuthController.prototype, methodName)).not.toContain(
+      expect(guardsFor(AuthController.prototype, methodName)).toContain(
         ThrottlerGuard,
       );
     },
   );
+
+  it('does not rate limit the authenticated profile endpoint', () => {
+    expect(guardsFor(AuthController.prototype, 'profile')).not.toContain(
+      ThrottlerGuard,
+    );
+  });
 });

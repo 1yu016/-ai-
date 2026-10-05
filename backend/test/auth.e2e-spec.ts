@@ -8,6 +8,8 @@ import { App } from 'supertest/types';
 import { Repository } from 'typeorm';
 import { AuthModule } from '../src/auth/auth.module';
 import { Teacher } from '../src/auth/entities/teacher.entity';
+import { Administrator } from '../src/auth/entities/administrator.entity';
+import { RefreshTokenSession } from '../src/auth/entities/refresh-token-session.entity';
 
 describe('Auth (e2e)', () => {
   let app: INestApplication<App>;
@@ -32,7 +34,7 @@ describe('Auth (e2e)', () => {
         TypeOrmModule.forRoot({
           type: 'better-sqlite3',
           database: ':memory:',
-          entities: [Teacher],
+          entities: [Teacher, Administrator, RefreshTokenSession],
           synchronize: true,
         }),
         AuthModule,
@@ -72,8 +74,11 @@ describe('Auth (e2e)', () => {
       .send({ account: 'teacher_test', password: 'Teacher123!' })
       .expect(200);
 
-    expect(response.body).toEqual({
+    expect(response.body).toMatchObject({
       access_token: expect.any(String),
+      refresh_token: expect.any(String),
+      expires_in: expect.any(Number),
+      userType: 'teacher',
       teacherId: expect.any(Number),
     });
   });
@@ -91,10 +96,13 @@ describe('Auth (e2e)', () => {
       .set('Authorization', `Bearer ${login.body.access_token}`)
       .expect(200);
 
-    expect(profile.body).toEqual({
+    expect(profile.body).toMatchObject({
       teacherId: login.body.teacherId,
+      userId: login.body.teacherId,
       account: 'teacher_test',
       name: '测试老师',
+      role: 'teacher',
+      userType: 'teacher',
     });
   });
 

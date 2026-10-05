@@ -17,6 +17,8 @@ backend/data/*.sqlite-shm
 backend/data/*.sqlite-wal
 backend/uploads/resources/*
 !backend/uploads/resources/.gitkeep
+backend/uploads/avatars/*
+!backend/uploads/avatars/.gitkeep
 
 # Logs and test output
 **/*.log
@@ -45,4 +47,3 @@ Thumbs.db
 !**/.vscode/settings.json
 !**/.vscode/tasks.json
 !**/.vscode/launch.json
-

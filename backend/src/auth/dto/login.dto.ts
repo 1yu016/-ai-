@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class LoginDto {
   @IsString()
@@ -10,4 +10,9 @@ export class LoginDto {
   @IsNotEmpty({ message: '密码不能为空' })
   @MaxLength(128, { message: '密码最长 128 个字符' })
   password: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  deviceInfo?: string;
 }

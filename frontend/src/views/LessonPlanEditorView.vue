@@ -11,18 +11,28 @@ import { useCourseResourceStore, type CourseResource } from '@/stores/courseReso
 const route = useRoute(); const router = useRouter(); const store = useLessonPlanStore(); const resources = useCourseResourceStore()
 const { draft, dirty, saving, loading } = storeToRefs(store)
 const selectorOpen = ref(false); const selectedStepIndex = ref(-1)
-const aiDialogOpen = ref(false); const aiTheme = ref(''); const aiObjectives = ref('')
+const aiDialogOpen = ref(false); const aiTheme = ref(''); const aiObjectives = ref(''); const aiDomain = ref('')
 const isEdit = computed(() => Number.isInteger(Number(route.params.id)))
 const stepTypeText: Record<string,string> = { introduction:'导入', teacher_talk:'教师讲述', question:'提问', resource:'资源', activity:'活动', transition:'过渡', summary:'总结' }
-const selectedResource = (id?: number | null) => resources.sortedResources.find((item) => item.id === id)
+// Stage 6.6：回显查找优先用缓存感知的 getResourceById（覆盖不在前 100 条已加载列表的资源）。
+const selectedResource = (id?: number | null) => (id == null ? null : resources.getResourceById(id))
 function selectResource(index: number) { selectedStepIndex.value = index; selectorOpen.value = true }
 function updateResource(value: number | null) { const step = store.steps[selectedStepIndex.value]; if (!step) return; step.resourceId = value; store.markDirty() }
+// 编辑已有教案时预加载所有已绑定资源，保证 >100 条场景下也能正确回显标题（失败静默，回显兜底为“资源已失效”）。
+function preloadBoundResources() {
+  for (const step of store.steps) {
+    const id = step.resourceId
+    if (id != null && !resources.getResourceById(id)) {
+      void resources.ensureResourceById(Number(id)).catch(() => undefined)
+    }
+  }
+}
 function preview(step: LessonStep) { const resource = selectedResource(step.resourceId); if (resource) resourcesPlayer(resource) }
 function resourcesPlayer(resource: CourseResource) { import('@/stores/resourcePlayer').then(({ useResourcePlayerStore }) => useResourcePlayerStore().openResource(resource, false)) }
 function validate(): string | null { if (!draft.value.title.trim()) return '请填写教案标题'; if (!draft.value.theme.trim()) return '请填写课堂主题'; if (!draft.value.objectives.trim()) return '请填写教学目标'; for (const [index, step] of store.steps.entries()) { if (!step.title.trim()) return `第 ${index + 1} 个步骤缺少标题`; if (!step.instruction.trim()) return `第 ${index + 1} 个步骤缺少指导语`; if (step.stepType === 'resource' && !step.resourceId) return `第 ${index + 1} 个资源步骤尚未选择资源` } return null }
 async function save() { const problem = validate(); if (problem) return ElMessage.warning(problem); try { const plan = await store.save(); ElMessage.success('教案已保存'); if (!isEdit.value) await router.replace(`/lesson-plans/${plan.id}/edit`) } catch (e) { ElMessage.error(e instanceof Error ? e.message : '保存失败') } }
-function openAiDraftDialog() { aiTheme.value = ''; aiObjectives.value = ''; aiDialogOpen.value = true }
-async function aiDraft() { const theme = aiTheme.value.trim(); if (!theme) return ElMessage.warning('请先输入活动主题'); try { const ids = resources.sortedResources.filter((item) => typeof item.id === 'number').map((item) => Number(item.id)); await store.generateDraft(ids, { theme, objectives: aiObjectives.value }); aiDialogOpen.value = false; ElMessage.success('AI 草稿已生成，请检查和编辑后再保存') } catch (e) { ElMessage.error(e instanceof Error ? e.message : 'AI 生成失败') } }
+function openAiDraftDialog() { aiTheme.value = ''; aiObjectives.value = ''; aiDomain.value = draft.value.domain ?? ''; aiDialogOpen.value = true }
+async function aiDraft() { const theme = aiTheme.value.trim(); if (!theme) return ElMessage.warning('请先输入活动主题'); try { const ids = resources.sortedResources.filter((item) => typeof item.id === 'number').map((item) => Number(item.id)); await store.generateDraft(ids, { theme, domain: aiDomain.value, objectives: aiObjectives.value }); aiDialogOpen.value = false; ElMessage.success('AI 草稿已生成，请检查和编辑后再保存') } catch (e) { ElMessage.error(e instanceof Error ? e.message : 'AI 生成失败') } }
 function beforeUnload(event: BeforeUnloadEvent) { if (!dirty.value) return; event.preventDefault(); event.returnValue = '' }
 onBeforeRouteLeave(() => !dirty.value || window.confirm('存在未保存的内容，确定离开吗？'))
 onMounted(async () => {
@@ -31,6 +41,7 @@ onMounted(async () => {
   const tasks: Promise<unknown>[] = [resources.refreshLibrary()]
   if (isEdit.value) tasks.push(store.load(Number(route.params.id)).catch((e) => ElMessage.error(e instanceof Error ? e.message : '加载失败')))
   await Promise.all(tasks)
+  preloadBoundResources()
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 </script>
@@ -49,6 +60,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
           <ElFormItem label="活动主题（必填）" required>
             <ElInput v-model="aiTheme" maxlength="200" show-word-limit autofocus placeholder="例如：春天里的小花" @keyup.enter="aiDraft" />
           </ElFormItem>
+          <ElFormItem label="教学领域"><ElInput v-model="aiDomain" maxlength="100" placeholder="例如：科学、语言、艺术" /></ElFormItem>
           <ElFormItem label="教学目标或补充要求（可选）">
             <ElInput v-model="aiObjectives" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="可以留空，由 AI 根据主题自动编写" />
           </ElFormItem>

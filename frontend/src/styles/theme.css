@@ -1,0 +1,45 @@
+:root {
+  --app-bg: #fff8ee;
+  --app-surface: #fffdf9;
+  --app-surface-soft: #fffaf4;
+  --app-border: #f0ddce;
+  --app-border-soft: #f4e6dc;
+  --app-text: #60483e;
+  --app-muted: #9a7e6e;
+  --app-primary: #e99168;
+  --app-primary-dark: #d67b59;
+  --app-primary-soft: #ffe6d6;
+  --app-success: #4d9a69;
+  font-family: 'Nunito', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
+  color: var(--app-text);
+  background: var(--app-bg);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { min-height: 100%; margin: 0; }
+body { background: var(--app-bg); color: var(--app-text); }
+button, input, select, textarea { font: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 3px solid #f5b995;
+  outline-offset: 2px;
+}
+
+/* Keep Element Plus controls in the same warm visual language as the custom pages. */
+.el-button--primary { --el-button-bg-color: var(--app-primary); --el-button-border-color: var(--app-primary); --el-button-hover-bg-color: var(--app-primary-dark); --el-button-hover-border-color: var(--app-primary-dark); }
+.el-input__wrapper, .el-select__wrapper, .el-textarea__inner { border-radius: 11px; box-shadow: 0 0 0 1px var(--app-border) inset; background: var(--app-surface); }
+.el-card { border-color: var(--app-border); border-radius: 16px; }
+
+/* Resource widgets historically used a green/blue palette. Normalize their shared controls. */
+.resource-panel .button, .resource-panel .primary, .resource-panel .link.primary,
+.resource-library .button, .resource-library .primary { background: var(--app-primary); border-color: var(--app-primary); color: #fff; }
+.resource-panel .button:hover, .resource-panel .primary:hover,
+.resource-library .button:hover, .resource-library .primary:hover { background: var(--app-primary-dark); border-color: var(--app-primary-dark); }
+
+/* Shared management surface: applies to resources, classes, students, devices and teachers. */
+.management .panel { background: var(--app-surface) !important; border-color: var(--app-border) !important; border-radius: 16px !important; }
+.management .button, .management .button.primary { background: var(--app-primary) !important; border-color: var(--app-primary) !important; color: #fff !important; border-radius: 12px !important; }
+.management .button:hover, .management .button.primary:hover { background: var(--app-primary-dark) !important; border-color: var(--app-primary-dark) !important; }
+.management .ghost, .management .button.outline { background: var(--app-surface) !important; border: 1px solid var(--app-border) !important; color: var(--app-primary-dark) !important; border-radius: 12px !important; }
+.management .ghost:hover, .management .button.outline:hover { background: var(--app-primary-soft) !important; }
+.management input, .management select, .management textarea { border-color: var(--app-border) !important; background: var(--app-surface) !important; color: var(--app-text); }
+.management .muted { color: var(--app-muted) !important; }

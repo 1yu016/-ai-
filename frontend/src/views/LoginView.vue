@@ -8,7 +8,11 @@ import { useUserStore, type TeacherInfo } from '@/stores/user'
 
 type LoginResponse = {
   access_token: string
-  teacherId: number
+  refresh_token: string
+  expires_in: number
+  userType: 'teacher' | 'administrator'
+  teacherId?: number
+  administratorId?: number
 }
 
 type MigrationResponse = {
@@ -25,6 +29,7 @@ const account = ref('')
 const password = ref('')
 const submitting = ref(false)
 const errorText = ref('')
+const loginType = ref<'teacher' | 'administrator'>('teacher')
 
 async function submitLogin() {
   const normalizedAccount = account.value.trim()
@@ -37,16 +42,17 @@ async function submitLogin() {
   submitting.value = true
   errorText.value = ''
   try {
-    const login = await http.post<LoginResponse>('/auth/login', {
+    const login = await http.post<LoginResponse>(loginType.value === 'teacher' ? '/auth/login' : '/auth/admin/login', {
       account: normalizedAccount,
       password: password.value,
+      deviceInfo: 'web',
     })
     const profile = await http.get<TeacherInfo>('/auth/profile', {
       headers: {
         Authorization: `Bearer ${login.data.access_token}`,
       },
     })
-    userStore.setLogin(login.data.access_token, profile.data)
+    userStore.setLogin(login.data.access_token, profile.data, login.data.refresh_token)
 
     // 登录已经成功。迁移异常只提示，不阻塞教师进入聊天页面。
     try {
@@ -58,10 +64,7 @@ async function submitLogin() {
         migration.data.success === false &&
         migration.data.message?.includes('已经迁移过')
       if (migration.data.success || alreadyMigrated) {
-        conversationStore.migrateVisitorToTeacher(
-          userStore.visitorId,
-          profile.data.teacherId,
-        )
+        if (profile.data.teacherId) conversationStore.migrateVisitorToTeacher(userStore.visitorId, profile.data.teacherId)
       }
     } catch (error) {
       console.error('游客会话迁移失败：', error)
@@ -86,8 +89,9 @@ async function submitLogin() {
     <section class="login-card" aria-labelledby="login-title">
       <div class="login-icon" aria-hidden="true">🌼</div>
       <p class="eyebrow">幼儿园小助手</p>
-      <h1 id="login-title">教师登录</h1>
-      <p class="description">登录后可以使用教师身份继续和小花老师对话。</p>
+      <div class="login-tabs"><button type="button" :class="{active: loginType === 'teacher'}" @click="loginType = 'teacher'">教师登录</button><button type="button" :class="{active: loginType === 'administrator'}" @click="loginType = 'administrator'">管理员登录</button></div>
+      <h1 id="login-title">{{ loginType === 'teacher' ? '教师登录' : '管理员登录' }}</h1>
+      <p class="description">登录后进入对应的教学管理功能。</p>
 
       <ElAlert
         v-if="errorText"
@@ -141,6 +145,7 @@ async function submitLogin() {
 </template>
 
 <style scoped>
+.login-tabs{display:flex;gap:8px;margin:0 0 18px;padding:4px;border-radius:12px;background:#fff4e8}.login-tabs button{flex:1;border:0;border-radius:9px;background:transparent;color:#9a806f;padding:9px;cursor:pointer}.login-tabs button.active{background:#fff;color:#bd6d4f;box-shadow:0 2px 8px #c68b6822;font-weight:700}
 .login-page {
   min-height: 100dvh;
   box-sizing: border-box;

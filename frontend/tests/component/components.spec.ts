@@ -1,4 +1,4 @@
-import ElementPlus, { ElMessageBox } from 'element-plus'
+import ElementPlus, { ElMessageBox, type MessageBoxData } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, type RouteRecordRaw } from 'vue-router'
@@ -16,16 +16,16 @@ import { useUserStore } from '@/stores/user'
 import { useCourseResourceStore, type ServerResource } from '@/stores/courseResource'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 import { useLessonPlanStore, type LessonPlan } from '@/stores/lessonPlan'
-import type { LessonRun } from '@/stores/lessonRun'
 
 const resource: ServerResource = { id: 12, title: '春天图片', aliases: [], description: '观察春天', resourceType: 'image', category: '图片卡片', ageGroup: 'middle', tags: ['春天'], fileUrl: '/uploads/resources/spring.jpg', coverUrl: null, fileName: 'spring.jpg', mimeType: 'image/jpeg', fileSize: 10, duration: null, reviewStatus: 'approved', createdAt: '2026-01-01' }
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天课堂', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'ready', version: 2, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
-const run: LessonRun = { id: 9, runId: 9, lessonPlanId: 3, status: 'running', currentStepOrder: 1, lessonTitle: '春天课堂', lessonObjectives: '观察颜色', ageGroup: '4-5', steps: [{ sortOrder: 1, title: '看一看', stepType: 'question', instruction: '你发现了什么？', durationSeconds: 60 }, { sortOrder: 2, title: '总结', stepType: 'summary', instruction: '说说发现', durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
+const run = { id: 9, lessonPlanId: 3, deviceId: 1, version: 1, status: 'running', currentStepIndex: 0, title: '春天课堂', steps: [{ stepIndex: 0, title: '看一看', type: 'question', content: '你发现了什么？', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '总结', type: 'summary', content: '说说发现', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
 
 function routerFor(path: string, routes?: RouteRecordRaw[]) {
   const router = createRouter({ history: createMemoryHistory(), routes: routes ?? [
     { path: '/login', component: LoginView },
     { path: '/chat', component: { template: '<div>聊天页</div>' } },
+    { path: '/my-classes', component: { template: '<div>我的班级</div>' } },
     { path: '/lesson-plans', component: { template: '<div>教案列表</div>' } },
     { path: '/lesson-plans/new', component: LessonPlanEditorView },
     { path: '/classroom/lesson/:runId', component: LessonClassroomView },
@@ -61,6 +61,7 @@ describe('login and role visibility', () => {
     loginTeacher()
     const teacher = shallowMount(ChatView, { global: { plugins: [router, ElementPlus], stubs: { CourseResourcesPanel: true, FavoritesPanel: true, ClassroomAssistantPanel: true } } })
     expect(teacher.text()).toContain('备课中心')
+    expect(teacher.text()).toContain('我的班级')
   })
 
   it('accepts a free teacher prompt without generating when assistant mode opens', async () => {
@@ -86,7 +87,7 @@ describe('login and role visibility', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().includes('课间模式'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('启发引导'))!.trigger('click')
     await flushPromises()
 
     expect(post).not.toHaveBeenCalled()
@@ -218,7 +219,7 @@ describe('lesson components', () => {
   it('edits lesson steps and previews AI output locally', async () => {
     let resolveResources!: (value: { data: { items: never[]; total: number } }) => void
     const get = vi.spyOn(http, 'get').mockImplementation(() => new Promise((resolve) => { resolveResources = resolve }))
-    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { title: 'AI春天教案', theme: '春天', ageGroup: '4-5', estimatedMinutes: 20, objectives: '观察颜色', steps: [{ title: 'AI观察', stepType: 'question', instruction: '你看到了什么？', durationSeconds: 120 }] } })
+    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { id: 8, output: { title: 'AI春天教案', theme: '春天', ageGroup: '4-5', domain: '科学', estimatedMinutes: 20, teachingObjectives: ['观察颜色'], teachingProcess: [{ title: 'AI观察', stepType: 'question', content: '你看到了什么？', durationSeconds: 120 }] } } })
     const router = await routerFor('/lesson-plans/new')
     const wrapper = mount(LessonPlanEditorView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true, LessonResourceSelector: true } } })
     await flushPromises()
@@ -243,7 +244,7 @@ describe('lesson components', () => {
     await confirm!.trigger('click')
     await flushPromises()
     await vi.waitFor(() => expect(lessonStore.steps[0]?.title).toBe('AI观察'))
-    expect(post).toHaveBeenCalledWith('/ai/lesson-plan-draft', expect.objectContaining({ theme: '春天' }))
+    expect(post).toHaveBeenCalledWith('/lesson-plans/ai-drafts', expect.objectContaining({ theme: '春天', teachingObjectives: '春天' }))
     expect(lessonStore.current).toBeNull()
     wrapper.unmount()
   })
@@ -251,23 +252,23 @@ describe('lesson components', () => {
   it('starts a lesson from the list with one click', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [plan], total: 1 } })
     vi.spyOn(http, 'post').mockResolvedValue({ data: { runId: 9 } })
-    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
+    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/preflight/:planId', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
     const wrapper = mount(LessonPlanListView, { global: { plugins: [router, ElementPlus] } })
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text().includes('开始上课'))!.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/classroom/lesson/9')
+    expect(router.currentRoute.value.path).toBe('/classroom/preflight/3')
   })
 
   it('offers the guided classroom assistant during a non-question step', async () => {
-    const introductionRun: LessonRun = { ...run, steps: [{ ...run.steps[0]!, stepType: 'introduction' }] }
+    const introductionRun = { ...run, steps: [{ ...run.steps[0]!, type: 'introduction' }] }
     vi.spyOn(http, 'get').mockResolvedValue({ data: introductionRun })
     const post = vi.spyOn(http, 'post').mockImplementation(async (url) => url === '/ai/tts'
       ? { data: { audioUrl: 'data:audio/mpeg;base64,AAAA' } }
       : { data: { mode: 'guided_dialogue', ability: 'guided_question', reply: '你的小手指像数字几呀？', teacherTip: '等待幼儿观察手指后再回答。', suggestedAction: null, requiresTeacherConfirmation: false } })
     vi.stubGlobal('Audio', class {
       src = ''
-      constructor(_source?: string) {}
+      constructor() {}
       addEventListener() {}
       async play() {}
       pause() {}
@@ -296,7 +297,7 @@ describe('lesson components', () => {
   it('disables next step while paused and confirms completion', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { ...run, status: 'paused' } })
     const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { ...run, status: 'completed' } })
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm')
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as unknown as MessageBoxData)
     const router = await routerFor('/classroom/lesson/9')
     const wrapper = mount(LessonClassroomView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true } } })
     await flushPromises()
@@ -305,6 +306,15 @@ describe('lesson components', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('结束课堂'))!.trigger('click')
     await flushPromises()
     expect(ElMessageBox.confirm).toHaveBeenCalled()
-    expect(post).toHaveBeenCalledWith('/lesson-runs/9/complete')
+    expect(post).toHaveBeenCalledWith('/classroom-runs/9/complete', expect.objectContaining({ version: 1, requestId: expect.any(String) }))
+  })
+
+  it('renders a read-only page after the run has ended', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...run, status: 'cancelled' } })
+    const router = await routerFor('/classroom/lesson/9')
+    const wrapper = mount(LessonClassroomView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('本节课堂已中止')
+    expect(wrapper.text()).not.toContain('下一步')
   })
 })

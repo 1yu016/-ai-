@@ -10,6 +10,13 @@ export enum LessonPlanStatus {
   Archived = 'archived',
 }
 
+export enum LessonPlanType {
+  Normal = 'normal',
+  Review = 'review',
+  Activity = 'activity',
+  Break = 'break',
+}
+
 export enum LessonStepType {
   Introduction = 'introduction',
   TeacherTalk = 'teacher_talk',
@@ -25,6 +32,25 @@ export enum LessonRunStatus {
   Paused = 'paused',
   Completed = 'completed',
   Cancelled = 'cancelled',
+}
+
+export enum LessonAiDraftStatus {
+  Generated = 'generated',
+  Confirmed = 'confirmed',
+  Failed = 'failed',
+}
+
+export enum LessonStepActionType {
+  AvatarAction = 'avatar_action',
+  VoiceInstruction = 'voice_instruction',
+  Reward = 'reward',
+  RollCall = 'roll_call',
+}
+
+export enum LessonRecoveryTrigger {
+  Manual = 'manual',
+  Resume = 'resume',
+  StepError = 'step_error',
 }
 
 export type LessonStepSnapshot = {
