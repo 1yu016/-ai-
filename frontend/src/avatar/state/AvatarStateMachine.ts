@@ -31,7 +31,7 @@ export interface AvatarStateSnapshot {
 const SNAPSHOT: Record<AvatarState, AvatarStateSnapshot> = {
   idle: { state: 'idle', action: 'idle', expression: 'neutral' },
   listen: { state: 'listen', action: 'listen', expression: 'neutral' },
-  think: { state: 'think', action: 'thinking', expression: 'thinking' },
+  think: { state: 'think', action: 'think', expression: 'thinking' },
   talk: { state: 'talk', action: 'talk', expression: 'neutral' },
   happy: { state: 'happy', action: 'happy', expression: 'happy' },
   question: { state: 'question', action: 'question', expression: 'question' },

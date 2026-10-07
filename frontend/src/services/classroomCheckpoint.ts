@@ -1,7 +1,7 @@
 import { ElMessage } from 'element-plus'
 import { http } from '@/api/http'
 
-export type Attendance = 'present' | 'late' | 'absent'
+export type Attendance = 'present' | 'late' | 'absent' | 'leave'
 export type CheckpointType = 'roll_call' | 'reward'
 
 export type RewardRecord = {
@@ -13,9 +13,17 @@ export type RewardRecord = {
   teacherId: number
   teacherName: string | null
   rewardType: string
+  rewardCategory?: string
+  rewardForms?: string[]
+  points?: number
+  badgeCode?: string | null
+  praiseText?: string | null
+  animationKey?: string | null
   stars: number
   reason: string | null
   requestId: string
+  revokedAt?: string | null
+  revokeReason?: string | null
   createdAt: string
 }
 

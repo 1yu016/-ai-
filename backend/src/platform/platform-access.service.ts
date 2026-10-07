@@ -11,6 +11,8 @@ import { TeacherRole } from '../auth/entities/teacher.entity';
 import { SchoolClass } from './entities/school-class.entity';
 import { Student } from './entities/student.entity';
 import { TeacherClass } from './entities/teacher-class.entity';
+import { AuditService } from './audit.service';
+import { AuditResult } from './platform.types';
 
 @Injectable()
 export class PlatformAccessService {
@@ -20,6 +22,7 @@ export class PlatformAccessService {
     @InjectRepository(SchoolClass)
     private readonly classes: Repository<SchoolClass>,
     @InjectRepository(Student) private readonly students: Repository<Student>,
+    private readonly audit: AuditService,
   ) {}
 
   isAdministrator(actor: JwtTeacherPayload): boolean {
@@ -30,8 +33,16 @@ export class PlatformAccessService {
   }
 
   requireAdministrator(actor: JwtTeacherPayload): void {
-    if (!this.isAdministrator(actor))
+    if (!this.isAdministrator(actor)) {
+      void this.audit
+        .write(actor, {
+          action: 'permission.denied',
+          targetType: 'administrator_operation',
+          result: AuditResult.Failure,
+        })
+        .catch(() => undefined);
       throw new ForbiddenException('仅管理员可以执行该操作');
+    }
   }
 
   async requireClassAccess(
@@ -45,13 +56,29 @@ export class PlatformAccessService {
       schoolClass.schoolId &&
       actor.schoolId !== schoolClass.schoolId
     ) {
+      await this.audit.write(actor, {
+        action: 'permission.denied',
+        targetType: 'class',
+        targetId: classId,
+        result: AuditResult.Failure,
+        metadata: { reason: 'cross_school' },
+      });
       throw new ForbiddenException('无权访问其他园所数据');
     }
     if (this.isAdministrator(actor)) return schoolClass;
     const relation = await this.teacherClasses.findOne({
       where: { teacherId: actor.sub, classId },
     });
-    if (!relation) throw new ForbiddenException('无权访问该班级');
+    if (!relation) {
+      await this.audit.write(actor, {
+        action: 'permission.denied',
+        targetType: 'class',
+        targetId: classId,
+        result: AuditResult.Failure,
+        metadata: { reason: 'teacher_class_missing' },
+      });
+      throw new ForbiddenException('无权访问该班级');
+    }
     return schoolClass;
   }
 

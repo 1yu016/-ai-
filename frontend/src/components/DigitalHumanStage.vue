@@ -10,8 +10,8 @@ const ThreeAvatarStage = defineAsyncComponent(() => import('./avatar/ThreeAvatar
 const store = useDigitalHumanStore()
 const { action, visible, compact, fallback, roleName, roleId, roles, error, webglSupported, modelState } = storeToRefs(store)
 
-const actionText: Record<string, string> = { idle: '准备好一起学习啦', listen: '我在认真听哦', thinking: '让我想一想', talk: '我来和你说一说', happy: '太棒啦', question: '你发现了吗', encourage: '再试一次，你可以的', praise: '给你一个大大的表扬', wave: '我们开始吧', goodbye: '下次再见' }
-const face = computed(() => action.value === 'thinking' ? '🤔' : action.value === 'question' ? '❓' : action.value === 'talk' ? '😊' : action.value === 'praise' || action.value === 'happy' ? '🥳' : '🌼')
+const actionText: Record<string, string> = { idle: '准备好一起学习啦', listen: '我在认真听哦', think: '让我想一想', talk: '我来和你说一说', happy: '太棒啦', question: '你发现了吗', encourage: '再试一次，你可以的', wave: '我们开始吧', goodbye: '下次再见' }
+const face = computed(() => action.value === 'think' ? '🤔' : action.value === 'question' ? '❓' : action.value === 'talk' ? '😊' : action.value === 'happy' ? '🥳' : '🌼')
 
 function detectWebGL(): boolean {
   try {

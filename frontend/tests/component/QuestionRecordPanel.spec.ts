@@ -26,17 +26,17 @@ describe('QuestionRecordPanel', () => {
     expect(wrapper.text()).toContain('还没有正式问题记录')
   })
 
-  it('后端接口未就绪 → 明确展示 backend-not-ready，不冒充成功', async () => {
+  it('正式接口失败时展示错误，不回落到本地假数据', async () => {
     vi.spyOn(questionsService, 'listRunQuestions').mockRejectedValue(
       new Error('网络错误'),
     )
     const wrapper = mount(QuestionRecordPanel, {
-      props: { runId: 9, lessonStepIndex: 0, students, backendReady: false },
+      props: { runId: 9, lessonStepIndex: 0, students },
       global: { plugins: [ElementPlus, createPinia()] },
     })
     await flushPromises()
-    expect(wrapper.text()).toContain('后端未就绪')
-    expect(wrapper.text()).toContain('FRONTEND_READY_BACKEND_BLOCKED')
+    expect(wrapper.text()).toContain('网络错误')
+    expect(wrapper.findAll('.question-list article')).toHaveLength(0)
   })
 
   it('拉取失败展示 error 与重试（非 backend-not-ready）', async () => {
@@ -44,7 +44,7 @@ describe('QuestionRecordPanel', () => {
       new Error('网络错误'),
     )
     const wrapper = mount(QuestionRecordPanel, {
-      props: { runId: 9, lessonStepIndex: 0, students, backendReady: true },
+      props: { runId: 9, lessonStepIndex: 0, students },
       global: { plugins: [ElementPlus, createPinia()] },
     })
     await flushPromises()
@@ -57,7 +57,9 @@ describe('QuestionRecordPanel', () => {
     const created = {
       id: 1, studentId: 1, studentName: '朵朵', classId: 1, classroomRunId: 9,
       lessonStepIndex: 0, questionText: '为什么天空是蓝色的？', topic: '科学探索',
-      teacherId: 1, teacherName: '王雪梅', createdAt: '2026-10-02T15:00:00.000Z',
+      asrRawText: '为什么天空是蓝色的？', teacherCorrectedText: null,
+      domain: '科学', isAnonymous: false, lessonTitle: '天空课',
+      teacherId: 1, teacherName: '王雪梅', createdAt: '2026-10-02T15:00:00.000Z', updatedAt: '2026-10-02T15:00:00.000Z',
     }
     vi.spyOn(questionsService, 'listRunQuestions').mockResolvedValue([])
     const createSpy = vi

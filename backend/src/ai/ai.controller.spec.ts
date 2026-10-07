@@ -10,6 +10,8 @@ import { ResourceService } from '../resources/resource.service';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 import { AudioService } from './audio.service';
+import { ClassroomDirectorService } from './classroom-director.service';
+import { CommandSynonymService } from './command-synonym.service';
 
 describe('POST /ai/chat', () => {
   let app: INestApplication;
@@ -29,11 +31,21 @@ describe('POST /ai/chat', () => {
           useValue: { chat, classifyCommand, classroomAssistant },
         },
         {
+          provide: CommandSynonymService,
+          useValue: { list: jest.fn(), create: jest.fn(), remove: jest.fn() },
+        },
+        {
           provide: AudioService,
           useValue: { asr: jest.fn(), tts: jest.fn() },
         },
         { provide: ChatPersistenceService, useValue: { saveExchange } },
         { provide: ResourceService, useValue: { search, getOne } },
+        {
+          provide: ClassroomDirectorService,
+          useValue: {
+            generate: jest.fn(), edit: jest.fn(), confirm: jest.fn(), reject: jest.fn(),
+          },
+        },
       ],
     });
     builder

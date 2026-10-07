@@ -19,6 +19,11 @@ import {
   TeacherRole,
 } from '../src/auth/entities/teacher.entity';
 import { ClassroomTicket } from '../src/platform/entities/classroom-ticket.entity';
+import { Device } from '../src/platform/entities/device.entity';
+import { AuditLog } from '../src/platform/entities/audit-log.entity';
+import { AuditResult, DeviceStatus } from '../src/platform/platform.types';
+import { ClassroomRun } from '../src/classroom-runs/entities/classroom-run.entity';
+import { ClassroomRunStatus } from '../src/classroom-runs/classroom-run.types';
 import {
   PLATFORM_ENTITIES,
   PlatformModule,
@@ -29,6 +34,9 @@ describe('Member A stage one platform (e2e)', () => {
   let teachers: Repository<Teacher>;
   let administrators: Repository<Administrator>;
   let tickets: Repository<ClassroomTicket>;
+  let devices: Repository<Device>;
+  let auditLogs: Repository<AuditLog>;
+  let runs: Repository<ClassroomRun>;
   let jwt: JwtService;
   let adminToken: string;
   let globalAdminToken: string;
@@ -65,6 +73,7 @@ describe('Member A stage one platform (e2e)', () => {
             Teacher,
             Administrator,
             RefreshTokenSession,
+            ClassroomRun,
             ...PLATFORM_ENTITIES,
           ],
           synchronize: true,
@@ -85,6 +94,9 @@ describe('Member A stage one platform (e2e)', () => {
     teachers = app.get(getRepositoryToken(Teacher));
     administrators = app.get(getRepositoryToken(Administrator));
     tickets = app.get(getRepositoryToken(ClassroomTicket));
+    devices = app.get(getRepositoryToken(Device));
+    auditLogs = app.get(getRepositoryToken(AuditLog));
+    runs = app.get(getRepositoryToken(ClassroomRun));
     jwt = app.get(JwtService);
 
     await administrators.save(
@@ -427,22 +439,64 @@ describe('Member A stage one platform (e2e)', () => {
   });
 
   it('enforces ticket expiry, one-time use and device matching', async () => {
+    await request(app.getHttpServer())
+      .post(`/devices/${deviceId}/heartbeat`)
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ deviceCode })
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toMatchObject({
+          id: deviceId,
+          status: 'online',
+          online: true,
+        });
+        expect(response.body.lastOnlineAt).toBeTruthy();
+      });
     const generated = await request(app.getHttpServer())
       .post('/classroom-tickets')
       .set('Authorization', `Bearer ${teacherToken}`)
       .send({ deviceId, classroomId, classId, expiresInSeconds: 120 })
       .expect(201);
+    expect(generated.body).toMatchObject({
+      ticket: expect.any(String),
+      expiresAt: expect.any(String),
+      deviceCode,
+    });
+    const persisted = await tickets.findOneByOrFail({
+      ticketHash: createHash('sha256')
+        .update(generated.body.ticket)
+        .digest('hex'),
+    });
+    expect(persisted.ticketHash).not.toBe(generated.body.ticket);
     await request(app.getHttpServer())
       .post('/classroom-tickets/consume')
+      .send({ ticket: generated.body.ticket, deviceCode })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post('/classroom-tickets/consume')
+      .set('Authorization', `Bearer ${teacherToken}`)
       .send({ ticket: generated.body.ticket, deviceCode: 'WRONG-DEVICE' })
       .expect(400);
     await request(app.getHttpServer())
       .post('/classroom-tickets/consume')
+      .set('Authorization', `Bearer ${otherToken}`)
       .send({ ticket: generated.body.ticket, deviceCode })
-      .expect(200)
-      .expect({ classId, classroomId, deviceId, lessonRunId: null });
+      .expect(403);
     await request(app.getHttpServer())
       .post('/classroom-tickets/consume')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ ticket: generated.body.ticket, deviceCode })
+      .expect(200)
+      .expect({
+        classId,
+        classroomId,
+        deviceId,
+        lessonRunId: null,
+        deviceCode,
+      });
+    await request(app.getHttpServer())
+      .post('/classroom-tickets/consume')
+      .set('Authorization', `Bearer ${teacherToken}`)
       .send({ ticket: generated.body.ticket, deviceCode })
       .expect(400);
 
@@ -462,8 +516,118 @@ describe('Member A stage one platform (e2e)', () => {
     );
     await request(app.getHttpServer())
       .post('/classroom-tickets/consume')
+      .set('Authorization', `Bearer ${teacherToken}`)
       .send({ ticket: expiredPlain, deviceCode })
       .expect(400);
+  });
+
+  it('shows binding and computed heartbeat state while limiting teachers to their classes', async () => {
+    const adminList = await request(app.getHttpServer())
+      .get('/devices')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(adminList.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: deviceId,
+          online: true,
+          binding: expect.objectContaining({
+            classId,
+            classroomId,
+            className: '中一班',
+            classroomName: '彩虹教室',
+          }),
+        }),
+      ]),
+    );
+    const teacherList = await request(app.getHttpServer())
+      .get('/devices')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .expect(200);
+    expect(teacherList.body.map((item: { id: number }) => item.id)).toContain(
+      deviceId,
+    );
+    const otherTeacherList = await request(app.getHttpServer())
+      .get('/devices')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .expect(200);
+    expect(
+      otherTeacherList.body.map((item: { id: number }) => item.id),
+    ).not.toContain(deviceId);
+  });
+
+  it('marks a device offline after its heartbeat timeout', async () => {
+    const device = await devices.findOneByOrFail({ id: deviceId });
+    device.status = DeviceStatus.Online;
+    device.lastOnlineAt = new Date(Date.now() - 10 * 60 * 1000);
+    await devices.save(device);
+    const response = await request(app.getHttpServer())
+      .get('/devices')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(
+      response.body.find((item: { id: number }) => item.id === deviceId),
+    ).toMatchObject({ status: 'offline', online: false });
+  });
+
+  it('invalidates an unused ticket when the classroom has ended', async () => {
+    const generated = await request(app.getHttpServer())
+      .post('/classroom-tickets')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ deviceId, classroomId, classId, expiresInSeconds: 120 })
+      .expect(201);
+    const now = new Date();
+    await runs.save(
+      runs.create({
+        lessonPlanId: 999,
+        lessonPlanVersion: 1,
+        teacherId,
+        classId,
+        classroomId,
+        deviceId,
+        avatarVersionId: null,
+        avatarCharacterId: null,
+        title: '已结束课堂',
+        status: ClassroomRunStatus.Completed,
+        currentStepIndex: 0,
+        startedAt: now,
+        pausedAt: null,
+        resumedAt: null,
+        endedAt: new Date(now.getTime() + 1000),
+        breakStartedAt: null,
+        breakEndsAt: null,
+        elapsedSeconds: 10,
+        version: 1,
+      }),
+    );
+    await request(app.getHttpServer())
+      .post('/classroom-tickets/consume')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ ticket: generated.body.ticket, deviceCode })
+      .expect(400);
+  });
+
+  it('prevents disabled devices from heartbeats and classroom ticket generation', async () => {
+    await request(app.getHttpServer())
+      .patch(`/devices/${deviceId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'disabled' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`/devices/${deviceId}/heartbeat`)
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ deviceCode })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post('/classroom-tickets')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .send({ deviceId, classroomId, classId, expiresInSeconds: 120 })
+      .expect(409);
+    await request(app.getHttpServer())
+      .patch(`/devices/${deviceId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'offline' })
+      .expect(200);
   });
 
   it('stores and revokes photo, voice and artwork consent after class permission checks', async () => {
@@ -521,5 +685,82 @@ describe('Member A stage one platform (e2e)', () => {
     expect(serialized).not.toContain('GlobalAdmin123!');
     expect(serialized).not.toContain('access_token');
     expect(serialized).not.toContain('refresh_token');
+  });
+
+  it('exposes only aggregated dashboard data to administrators', async () => {
+    const dashboard = await request(app.getHttpServer())
+      .get('/admin/dashboard')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(dashboard.body).toMatchObject({
+      teachers: expect.any(Number),
+      classes: expect.any(Number),
+      students: expect.any(Number),
+      devices: {
+        total: expect.any(Number),
+        online: expect.any(Number),
+        offline: expect.any(Number),
+      },
+      classrooms: {
+        today: expect.any(Number),
+        active: expect.any(Number),
+        abnormal: expect.any(Number),
+      },
+      resources: { pending: 0, disabled: 0 },
+      ai: {
+        total: expect.any(Number),
+        successRate: expect.any(Number),
+        errorRate: expect.any(Number),
+      },
+      storage: {
+        indexedResourceBytes: 0,
+        physicalBytes: expect.any(Number),
+      },
+    });
+    expect(JSON.stringify(dashboard.body)).not.toContain('小雨');
+    await request(app.getHttpServer())
+      .get('/admin/dashboard')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .expect(403);
+  });
+
+  it('keeps audit logs read-only for teachers and masks sensitive fields', async () => {
+    await auditLogs.save(
+      auditLogs.create({
+        actorType: AuthUserType.Administrator,
+        actorId: 1,
+        action: 'data.export',
+        targetType: 'classroom_report',
+        targetId: '1',
+        result: AuditResult.Success,
+        ipAddress: '192.168.12.34',
+        metadata: JSON.stringify({
+          phone: '13800138000',
+          accessToken: 'sensitive-token',
+          safeField: '可审计摘要',
+        }),
+      }),
+    );
+    const response = await request(app.getHttpServer())
+      .get('/audit-logs?action=data.export&page=1&pageSize=20')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    expect(response.body.items[0]).toMatchObject({
+      action: 'data.export',
+      ipAddress: '192.168.*.*',
+      metadata: {
+        phone: '***',
+        accessToken: '***',
+        safeField: '可审计摘要',
+      },
+    });
+    await request(app.getHttpServer())
+      .get('/audit-logs')
+      .set('Authorization', `Bearer ${teacherToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .delete(`/audit-logs/${response.body.items[0].id}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(404);
   });
 });

@@ -58,7 +58,7 @@ describe('lesson run state flow', () => {
     await store.load(9)
     await store.next()
     expect(store.run?.currentStepIndex).toBe(1)
-    expect(post).toHaveBeenNthCalledWith(1, '/classroom-runs/9/steps/1', expect.objectContaining({ version: 1, requestId: expect.any(String) }))
+    expect(post).toHaveBeenNthCalledWith(1, '/classroom-commands', expect.objectContaining({ expectedVersion: 1, operation: 'next_step', requestId: expect.any(String) }))
     expect(useResourcePlayerStore().controlRequest?.action).toBe('stop')
     await store.pause(); expect(store.run?.status).toBe('paused')
     await store.resume(); expect(store.run?.status).toBe('running')

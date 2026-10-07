@@ -35,6 +35,12 @@ import {
 import { ClassroomEvent } from '../src/classroom-runs/entities/classroom-event.entity';
 import { ClassroomSnapshot } from '../src/classroom-runs/entities/classroom-snapshot.entity';
 import { ClassroomRun } from '../src/classroom-runs/entities/classroom-run.entity';
+import { ClassroomRunStepSnapshot } from '../src/classroom-runs/entities/classroom-run-step-snapshot.entity';
+import { ClassroomCommandRecord } from '../src/classroom-runs/entities/classroom-command-record.entity';
+import { Student } from '../src/platform/entities/student.entity';
+import { StudentAttendanceRecord } from '../src/classroom-runs/entities/student-attendance-record.entity';
+import { StudentAttendanceChange } from '../src/classroom-runs/entities/student-attendance-change.entity';
+import { ClassroomRollCallRecord } from '../src/classroom-runs/entities/classroom-roll-call-record.entity';
 import {
   ClassroomEventType,
   ClassroomRunStatus,
@@ -72,6 +78,8 @@ import {
   RESOURCE_ENTITIES,
   ResourceModule,
 } from '../src/resources/resource.module';
+import { ClassroomMobileModule } from '../src/classroom-mobile/classroom-mobile.module';
+import { ClassroomControlSession } from '../src/classroom-mobile/entities/classroom-control-session.entity';
 
 type PlanFixture = { id: number; version: number };
 
@@ -79,6 +87,7 @@ describe('Task four classroom run state machine (e2e)', () => {
   let app: INestApplication;
   let token: string;
   let otherToken: string;
+  let adminToken: string;
   let teacherId: number;
   let classId: number;
   let foreignClassId: number;
@@ -127,6 +136,7 @@ describe('Task four classroom run state machine (e2e)', () => {
             ...LESSON_PLAN_ENTITIES,
             ...CLASSROOM_RUN_ENTITIES,
             ...AVATAR_ENTITIES,
+            ClassroomControlSession,
           ],
           synchronize: true,
         }),
@@ -135,6 +145,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         ResourceModule,
         LessonPlanModule,
         ClassroomRunModule,
+        ClassroomMobileModule,
       ],
     }).compile();
     app = fixture.createNestApplication();
@@ -171,6 +182,23 @@ describe('Task four classroom run state machine (e2e)', () => {
       await request(app.getHttpServer())
         .post('/auth/login')
         .send({ account: other.account, password: 'Teacher123!' })
+        .expect(200)
+    ).body.access_token as string;
+    const administrators = app.get<Repository<Administrator>>(
+      getRepositoryToken(Administrator),
+    );
+    await administrators.save(
+      administrators.create({
+        account: 'run_admin',
+        passwordHash: await bcrypt.hash('Admin123!', 4),
+        name: '课堂审计管理员',
+        schoolId: 'garden-run',
+      }),
+    );
+    adminToken = (
+      await request(app.getHttpServer())
+        .post('/auth/admin/login')
+        .send({ account: 'run_admin', password: 'Admin123!' })
         .expect(200)
     ).body.access_token as string;
 
@@ -472,6 +500,164 @@ describe('Task four classroom run state machine (e2e)', () => {
       ...overrides,
     };
   }
+
+  it('drives the classroom screen from server state and restores player snapshots', async () => {
+    const idle = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(idle.body).toMatchObject({ page: 'idle', deviceId, classroomState: null });
+
+    const plan = await createPlan(true, approvedResourceId);
+    const started = await request(app.getHttpServer())
+      .post('/classroom-runs/start')
+      .set(auth())
+      .send(startBody(plan.id))
+      .expect(201);
+    const classroom = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(classroom.body).toMatchObject({
+      page: 'classroom',
+      classroomState: { id: started.body.id, status: 'running' },
+    });
+
+    const breakStarted = await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/break`)
+      .set(auth())
+      .send({
+        version: 1,
+        deviceId,
+        requestId: requestId('screen-break'),
+        durationSeconds: 180,
+      })
+      .expect(201);
+    const breakScreen = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(breakScreen.body.page).toBe('break');
+
+    const breakEnded = await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/break/end`)
+      .set(auth())
+      .send({
+        version: breakStarted.body.version,
+        deviceId,
+        requestId: requestId('screen-break-end'),
+      })
+      .expect(200);
+
+    const stepSnapshots = app.get<Repository<ClassroomRunStepSnapshot>>(
+      getRepositoryToken(ClassroomRunStepSnapshot),
+    );
+    await stepSnapshots.update(
+      { classroomRunId: started.body.id, stepIndex: 0 },
+      { title: '绘画作品展示' },
+    );
+    const drawing = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(drawing.body.page).toBe('drawing');
+
+    await stepSnapshots.update(
+      { classroomRunId: started.body.id, stepIndex: 0 },
+      { title: '课堂奖励展示' },
+    );
+    const reward = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(reward.body.page).toBe('reward');
+
+    await stepSnapshots.update(
+      { classroomRunId: started.body.id, stepIndex: 0 },
+      { title: '观察导入' },
+    );
+    const checkpoint = await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/checkpoints`)
+      .set(auth())
+      .send({
+        version: breakEnded.body.version,
+        deviceId,
+        requestId: requestId('screen-player'),
+        checkpointType: 'command',
+        resourceId: approvedResourceId,
+        playerState: {
+          resourceId: approvedResourceId,
+          status: 'paused',
+          currentTime: 12.5,
+          pageIndex: 2,
+          zoom: 1.25,
+          volume: 0.6,
+          muted: false,
+        },
+      })
+      .expect(201);
+    const restored = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(restored.body.classroomState.playerRecoverySuggestion).toMatchObject({
+      resourceId: approvedResourceId,
+      currentTime: 12.5,
+      pageIndex: 2,
+      zoom: 1.25,
+      volume: 0.6,
+      autoPlay: false,
+    });
+
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/complete`)
+      .set(auth())
+      .send({
+        version: checkpoint.body.version,
+        deviceId,
+        requestId: requestId('screen-complete'),
+      })
+      .expect(201);
+    const summary = await request(app.getHttpServer())
+      .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
+      .set(auth())
+      .expect(200);
+    expect(summary.body).toMatchObject({
+      page: 'summary',
+      classroomState: { status: 'completed' },
+    });
+  });
+
+  it('allows administrators to audit but not control an active classroom', async () => {
+    const plan = await createPlan(true, approvedResourceId);
+    const started = await request(app.getHttpServer())
+      .post('/classroom-runs/start')
+      .set(auth())
+      .send(startBody(plan.id))
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/classroom-commands')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        requestId: requestId('admin-command-denied'),
+        runId: started.body.id,
+        deviceId,
+        targetDeviceId: deviceId,
+        expectedVersion: started.body.version,
+        source: 'teacher_panel',
+        operation: 'next_step',
+      })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${started.body.id}/complete`)
+      .set(auth())
+      .send({
+        version: started.body.version,
+        deviceId,
+        requestId: requestId('admin-command-cleanup'),
+      })
+      .expect(201);
+  });
 
   it('starts atomically, freezes step snapshots, and enforces ownership', async () => {
     const plan = await createPlan(true, approvedResourceId);
@@ -909,6 +1095,479 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(201);
   });
 
+  describe('unified classroom command bus (e2e)', () => {
+    it('executes once, replays the first result, and rejects requestId payload changes', async () => {
+      const plan = await createPlan();
+      const started = await request(app.getHttpServer())
+        .post('/classroom-runs/start')
+        .set(auth())
+        .send(startBody(plan.id))
+        .expect(201);
+      const rid = requestId('command-next');
+      const body = {
+        requestId: rid,
+        runId: started.body.id,
+        deviceId,
+        expectedVersion: started.body.version,
+        source: 'screen',
+        operation: 'next_step',
+      };
+      const first = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send(body)
+        .expect(201);
+      expect(first.body).toMatchObject({
+        status: 'success',
+        operation: 'next_step',
+        classroomState: { currentStepIndex: 1, version: 2 },
+      });
+      const replay = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send(body)
+        .expect(201);
+      expect(replay.body).toEqual(first.body);
+      const foreignReplay = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send(body)
+        .expect(409);
+      expect(foreignReplay.body.message).toContain('其他操作者');
+      expect(foreignReplay.body.classroomState).toBeUndefined();
+      await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({ ...body, operation: 'previous_step' })
+        .expect(409);
+      const records = app.get<Repository<ClassroomCommandRecord>>(
+        getRepositoryToken(ClassroomCommandRecord),
+      );
+      expect(await records.count({ where: { requestId: rid } })).toBe(1);
+      await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('command-complete'),
+          runId: started.body.id,
+          deviceId,
+          expectedVersion: 2,
+          source: 'screen',
+          operation: 'complete_class',
+        })
+        .expect(201);
+    });
+
+    it('returns 409 with the latest classroom state when expectedVersion is stale', async () => {
+      const plan = await createPlan();
+      const started = await request(app.getHttpServer())
+        .post('/classroom-runs/start')
+        .set(auth())
+        .send(startBody(plan.id))
+        .expect(201);
+      const conflict = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('command-stale'),
+          runId: started.body.id,
+          deviceId,
+          expectedVersion: 99,
+          source: 'teacher_panel',
+          operation: 'next_step',
+        })
+        .expect(409);
+      expect(conflict.body.latestClassroomState).toMatchObject({
+        id: started.body.id,
+        version: 1,
+        currentStepIndex: 0,
+      });
+      await request(app.getHttpServer())
+        .post(`/classroom-runs/${started.body.id}/complete`)
+        .set(auth())
+        .send({ version: 1, deviceId, requestId: requestId('command-cleanup') })
+        .expect(201);
+    });
+
+    it('requires an explicit current target device for media operations', async () => {
+      // 课堂中临时搜索到的已审核资源可以播放，即使它不是教案步骤的固定资源。
+      const plan = await createPlan();
+      const started = await request(app.getHttpServer())
+        .post('/classroom-runs/start')
+        .set(auth())
+        .send(startBody(plan.id))
+        .expect(201);
+      await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('command-media-no-target'),
+          runId: started.body.id,
+          deviceId,
+          expectedVersion: 1,
+          source: 'screen',
+          operation: 'play_resource',
+          parameters: { resourceId: approvedResourceId },
+        })
+        .expect(400);
+      const played = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('command-media'),
+          runId: started.body.id,
+          deviceId,
+          targetDeviceId: deviceId,
+          expectedVersion: 1,
+          source: 'screen',
+          operation: 'play_resource',
+          parameters: { resourceId: approvedResourceId },
+        })
+        .expect(201);
+      expect(played.body).toMatchObject({
+        targetDeviceId: deviceId,
+        classroomState: { version: 2 },
+        result: { delivery: 'accepted', targetDeviceId: deviceId },
+      });
+      await request(app.getHttpServer())
+        .post(`/classroom-runs/${started.body.id}/complete`)
+        .set(auth())
+        .send({ version: 2, deviceId, requestId: requestId('command-media-cleanup') })
+        .expect(201);
+    });
+  });
+
+  describe('formal attendance and roll call (e2e)', () => {
+    it('persists four attendance states, confirmation candidates, fair roll calls and isolation', async () => {
+      const studentRepo = app.get<Repository<Student>>(getRepositoryToken(Student));
+      const attendanceRepo = app.get<Repository<StudentAttendanceRecord>>(
+        getRepositoryToken(StudentAttendanceRecord),
+      );
+      const changesRepo = app.get<Repository<StudentAttendanceChange>>(
+        getRepositoryToken(StudentAttendanceChange),
+      );
+      const rollRepo = app.get<Repository<ClassroomRollCallRecord>>(
+        getRepositoryToken(ClassroomRollCallRecord),
+      );
+      const suffix = `${Date.now()}-${Math.random()}`;
+      const students = await studentRepo.save([
+        ['安安', 'present'],
+        ['贝贝', 'absent'],
+        ['晨晨', 'late'],
+        ['朵朵', 'leave'],
+      ].map(([name], index) => studentRepo.create({
+        classId,
+        studentNo: `attendance-${suffix}-${index}`,
+        name,
+        nickname: `${name}小朋友`,
+        gender: null,
+        birthday: null,
+        status: RecordStatus.Active,
+      })));
+      const disabled = await studentRepo.save(studentRepo.create({
+        classId,
+        studentNo: `attendance-${suffix}-disabled`,
+        name: '停用幼儿',
+        nickname: null,
+        gender: null,
+        birthday: null,
+        status: RecordStatus.Disabled,
+      }));
+      const plan = await createPlan();
+      const started = await request(app.getHttpServer())
+        .post('/classroom-runs/start')
+        .set(auth())
+        .send(startBody(plan.id))
+        .expect(201);
+      let version = started.body.version as number;
+      const attendanceRequestId = requestId('formal-attendance');
+      const attendanceBody = {
+        requestId: attendanceRequestId,
+        runId: started.body.id,
+        deviceId,
+        expectedVersion: version,
+        source: 'teacher_panel',
+        operation: 'attendance_update',
+        parameters: {
+          attendanceSource: 'batch',
+          updates: students.map((student, index) => ({
+            studentId: student.id,
+            status: ['present', 'absent', 'late', 'leave'][index],
+          })),
+        },
+      };
+      const marked = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send(attendanceBody)
+        .expect(201);
+      version = marked.body.classroomState.version as number;
+      expect(Object.values(marked.body.result.attendanceState).sort()).toEqual(
+        ['absent', 'late', 'leave', 'present'],
+      );
+      const replay = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send(attendanceBody)
+        .expect(201);
+      expect(replay.body).toEqual(marked.body);
+      expect(await attendanceRepo.count({ where: { classroomRunId: started.body.id } })).toBe(4);
+      expect(await changesRepo.count({ where: { classroomRunId: started.body.id } })).toBe(4);
+
+      const changed = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          ...attendanceBody,
+          requestId: requestId('formal-attendance-change'),
+          expectedVersion: version,
+          parameters: { studentId: students[0]!.id, status: 'late' },
+        })
+        .expect(201);
+      version = changed.body.classroomState.version as number;
+      const history = await changesRepo.find({
+        where: { classroomRunId: started.body.id, studentId: students[0]!.id },
+        order: { id: 'ASC' },
+      });
+      expect(history.map((item) => [item.previousStatus, item.nextStatus])).toEqual([
+        [null, 'present'],
+        ['present', 'late'],
+      ]);
+
+      const beforeVoiceCount = await changesRepo.count();
+      const candidates = await request(app.getHttpServer())
+        .post(`/classroom-runs/${started.body.id}/attendance/voice-candidates`)
+        .set(auth())
+        .send({ transcript: '安安到了，晨晨迟到，朵朵请假' })
+        .expect(201);
+      expect(candidates.body.requiresTeacherConfirmation).toBe(true);
+      expect(candidates.body.candidates).toHaveLength(3);
+      expect(await changesRepo.count()).toBe(beforeVoiceCount);
+
+      await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('disabled-attendance'),
+          runId: started.body.id,
+          deviceId,
+          expectedVersion: version,
+          source: 'teacher_panel',
+          operation: 'attendance_update',
+          parameters: { studentId: disabled.id, status: 'present' },
+        })
+        .expect(400);
+
+      const rollRequestId = requestId('fair-random');
+      const randomBody = {
+        requestId: rollRequestId,
+        runId: started.body.id,
+        deviceId,
+        expectedVersion: version,
+        source: 'teacher_panel',
+        operation: 'random_roll_call',
+      };
+      const random = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send(randomBody)
+        .expect(201);
+      version = random.body.classroomState.version as number;
+      expect([students[0]!.id, students[2]!.id]).toContain(random.body.result.student.id);
+      const randomReplay = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send(randomBody)
+        .expect(201);
+      expect(randomReplay.body.result.recordId).toBe(random.body.result.recordId);
+      expect(await rollRepo.count({ where: { requestId: rollRequestId } })).toBe(1);
+
+      await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('absent-specified'),
+          runId: started.body.id,
+          deviceId,
+          expectedVersion: version,
+          source: 'teacher_panel',
+          operation: 'specified_roll_call',
+          parameters: { studentId: students[1]!.id },
+        })
+        .expect(409);
+      const group = await request(app.getHttpServer())
+        .post('/classroom-commands')
+        .set(auth())
+        .send({
+          requestId: requestId('group-roll'),
+          runId: started.body.id,
+          deviceId,
+          expectedVersion: version,
+          source: 'teacher_panel',
+          operation: 'group_roll_call',
+          parameters: { studentIds: [students[1]!.id, students[2]!.id], groupKey: '第二组' },
+        })
+        .expect(201);
+      version = group.body.classroomState.version as number;
+      expect(group.body.result.student.id).toBe(students[2]!.id);
+      expect(group.body.result.rollCallState.lastStudentDisplayName).toBe('晨晨小朋友');
+
+      await request(app.getHttpServer())
+        .get(`/classroom-runs/${started.body.id}/attendance`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .expect(403);
+      const rollEvents = await events.find({
+        where: { classroomRunId: started.body.id, eventType: ClassroomEventType.RollCall },
+      });
+      expect(rollEvents).toHaveLength(2);
+      await request(app.getHttpServer())
+        .post(`/classroom-runs/${started.body.id}/complete`)
+        .set(auth())
+        .send({ version, deviceId, requestId: requestId('formal-cleanup') })
+        .expect(201);
+    });
+  });
+
+  it('joins a live classroom by one-time QR and delivers idempotent mobile commands', async () => {
+    const plan = await createPlan(true, approvedResourceId);
+    const started = await request(app.getHttpServer())
+      .post('/classroom-runs/start')
+      .set(auth())
+      .send(startBody(plan.id))
+      .expect(201);
+    const devices = app.get<Repository<Device>>(getRepositoryToken(Device));
+    await devices.update(deviceId, {
+      status: DeviceStatus.Online,
+      lastOnlineAt: new Date(),
+    });
+    const ticket = await request(app.getHttpServer())
+      .post('/classroom-tickets')
+      .set(auth())
+      .send({ deviceId, classroomId, classId, expiresInSeconds: 120 })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/classroom-mobile/join')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ ticket: ticket.body.ticket, deviceCode: ticket.body.deviceCode })
+      .expect(403);
+    const joined = await request(app.getHttpServer())
+      .post('/classroom-mobile/join')
+      .set(auth())
+      .send({ ticket: ticket.body.ticket, deviceCode: ticket.body.deviceCode })
+      .expect(201);
+    expect(joined.body.controlSession).toMatchObject({
+      classroomRunId: started.body.id,
+      targetDeviceId: deviceId,
+      token: expect.any(String),
+      expiresAt: expect.any(String),
+    });
+    const rawToken = joined.body.controlSession.token as string;
+    const sessions = app.get<Repository<ClassroomControlSession>>(
+      getRepositoryToken(ClassroomControlSession),
+    );
+    const persisted = await sessions.findOneByOrFail({
+      tokenHash: createHash('sha256').update(rawToken).digest('hex'),
+    });
+    expect(persisted.tokenHash).not.toBe(rawToken);
+
+    await request(app.getHttpServer())
+      .post('/classroom-mobile/join')
+      .set(auth())
+      .send({ ticket: ticket.body.ticket, deviceCode: ticket.body.deviceCode })
+      .expect(400);
+
+    const state = await request(app.getHttpServer())
+      .get('/classroom-mobile/state')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .expect(200);
+    expect(state.body).toMatchObject({
+      controlActive: true,
+      screen: { deviceId, online: true },
+      classroom: { id: started.body.id, version: started.body.version },
+    });
+
+    const requestBody = {
+      requestId: requestId('mobile-next'),
+      expectedVersion: started.body.version,
+      operation: 'next_step',
+      targetDeviceId: deviceId,
+      issuedAt: new Date().toISOString(),
+      ttlMs: 30_000,
+    };
+    const moved = await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send(requestBody)
+      .expect(201);
+    expect(moved.body).toMatchObject({
+      deliveryStatus: 'confirmed',
+      result: { status: 'success', operation: 'next_step' },
+    });
+    const replay = await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send(requestBody)
+      .expect(201);
+    expect(replay.body.result).toEqual(moved.body.result);
+
+    await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send({
+        ...requestBody,
+        requestId: requestId('mobile-expired'),
+        expectedVersion: moved.body.result.classroomState.version,
+        issuedAt: new Date(Date.now() - 60_000).toISOString(),
+        ttlMs: 1000,
+      })
+      .expect(408);
+
+    await devices.update(deviceId, {
+      status: DeviceStatus.Offline,
+      lastOnlineAt: new Date(Date.now() - 10 * 60_000),
+    });
+    await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send({
+        ...requestBody,
+        requestId: requestId('mobile-offline'),
+        expectedVersion: moved.body.result.classroomState.version,
+        operation: 'pause_media',
+        issuedAt: new Date().toISOString(),
+      })
+      .expect(409);
+
+    await devices.update(deviceId, {
+      status: DeviceStatus.Online,
+      lastOnlineAt: new Date(),
+    });
+    const completed = await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send({
+        ...requestBody,
+        requestId: requestId('mobile-complete'),
+        expectedVersion: moved.body.result.classroomState.version,
+        operation: 'complete_class',
+        issuedAt: new Date().toISOString(),
+      })
+      .expect(201);
+    expect(completed.body.deliveryStatus).toBe('confirmed');
+    await request(app.getHttpServer())
+      .get('/classroom-mobile/state')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .expect(410);
+  });
+
   describe('Stage 7.4 classroom break (e2e)', () => {
     const runRepo = () =>
       app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
@@ -1190,7 +1849,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       await cleanupRun(run.id, run.version);
     });
 
-    it('12) expired break → isBreakActive=false (GET stays read-only)', async () => {
+    it('12) expired break is settled on read and restores the classroom', async () => {
       const run = await startFreshRun();
       const started = await startBreak(run.id, run.version, 180, requestId('break-expire'));
       const past = new Date(Date.now() - 60_000);
@@ -1201,17 +1860,22 @@ describe('Task four classroom run state machine (e2e)', () => {
         .get(`/classroom-runs/${run.id}`)
         .set(auth())
         .expect(200);
-      // GET 读语义：字段仍保留，由各端用 serverNow 推导已过期
-      expect(read.body.breakEndsAt).toBe(past.toISOString());
-      await cleanupRun(run.id, started.body.version);
+      expect(read.body.breakStartedAt).toBeNull();
+      expect(read.body.breakEndsAt).toBeNull();
+      expect(read.body.version).toBe(started.body.version + 1);
+      await cleanupRun(run.id, read.body.version);
     });
 
     it('13) new break allowed after the previous one expired', async () => {
       const run = await startFreshRun();
-      const first = await startBreak(run.id, run.version, 180, requestId('break-expire-b'));
+      await startBreak(run.id, run.version, 180, requestId('break-expire-b'));
       await runRepo().update(run.id, { breakEndsAt: new Date(Date.now() - 60_000) });
-      const second = await startBreak(run.id, first.body.version, 600, requestId('break-new'));
-      expect(second.body.version).toBe(first.body.version + 1);
+      const settled = await request(app.getHttpServer())
+        .get(`/classroom-runs/${run.id}`)
+        .set(auth())
+        .expect(200);
+      const second = await startBreak(run.id, settled.body.version, 600, requestId('break-new'));
+      expect(second.body.version).toBe(settled.body.version + 1);
       const s2 = new Date(second.body.breakStartedAt as string).getTime();
       const e2 = new Date(second.body.breakEndsAt as string).getTime();
       expect(e2 - s2).toBe(600_000);

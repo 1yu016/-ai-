@@ -9,7 +9,20 @@ const router = useRouter(); const store = useLessonPlanStore()
 const { items, keyword, ageGroup, status, loading, error } = storeToRefs(store)
 const statusText = { draft: '草稿', ready: '可上课', archived: '已归档' }
 async function remove(id: number) { try { await ElMessageBox.confirm('删除教案后课堂步骤也会删除，课程资源不受影响。确定删除吗？', '删除教案', { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' }) } catch { return } try { await store.remove(id); ElMessage.success('教案已删除') } catch (e) { ElMessage.error(e instanceof Error ? e.message : '删除失败') } }
-async function start(id: number) { await router.push(`/classroom/preflight/${id}`) }
+async function start(id: number) {
+  const pairingKeys = ['classId', 'classroomId', 'deviceId'] as const
+  const search = new URLSearchParams(window.location.search)
+  const query = Object.fromEntries(
+    pairingKeys
+      .map((key) => [key, search.get(key)])
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  )
+  if (!Object.keys(query).length) {
+    await router.push(`/classroom/preflight/${id}`)
+    return
+  }
+  await router.push({ name: 'lesson-classroom-preflight', params: { planId: id }, query })
+}
 async function copy(id: number) { try { await store.copy(id); ElMessage.success('已复制教案') } catch { ElMessage.error('复制失败') } }
 onMounted(store.fetchList)
 </script>

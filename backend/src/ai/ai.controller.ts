@@ -2,11 +2,15 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
+  Get,
   HttpCode,
   HttpException,
   HttpStatus,
   InternalServerErrorException,
   Logger,
+  Param,
+  ParseIntPipe,
   Post,
   Req,
   UploadedFile,
@@ -45,6 +49,14 @@ import {
 import { TtsDto } from './dto/tts.dto';
 import { VoiceChatDto } from './dto/voice-chat.dto';
 import { LessonPlanDraftRequestDto, LessonPlanDraftResultDto } from './dto/lesson-plan-draft.dto';
+import { ClassroomDirectorService } from './classroom-director.service';
+import {
+  ClassroomDirectorRequestDto,
+  DirectorSuggestionDecisionDto,
+  DirectorSuggestionEditDto,
+} from './dto/classroom-director.dto';
+import { CreateCommandSynonymDto } from './dto/command-synonym.dto';
+import { CommandSynonymService } from './command-synonym.service';
 
 type VoiceChatResponseDto = {
   userText: string;
@@ -89,7 +101,33 @@ export class AiController {
     private readonly audioService: AudioService,
     private readonly chatPersistenceService: ChatPersistenceService,
     private readonly resourceService: ResourceService,
+    private readonly classroomDirectorService: ClassroomDirectorService,
+    private readonly commandSynonymService: CommandSynonymService,
   ) {}
+
+  @Get('command-synonyms')
+  @UseGuards(AuthGuard)
+  commandSynonyms(@Req() request: AuthenticatedRequest) {
+    return this.commandSynonymService.list(request.user);
+  }
+
+  @Post('command-synonyms')
+  @UseGuards(AuthGuard)
+  createCommandSynonym(
+    @Body() dto: CreateCommandSynonymDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.commandSynonymService.create(request.user, dto);
+  }
+
+  @Delete('command-synonyms/:id')
+  @UseGuards(AuthGuard)
+  deleteCommandSynonym(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.commandSynonymService.remove(request.user, id);
+  }
 
   /**
    * 与幼儿园 AI 助教对话
@@ -264,6 +302,48 @@ export class AiController {
       `ai.classroom-assistant teacher=${request.user.sub} ability=${result.ability ?? 'unknown'} action=${result.suggestedAction?.type ?? 'none'}`,
     );
     return result;
+  }
+
+  @Post('classroom-director')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  classroomDirector(
+    @Body() dto: ClassroomDirectorRequestDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.classroomDirectorService.generate(request.user, dto);
+  }
+
+  @Post('classroom-director/:id/edit')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  editClassroomDirectorSuggestion(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: DirectorSuggestionEditDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.classroomDirectorService.edit(request.user, id, dto);
+  }
+
+  @Post('classroom-director/:id/confirm')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  confirmClassroomDirectorSuggestion(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: DirectorSuggestionDecisionDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.classroomDirectorService.confirm(request.user, id, dto);
+  }
+
+  @Post('classroom-director/:id/reject')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  rejectClassroomDirectorSuggestion(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.classroomDirectorService.reject(request.user, id);
   }
 
   @Post('lesson-plan-draft')

@@ -4,11 +4,13 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElButton, ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { apiErrorMessage, http } from '@/api/http'
+import { platformApi } from '@/api/platform'
 import ResourcePlayer from '@/components/ResourcePlayer.vue'
 import ClassroomHeader from '@/components/classroom/ClassroomHeader.vue'
 import ClassroomStepSidebar from '@/components/classroom/ClassroomStepSidebar.vue'
 import ClassroomControlBar from '@/components/classroom/ClassroomControlBar.vue'
 import ClassroomAssistantPanel from '@/components/classroom/ClassroomAssistantPanel.vue'
+import ClassroomDirectorPanel from '@/components/classroom/ClassroomDirectorPanel.vue'
 import ClassroomVoiceControl from '@/components/classroom/ClassroomVoiceControl.vue'
 import ClassroomPartnerPanel from '@/components/classroom/ClassroomPartnerPanel.vue'
 import ClassRewardDrawer from '@/components/classroom/ClassRewardDrawer.vue'
@@ -38,6 +40,8 @@ import ResourceCandidatePanel from '@/components/classroom/ResourceCandidatePane
 import { resolveExecuteAction } from '@/classroom/command/ResourceCommandCoordinator'
 import type { ResourceCommandResult } from '@/classroom/command/ResourceCommand'
 import type { CourseResource } from '@/stores/courseResource'
+import { useVoiceCommandPreferenceStore } from '@/stores/voiceCommandPreference'
+import type { TeacherVoiceCommandMatch } from '@/classroom/command/TeacherVoiceCommandRouter'
 import {
   listRunRewards,
   type RewardRecord,
@@ -47,6 +51,7 @@ const route = useRoute(); const router = useRouter(); const store = useLessonRun
 const digitalHuman = useDigitalHumanStore()
 const classroomCommand = useClassroomCommandStore()
 const resourcePlayer = useResourcePlayerStore()
+const voicePreferences = useVoiceCommandPreferenceStore()
 const commandExecutor = new ClassroomCommandExecutor(store, resourcePlayer)
 const deviceExecutor = new DeviceCommandExecutor(resourcePlayer)
 const commandExecutors: CommandRuntimeExecutors = {
@@ -61,6 +66,7 @@ const commandInput = ref(''); const commandFeedback = ref(''); const commandRunI
 // Stage 6.5：资源命令（search/open/play）的待确认结果；教师确认/取消前绝不产生播放器副作用。
 const resourceCommandResult = ref<ResourceCommandResult | null>(null)
 const voiceRecState = ref<'idle' | 'recording' | 'recognizing'>('idle'); const voiceFeedback = ref('')
+const pendingVoiceCommand = ref<TeacherVoiceCommandMatch | null>(null)
 const assistantSpeechLoading = ref(false); const assistantSpeaking = ref(false); const draftAccepted = ref(false)
 let assistantAudio: HTMLAudioElement | null = null
 const childRecording = ref(false); const childRequestingMicrophone = ref(false); const childRecognizing = ref(false)
@@ -103,7 +109,7 @@ const micReady = computed(() => isRecordingSupported())
 const assistantOnline = computed(() => assistant.active)
 async function safe(task: () => Promise<void>) { try { await task() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作失败，请检查网络后重试') } }
 async function goToStep(index: number) { if (!run.value || index === run.value.currentStepIndex) return; await safe(() => store.move(index)) }
-async function finish(kind: 'complete' | 'cancel') { const text = kind === 'complete' ? '确认结束并完成本次课堂吗？' : '确认中止本次课堂吗？教案不会被删除。'; try { await ElMessageBox.confirm(text, kind === 'complete' ? '结束课堂' : '中止课堂', { type:'warning', confirmButtonText:'确认', cancelButtonText:'继续上课' }) } catch { return } digitalHuman.transition({ type: 'lesson_end' }); await safe(async () => { await (kind === 'complete' ? store.complete() : store.cancel()); store.clear(); await router.push('/lesson-plans') }) }
+async function finish(kind: 'complete' | 'cancel') { const text = kind === 'complete' ? '确认结束并完成本次课堂吗？' : '确认中止本次课堂吗？教案不会被删除。'; try { await ElMessageBox.confirm(text, kind === 'complete' ? '结束课堂' : '中止课堂', { type:'warning', confirmButtonText:'确认', cancelButtonText:'继续上课' }) } catch { return } digitalHuman.transition({ type: 'lesson_end' }); await safe(async () => { const completedRunId = store.run?.id; await (kind === 'complete' ? store.complete() : store.cancel()); store.clear(); await router.push(kind === 'complete' && completedRunId ? `/classroom/records/${completedRunId}` : '/lesson-plans') }) }
 async function runCommand() {
   const text = commandInput.value.trim()
   if (!text) return
@@ -132,6 +138,7 @@ async function runCommand() {
         // 迟到响应防护：请求已失效（超时在此期间 / 用户又发起新指令）时不执行。
         isCurrent: (id) => id === commandRunId.value,
       },
+      customSynonyms: voicePreferences.items,
     })
     if (runId !== commandRunId.value) return
     if (outcome.kind === 'device_executed') {
@@ -148,6 +155,11 @@ async function runCommand() {
       commandFeedback.value = outcome.result.reply
       resourceCommandResult.value =
         outcome.result.candidates.length > 0 ? outcome.result : null
+      return
+    }
+    if (outcome.kind === 'confirmation_required') {
+      pendingVoiceCommand.value = outcome.match
+      commandFeedback.value = outcome.message
       return
     }
     if (outcome.kind === 'unsupported') {
@@ -195,6 +207,8 @@ async function runVoiceCommand(audioBlob: Blob) {
         post: async (url, body, config) => (await http.post(url, body, config)).data,
         isCurrent: (id) => id === commandRunId.value && !componentUnmounted,
       },
+      5000,
+      voicePreferences.items,
     )
     if (runId !== commandRunId.value || componentUnmounted) return
     if (outcome.kind === 'device_executed') {
@@ -213,6 +227,11 @@ async function runVoiceCommand(audioBlob: Blob) {
         outcome.result.candidates.length > 0 ? outcome.result : null
       return
     }
+    if (outcome.kind === 'confirmation_required') {
+      pendingVoiceCommand.value = outcome.match
+      voiceFeedback.value = outcome.message
+      return
+    }
     if (outcome.kind === 'unsupported') {
       voiceFeedback.value = `AI 判读为 ${outcome.intent}，该指令不属于本阶段已批准范围，未执行。`
       return
@@ -225,14 +244,72 @@ async function runVoiceCommand(audioBlob: Blob) {
     if (runId === commandRunId.value && !componentUnmounted) voiceRecState.value = 'idle'
   }
 }
+async function confirmPendingVoiceCommand() {
+  const match = pendingVoiceCommand.value
+  if (!match) return
+  try {
+    let confirmedMatch = match
+    if (match.operation === 'group_roll_call') {
+      if (!run.value) throw new Error('课堂状态未就绪')
+      const { value } = await ElMessageBox.prompt(
+        '请输入本组幼儿姓名，多人用顿号或逗号分隔。系统会校验幼儿是否属于当前班级，确认后才执行点名。',
+        '确认分组点名',
+        {
+          confirmButtonText: '确认执行',
+          cancelButtonText: '取消',
+          inputPlaceholder: '例如：小明、小花、小雨',
+          inputPattern: /\S/,
+          inputErrorMessage: '请至少输入一名幼儿',
+        },
+      )
+      const names = [...new Set(value.split(/[,，、;；\s]+/).map((item) => item.trim()).filter(Boolean))]
+      const classId = Number(run.value.classId)
+      if (!Number.isInteger(classId) || classId < 1) throw new Error('当前课堂缺少有效班级信息')
+      const { data } = await platformApi.students(classId)
+      const resolved = names.map((name) => {
+        const matches = data.items.filter((student) => student.name === name || student.nickname === name)
+        if (matches.length === 0) throw new Error(`当前班级没有找到“${name}”`)
+        if (matches.length > 1) throw new Error(`“${name}”对应多名幼儿，请在课堂操作面板中选择`)
+        return matches[0]!
+      })
+      confirmedMatch = {
+        ...match,
+        parameters: {
+          ...match.parameters,
+          studentIds: [...new Set(resolved.map((student) => student.id))],
+          groupKey: `voice:${names.join('|')}`,
+        },
+      }
+    }
+    const result = await commandExecutor.executeVoice(confirmedMatch)
+    voiceFeedback.value = result.message
+    commandFeedback.value = result.message
+  } catch (error) {
+    const message = apiErrorMessage(error, '指令执行失败，请检查幼儿姓名或课堂状态。')
+    voiceFeedback.value = message
+    commandFeedback.value = message
+  } finally {
+    pendingVoiceCommand.value = null
+  }
+}
+function cancelPendingVoiceCommand() {
+  pendingVoiceCommand.value = null
+  voiceFeedback.value = '已取消，未执行课堂操作。'
+}
 // ─── 资源命令教师确认（Stage 6.5）──────────────
 // 硬约束：search/open/play 资源命令在教师确认前不产生任何播放器副作用。
 // 确认 → 统一走 resourcePlayer.openResource（protected download 链路）；
 // 取消 → 清空候选，无副作用。
-function confirmResourceCommand(resource: CourseResource) {
+async function confirmResourceCommand(resource: CourseResource) {
   const result = resourceCommandResult.value
-  if (!result) return
+  if (!result || !run.value) return
   const action = resolveExecuteAction(result.intent, resource)
+  await store.command(
+    action.autoPlay ? 'play_resource' : 'open_resource',
+    { resourceId: Number(resource.id) },
+    'teacher_panel',
+    run.value.deviceId,
+  )
   resourcePlayer.openResource(resource, action.autoPlay)
   const actionWord = action.autoPlay ? '播放' : '打开'
   commandFeedback.value = `已${actionWord}《${resource.title}》。${action.note ?? ''}`
@@ -275,7 +352,7 @@ async function startChildRecording() { if (!isRecordingSupported()) throw new Er
 function stopChildRecording() { if (!childMediaRecorder || childMediaRecorder.state === 'inactive') return; childRecording.value = false; childRecognizing.value = true; childMediaRecorder.stop() }
 async function toggleChildRecording() { if (childRecording.value) return stopChildRecording(); if (childRequestingMicrophone.value || childRecognizing.value || assistantLoading.value) return; try { await startChildRecording() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '无法使用麦克风，请稍后重试。') } }
 function stopAssistantSpeech() { if (assistantAudio) { assistantAudio.pause(); assistantAudio.src = ''; assistantAudio = null } assistantSpeechLoading.value = false; assistantSpeaking.value = false }
-async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value) return; stopAssistantSpeech(); assistantSpeechLoading.value = true; digitalHuman.transition({ type: 'tts_start' }); try { const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); const audio = new Audio(data.audioUrl.trim()); assistantAudio = audio; const release = () => { if (assistantAudio === audio) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }) } }; audio.addEventListener('ended', release, { once: true }); audio.addEventListener('error', release, { once: true }); await audio.play(); assistantSpeaking.value = true; draftAccepted.value = true } catch (e) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { assistantSpeechLoading.value = false } }
+async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value || !run.value) return; stopAssistantSpeech(); assistantSpeechLoading.value = true; digitalHuman.transition({ type: 'tts_start' }); try { await store.command('speak_text', { text }, 'teacher_panel', run.value.deviceId); const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); const audio = new Audio(data.audioUrl.trim()); assistantAudio = audio; const release = () => { if (assistantAudio === audio) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }) } }; audio.addEventListener('ended', release, { once: true }); audio.addEventListener('error', release, { once: true }); await audio.play(); assistantSpeaking.value = true; draftAccepted.value = true } catch (e) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { assistantSpeechLoading.value = false } }
 function acceptDraftAsText() { draftAccepted.value = true; digitalHuman.transition({ type: 'ai_response', emotion: 'encourage' }); ElMessage.success('已由教师确认，可自行讲述给孩子听') }
 function discardAssistantDraft() { stopAssistantSpeech(); digitalHuman.transition({ type: 'settle' }); draftAccepted.value = false; assistant.endInteraction() }
 function beforeUnload(event: BeforeUnloadEvent) { if (!isActive.value) return; event.preventDefault(); event.returnValue = '' }
@@ -309,10 +386,10 @@ onBeforeUnmount(() => { store.stopPolling(); componentUnmounted = true; window.r
     <!-- Stage 7.4：课间休息。isBreakActive 为 true 时隐藏推进教学的 workspace/ControlBar，仅展示倒计时与提前结束 -->
     <div v-else-if="run && isBreakActive" class="break-mode" data-test="break-mode">
       <div class="break-card">
-        <span class="break-emoji">☕</span>
-        <h1>课间休息</h1>
+        <span class="break-emoji">{{ run.breakContent?.icon || '☕' }}</span>
+        <h1>{{ run.breakContent?.title || '课间休息' }}</h1>
         <div class="break-time" data-test="break-countdown">{{ breakTimeText }}</div>
-        <p class="break-muted">让幼儿喝水、如厕，放松休息</p>
+        <p class="break-muted">{{ run.breakContent?.message || '让幼儿喝水、如厕，放松休息' }}</p>
         <ElButton size="large" :disabled="busy" @click="safe(store.endBreak)">
           {{ busy ? '处理中…' : '提前结束课间' }}
         </ElButton>
@@ -368,7 +445,7 @@ onBeforeUnmount(() => { store.stopPolling(); componentUnmounted = true; window.r
                     <p>{{ currentResource ? '点击后打开现有统一播放器，不会自动播放。' : '该资源已删除或无权访问，可继续切换其他环节。' }}</p>
                   </template>
                 </div>
-                <ElButton type="primary" size="large" :disabled="!currentResource || resourceResolveState.status === 'loading'" @click="store.openResource">打开资源</ElButton>
+                <ElButton type="primary" size="large" :disabled="!currentResource || resourceResolveState.status === 'loading'" @click="store.openResource()">打开资源</ElButton>
               </div>
             </section>
             <ClassroomAssistantPanel
@@ -395,6 +472,7 @@ onBeforeUnmount(() => { store.stopPolling(); componentUnmounted = true; window.r
               @accept-draft="acceptDraftAsText"
               @discard-draft="discardAssistantDraft"
             />
+            <ClassroomDirectorPanel />
             <ClassroomVoiceControl
               v-model:command-input="commandInput"
               :command-feedback="commandFeedback"
@@ -403,8 +481,11 @@ onBeforeUnmount(() => { store.stopPolling(); componentUnmounted = true; window.r
               :voice-rec-state="voiceRecState"
               :busy="busy"
               :is-active="isActive"
+              :pending-confirmation="pendingVoiceCommand?.label"
               @run-command="runCommand"
               @toggle-voice-recording="toggleVoiceRecording"
+              @confirm-command="confirmPendingVoiceCommand"
+              @cancel-command="cancelPendingVoiceCommand"
             />
             <ResourceCandidatePanel
               v-if="resourceCommandResult"

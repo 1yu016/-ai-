@@ -14,13 +14,19 @@ import {
 import { AuthGuard } from '../auth/auth.guard';
 import type { AuthenticatedRequest } from '../auth/auth.types';
 import { ClassroomRunService } from './classroom-run.service';
+import { AttendanceService } from './attendance.service';
+import { VoiceAttendanceCandidatesDto } from './dto/attendance.dto';
 import { StudentRewardService } from './student-reward.service';
 import {
   ChangeClassroomStepDto,
   ActiveClassroomRunsQueryDto,
+  ClassroomScreenStateQueryDto,
   ClassroomCheckpointDto,
   ClassroomRunOperationDto,
   CreateClassroomRewardDto,
+  CreateCollectiveRewardDto,
+  CreateGrowthGoalDto,
+  RevokeRewardDto,
   EndClassroomBreakDto,
   RecoverClassroomRunDto,
   RestoreClassroomRunQueryDto,
@@ -37,6 +43,7 @@ export class ClassroomRunController {
   constructor(
     private readonly service: ClassroomRunService,
     private readonly rewardService: StudentRewardService,
+    private readonly attendanceService: AttendanceService,
   ) {}
 
   @Post('start')
@@ -53,6 +60,14 @@ export class ClassroomRunController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.service.active(request.user, query.deviceId);
+  }
+
+  @Get('screen-state')
+  screenState(
+    @Query() query: ClassroomScreenStateQueryDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.screenState(request.user, query.deviceId);
   }
 
   @Get(':id/restore')
@@ -182,6 +197,71 @@ export class ClassroomRunController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.rewardService.listRunRewards(request.user, id);
+  }
+
+  @Post(':id/rewards/:rewardId/revoke')
+  @HttpCode(HttpStatus.OK)
+  revokeReward(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('rewardId', ParseIntPipe) rewardId: number,
+    @Body() dto: RevokeRewardDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.revokeReward(request.user, id, rewardId, dto.requestId, dto.reason);
+  }
+
+  @Get(':id/reward-dashboard')
+  rewardDashboard(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.rewardDashboard(request.user, id);
+  }
+
+  @Post(':id/growth-goals')
+  createGrowthGoal(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateGrowthGoalDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.createGrowthGoal(request.user, id, dto);
+  }
+
+  @Post(':id/collective-rewards')
+  createCollectiveReward(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateCollectiveRewardDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.createCollectiveReward(request.user, id, dto);
+  }
+
+  @Post(':id/collective-rewards/:rewardId/revoke')
+  @HttpCode(HttpStatus.OK)
+  revokeCollectiveReward(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('rewardId', ParseIntPipe) rewardId: number,
+    @Body() dto: RevokeRewardDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.rewardService.revokeCollectiveReward(request.user, id, rewardId, dto.requestId, dto.reason);
+  }
+
+  @Get(':id/attendance')
+  listAttendance(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.attendanceService.list(request.user, id);
+  }
+
+  @Post(':id/attendance/voice-candidates')
+  voiceAttendanceCandidates(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: VoiceAttendanceCandidatesDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.attendanceService.voiceCandidates(request.user, id, dto.transcript);
   }
 
   @Post(':id/avatar-binding')

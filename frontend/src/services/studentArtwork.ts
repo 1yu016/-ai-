@@ -3,12 +3,7 @@ import { http } from '@/api/http'
 /**
  * Stage 7.6 儿童作品 / 绘画评价 —— 前端服务层契约
  *
- * 后端尚未提供作品实体与上传/评价接口（详见《STAGE_7_6_ARTWORK_BACKEND_HANDOFF.md》
- * 与《STAGE_7_6_ARTWORK_AI_HANDOFF.md》）。
- *
- * 契约按《Stage 7.6 调查报告》的推荐第一版模型冻结（student_artwork_record）。
- * 前端页面在接口未就绪时显式展示 backend-not-ready，禁止 localStorage/硬编码 AI 冒充成功。
- * 后端完成上传/评价接口后，把这里的请求路径与 response 对齐即可运行。
+ * 正式作品上传、视觉草稿、教师确认和大屏投递契约。
  */
 
 export type ArtworkMediaType = 'image/jpeg' | 'image/png'
@@ -104,4 +99,20 @@ export async function confirmArtworkReview(
     { teacherComment: _payload.teacherComment },
   )
   return data
+}
+
+export async function deliverArtworkReview(payload: {
+  artworkId: number
+  requestId: string
+  deviceId: number
+  targetDeviceId: number
+  expectedVersion: number
+}): Promise<void> {
+  await http.post(`/artworks/${payload.artworkId}/deliver`, {
+    requestId: payload.requestId,
+    deviceId: payload.deviceId,
+    targetDeviceId: payload.targetDeviceId,
+    expectedVersion: payload.expectedVersion,
+    source: 'teacher_panel',
+  })
 }

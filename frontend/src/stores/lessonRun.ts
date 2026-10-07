@@ -6,13 +6,26 @@ import type { CourseResource } from './courseResource'
 import { useCourseResourceStore } from './courseResource'
 import { useResourcePlayerStore } from './resourcePlayer'
 import { useClassroomAssistantStore } from './classroomAssistant'
+import {
+  classroomRequestId,
+  executeClassroomCommand,
+  type ClassroomCommandOperation,
+  type ClassroomCommandSource,
+} from '@/services/classroomCommandBus'
 
 export type LessonRunStatus = 'prepared' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'
+export type BreakContentType = 'water' | 'toilet' | 'movement' | 'eye_exercise' | 'light_music' | 'safety'
+export type BreakContent = { type: BreakContentType; title: string; message: string; icon: string; avatarAction: 'idle' | 'happy' | 'encourage' | 'wave' }
+export type StartBreakOptions = { durationSeconds: number; contentType: BreakContentType; idleProtectionSeconds?: number }
 export type RunStep = { stepIndex: number; title: string; type: string; content: string; durationSeconds: number; resourceId: number | null; actionConfig?: unknown; recoveryPointConfig?: unknown; expectedResponse?: string | null; teacherTip?: string | null }
-export type LessonRun = { id: number; runId?: number; lessonPlanId: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; lessonTitle: string; lessonObjectives: string; ageGroup: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number; breakStartedAt?: string | null; breakEndsAt?: string | null }
+export type RewardPresentation = { recordId: number; studentId: number; displayName: string; rewardCategory: string; rewardForms: string[]; points: number; stars: number; badgeCode?: string | null; praiseText?: string | null; animationKey?: string | null; createdAt: string }
+export type LessonRun = { id: number; runId?: number; lessonPlanId: number; classId?: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; lessonTitle: string; lessonObjectives: string; ageGroup: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number; breakStartedAt?: string | null; breakEndsAt?: string | null; breakContentType?: BreakContentType | null; breakDurationSeconds?: number | null; breakProtectionAt?: string | null; breakContent?: BreakContent | null; rollCallState?: { lastStudentId?: number; lastStudentDisplayName?: string; updatedAt?: string; [key: string]: unknown }; rewardState?: Record<string, unknown>; interactionState?: { rewardPresentation?: RewardPresentation; [key: string]: unknown } }
 
 // 后端 GET/POST /classroom-runs 返回的原始结构：标题字段为 title，不返回 ageGroup，但返回 objectives（教案教学目标）。
-export type ClassroomRunPayload = { id: number; lessonPlanId: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; title: string; objectives?: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number; serverNow?: string; breakStartedAt?: string | null; breakEndsAt?: string | null }
+export type PlayerSnapshotState = { resourceId?: number; status?: string; currentTime?: number; duration?: number; pageIndex?: number; pageCount?: number | null; zoom?: number; volume?: number; muted?: boolean; updatedAt?: string; autoPlay?: boolean; artworkId?: number; artworkFileUrl?: string; artworkComment?: string; ttsText?: string; operation?: string }
+export type ClassroomRunPayload = { id: number; lessonPlanId: number; classId?: number; deviceId: number; version: number; status: LessonRunStatus; currentStepIndex: number; title: string; objectives?: string; steps: RunStep[]; startedAt: string; endedAt?: string | null; updatedAt: string; elapsedSeconds?: number; serverNow?: string; breakStartedAt?: string | null; breakEndsAt?: string | null; breakContentType?: BreakContentType | null; breakDurationSeconds?: number | null; breakProtectionAt?: string | null; breakContent?: BreakContent | null; latestSnapshotVersion?: number | null; playerRecoverySuggestion?: PlayerSnapshotState; rewardState?: Record<string, unknown>; interactionState?: { rewardPresentation?: RewardPresentation; [key: string]: unknown }; rollCallState?: { lastStudentId?: number; lastStudentDisplayName?: string; updatedAt?: string; [key: string]: unknown }; manualInterventionRequired?: boolean }
+export type ClassroomScreenPage = 'idle' | 'classroom' | 'drawing' | 'reward' | 'break' | 'protection' | 'summary' | 'recovery'
+export type ClassroomScreenState = { page: ClassroomScreenPage; deviceId: number; classroomState: ClassroomRunPayload | null; serverNow: string }
 
 // 当前步骤绑定资源的解析状态：loading（fallback 请求中）/ ready（可用）/ missing（404/403/网络失败，给出可展示提示）。
 export type ResourceResolveState = { status: 'idle' | 'loading' | 'ready' | 'missing'; message: string }
@@ -22,6 +35,7 @@ function adaptRun(data: ClassroomRunPayload): LessonRun {
   return {
     id: data.id,
     lessonPlanId: data.lessonPlanId,
+    classId: data.classId,
     deviceId: data.deviceId,
     version: data.version,
     status: data.status,
@@ -36,11 +50,14 @@ function adaptRun(data: ClassroomRunPayload): LessonRun {
     elapsedSeconds: data.elapsedSeconds,
     breakStartedAt: data.breakStartedAt ?? null,
     breakEndsAt: data.breakEndsAt ?? null,
+    breakContentType: data.breakContentType ?? null,
+    breakDurationSeconds: data.breakDurationSeconds ?? null,
+    breakProtectionAt: data.breakProtectionAt ?? null,
+    breakContent: data.breakContent ?? null,
+    rollCallState: data.rollCallState,
+    rewardState: data.rewardState,
+    interactionState: data.interactionState,
   }
-}
-
-function requestId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `classroom-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 export const useLessonRunStore = defineStore('lessonRun', () => {
@@ -103,18 +120,22 @@ export const useLessonRunStore = defineStore('lessonRun', () => {
   function adoptRun(data: ClassroomRunPayload) { run.value = adaptRun(data); applyServerNow(data.serverNow); syncTimer(); syncAssistantContext() }
   function clearRun() { stopTimer(); stopPolling(); run.value = null; elapsedSeconds.value = 0; serverOffset.value = 0 }
   async function load(id: number) { loading.value = true; error.value = ''; try { const { data } = await http.get<ClassroomRunPayload>(`/classroom-runs/${id}`); adoptRun(data); await resources.refreshLibrary() } catch (cause) { error.value = apiErrorMessage(cause, '课堂恢复失败，请返回教案列表重试。'); throw cause } finally { loading.value = false } }
-  async function move(index: number) { if (!run.value || run.value.status !== 'running' || busy.value || isBreakActive.value) return; busy.value = true; player.requestControl('stop'); try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/steps/${index}`, { version: run.value.version, deviceId: run.value.deviceId, requestId: requestId() }); adoptRun(data); assistant.endInteraction() } finally { busy.value = false } }
-  async function previous() { if (run.value?.status === 'running' && run.value.currentStepIndex > 0) await move(run.value.currentStepIndex - 1) }
-  async function next() { if (run.value?.status === 'running' && run.value.currentStepIndex < run.value.steps.length - 1) await move(run.value.currentStepIndex + 1) }
+  async function loadScreenState(deviceId: number) { const { data } = await http.get<ClassroomScreenState>('/classroom-runs/screen-state', { params: { deviceId } }); if (data.classroomState) adoptRun(data.classroomState); else clearRun(); return data }
+  async function restore(id: number, deviceId: number) { const { data } = await http.get<ClassroomRunPayload>(`/classroom-runs/${id}/restore`, { params: { deviceId } }); adoptRun(data); await resources.refreshLibrary(); return data }
+  async function savePlayerState(playerState: PlayerSnapshotState) { if (!run.value || busy.value || run.value.status === 'completed' || run.value.status === 'cancelled' || run.value.status === 'failed') return null; busy.value = true; try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/checkpoints`, { requestId: classroomRequestId('player-state'), version: run.value.version, deviceId: run.value.deviceId, checkpointType: 'command', ...(playerState.resourceId ? { resourceId: playerState.resourceId } : {}), playerState }); adoptRun(data); return data } finally { busy.value = false } }
+  async function command(operation: ClassroomCommandOperation, parameters?: Record<string, unknown>, source: ClassroomCommandSource = 'screen', targetDeviceId?: number) { if (!run.value) return null; const result = await executeClassroomCommand(run.value, operation, { source, parameters, targetDeviceId }); adoptRun(result.classroomState); return result }
+  async function move(index: number, source: ClassroomCommandSource = 'screen') { if (!run.value || run.value.status !== 'running' || busy.value || isBreakActive.value) return; busy.value = true; player.requestControl('stop'); try { await command('switch_step', { stepIndex: index }, source); assistant.endInteraction() } finally { busy.value = false } }
+  async function previous(source: ClassroomCommandSource = 'screen') { if (!run.value || run.value.status !== 'running' || run.value.currentStepIndex <= 0 || busy.value) return; busy.value = true; player.requestControl('stop'); try { await command('previous_step', undefined, source); assistant.endInteraction() } finally { busy.value = false } }
+  async function next(source: ClassroomCommandSource = 'screen') { if (!run.value || run.value.status !== 'running' || run.value.currentStepIndex >= run.value.steps.length - 1 || busy.value) return; busy.value = true; player.requestControl('stop'); try { await command('next_step', undefined, source); assistant.endInteraction() } finally { busy.value = false } }
   function repeat() { if (run.value?.status === 'running') { player.requestControl('stop'); assistant.endInteraction() } }
-  async function action(name: 'pause' | 'resume' | 'complete' | 'cancel') { if (!run.value || busy.value) return; const allowed = name === 'pause' ? run.value.status === 'running' : name === 'resume' ? run.value.status === 'paused' : run.value.status === 'running' || run.value.status === 'paused'; if (!allowed) return; busy.value = true; player.requestControl('stop'); try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/${name}`, { version: run.value.version, deviceId: run.value.deviceId, requestId: requestId() }); adoptRun(data); if (name === 'complete' || name === 'cancel') assistant.endInteraction() } finally { busy.value = false } }
-  async function startBreak(durationSeconds: number) { if (!run.value || busy.value || isBreakActive.value) return; busy.value = true; try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/break`, { version: run.value.version, deviceId: run.value.deviceId, requestId: requestId(), durationSeconds }); adoptRun(data) } finally { busy.value = false } }
-  async function endBreak() { if (!run.value || busy.value || !isBreakActive.value) return; busy.value = true; try { const { data } = await http.post<ClassroomRunPayload>(`/classroom-runs/${run.value.id}/break/end`, { version: run.value.version, deviceId: run.value.deviceId, requestId: requestId() }); adoptRun(data) } finally { busy.value = false } }
+  async function action(name: 'pause' | 'resume' | 'complete' | 'cancel', source: ClassroomCommandSource = 'screen') { if (!run.value || busy.value) return; const allowed = name === 'pause' ? run.value.status === 'running' : name === 'resume' ? run.value.status === 'paused' : run.value.status === 'running' || run.value.status === 'paused'; if (!allowed) return; busy.value = true; player.requestControl('stop'); try { const operation: ClassroomCommandOperation = name === 'pause' ? 'pause_class' : name === 'resume' ? 'resume_class' : name === 'complete' ? 'complete_class' : 'cancel_class'; await command(operation, undefined, source); if (name === 'complete' || name === 'cancel') assistant.endInteraction() } finally { busy.value = false } }
+  async function startBreak(options: number | StartBreakOptions, source: ClassroomCommandSource = 'screen') { if (!run.value || busy.value || isBreakActive.value) return; const config: StartBreakOptions = typeof options === 'number' ? { durationSeconds: options, contentType: 'water' } : options; const resourceId = Number(player.currentResource?.id); if (Number.isInteger(resourceId) && resourceId > 0) await savePlayerState({ resourceId, status: player.playerStatus, currentTime: player.currentTime, duration: player.duration, pageIndex: player.pageIndex, pageCount: player.pageCount, zoom: player.zoom, volume: player.volume, muted: player.muted, autoPlay: false, updatedAt: new Date().toISOString() }); busy.value = true; player.requestControl('stop'); try { await command('start_break', config, source) } finally { busy.value = false } }
+  async function endBreak(source: ClassroomCommandSource = 'screen') { if (!run.value || busy.value || !isBreakActive.value) return; busy.value = true; try { await command('end_break', undefined, source) } finally { busy.value = false } }
   // 多端同步：轻量轮询刷新 run + serverNow。防并发堆积：pollInFlight 期间跳过，busy 时跳过。
   function stopPolling() { if (pollTimer !== null) { window.clearInterval(pollTimer); pollTimer = null } polling.value = false }
   function startPolling(intervalMs = 2000) { if (polling.value || !run.value) return; polling.value = true; pollTimer = window.setInterval(async () => { if (pollInFlight || busy.value || !run.value) return; pollInFlight = true; try { const { data } = await http.get<ClassroomRunPayload>(`/classroom-runs/${run.value.id}`); run.value = adaptRun(data); applyServerNow(data.serverNow); syncTimer() } catch { /* 轮询失败静默，不打断课堂 */ } finally { pollInFlight = false } }, intervalMs) }
-  function openResource() { if (currentResource.value) player.openResource(currentResource.value, false) }
+  async function openResource(source: ClassroomCommandSource = 'screen') { if (!currentResource.value || !run.value || busy.value) return; busy.value = true; try { await command('open_resource', { resourceId: Number(currentResource.value.id) }, source, run.value.deviceId); player.openResource(currentResource.value, false) } finally { busy.value = false } }
   function clear() { clearRun(); player.requestControl('stop'); assistant.endInteraction() }
   onScopeDispose(() => { stopTimer(); stopPolling() })
-  return { run, loading, busy, error, elapsedSeconds, serverOffset, isBreakActive, breakRemainingSeconds, polling, currentStep, currentResource, resourceResolveState, progress, load, adoptRun, clearRun, move, previous, next, repeat, pause: () => action('pause'), resume: () => action('resume'), complete: () => action('complete'), cancel: () => action('cancel'), startBreak, endBreak, startPolling, stopPolling, openResource, resolveCurrentResource, clear }
+  return { run, loading, busy, error, elapsedSeconds, serverOffset, isBreakActive, breakRemainingSeconds, polling, currentStep, currentResource, resourceResolveState, progress, load, loadScreenState, restore, savePlayerState, adoptRun, clearRun, command, move, previous, next, repeat, pause: (source?: ClassroomCommandSource) => action('pause', source), resume: (source?: ClassroomCommandSource) => action('resume', source), complete: (source?: ClassroomCommandSource) => action('complete', source), cancel: (source?: ClassroomCommandSource) => action('cancel', source), startBreak, endBreak, startPolling, stopPolling, openResource, resolveCurrentResource, clear }
 })

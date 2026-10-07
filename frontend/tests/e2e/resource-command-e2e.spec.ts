@@ -377,7 +377,7 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
     const seen: string[] = []
     page.on('request', (request) => {
       const url = new URL(request.url())
-      if (url.origin === 'http://127.0.0.1:4173' || url.origin === 'http://localhost:4173') {
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
         seen.push(`${request.method()} ${url.pathname}`)
       }
     })

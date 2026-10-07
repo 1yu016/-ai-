@@ -28,6 +28,18 @@ import { ClassroomRunStepSnapshotHints2026092700010 } from './migrations/2026092
 import { StudentRewardRecord2026100200011 } from './migrations/202610020011-StudentRewardRecord';
 import { StudentRewardRecordIndexes2026100200012 } from './migrations/202610020012-StudentRewardRecordIndexes';
 import { ClassroomRunBreakFields2026100200013 } from './migrations/202610020013-ClassroomRunBreakFields';
+import { ClassroomCommandBus2026100600014 } from './migrations/202610060014-ClassroomCommandBus';
+import { FormalAttendanceRollCall2026100600015 } from './migrations/202610060015-FormalAttendanceRollCall';
+import { RewardGrowthHonor2026100600016 } from './migrations/202610060016-RewardGrowthHonor';
+import { ClassroomBreakMode2026100600017 } from './migrations/202610060017-ClassroomBreakMode';
+import { ClassroomDirector2026100600018 } from './migrations/202610060018-ClassroomDirector';
+import { TeacherCommandSynonym2026100600019 } from './migrations/202610060019-TeacherCommandSynonym';
+import { StudentQuestionMap2026100600020 } from './migrations/202610060020-StudentQuestionMap';
+import { ClassroomRecords2026100700021 } from './migrations/202610070021-ClassroomRecords';
+import { StudentArtworkRecords2026100700022 } from './migrations/202610070022-StudentArtworkRecords';
+import { ArtworkModule } from './artworks/artwork.module';
+import { ClassroomMobileModule } from './classroom-mobile/classroom-mobile.module';
+import { ClassroomMobileRealtime2026100700023 } from './migrations/202610070023-ClassroomMobileRealtime';
 
 @Module({
   imports: [
@@ -80,6 +92,16 @@ import { ClassroomRunBreakFields2026100200013 } from './migrations/202610020013-
             StudentRewardRecord2026100200011,
             StudentRewardRecordIndexes2026100200012,
             ClassroomRunBreakFields2026100200013,
+            ClassroomCommandBus2026100600014,
+            FormalAttendanceRollCall2026100600015,
+            RewardGrowthHonor2026100600016,
+            ClassroomBreakMode2026100600017,
+            ClassroomDirector2026100600018,
+            TeacherCommandSynonym2026100600019,
+            StudentQuestionMap2026100600020,
+            ClassroomRecords2026100700021,
+            StudentArtworkRecords2026100700022,
+            ClassroomMobileRealtime2026100700023,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',
@@ -94,6 +116,8 @@ import { ClassroomRunBreakFields2026100200013 } from './migrations/202610020013-
     PlatformModule,
     ClassroomRunModule,
     AvatarModule,
+    ArtworkModule,
+    ClassroomMobileModule,
   ],
   controllers: [AppController],
   providers: [AppService],

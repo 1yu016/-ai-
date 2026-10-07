@@ -19,6 +19,7 @@ import {
 } from '../src/avatars/avatar.types';
 import { AvatarAsset } from '../src/avatars/entities/avatar-asset.entity';
 import { AvatarCharacter } from '../src/avatars/entities/avatar-character.entity';
+import { AvatarConfigHistory } from '../src/avatars/entities/avatar-config-history.entity';
 import { AvatarVersion } from '../src/avatars/entities/avatar-version.entity';
 import { CLASSROOM_RUN_ENTITIES } from '../src/classroom-runs/classroom-run.module';
 import {
@@ -57,6 +58,7 @@ describe('Task six avatar character, version and asset management (e2e)', () => 
   let characters: Repository<AvatarCharacter>;
   let versions: Repository<AvatarVersion>;
   let assets: Repository<AvatarAsset>;
+  let configHistory: Repository<AvatarConfigHistory>;
   let runs: Repository<ClassroomRun>;
   let snapshots: Repository<ClassroomSnapshot>;
 
@@ -160,6 +162,7 @@ describe('Task six avatar character, version and asset management (e2e)', () => 
     characters = app.get(getRepositoryToken(AvatarCharacter));
     versions = app.get(getRepositoryToken(AvatarVersion));
     assets = app.get(getRepositoryToken(AvatarAsset));
+    configHistory = app.get(getRepositoryToken(AvatarConfigHistory));
     runs = app.get(getRepositoryToken(ClassroomRun));
     snapshots = app.get(getRepositoryToken(ClassroomSnapshot));
   });
@@ -212,7 +215,14 @@ describe('Task six avatar character, version and asset management (e2e)', () => 
   async function completeVersion(targetVersionId: number) {
     await uploadAsset(targetVersionId, 'texture', 'body.png', PNG);
     await uploadAsset(targetVersionId, 'animation', 'idle.glb', GLB, 'idle');
-    await uploadAsset(targetVersionId, 'animation', 'speak.glb', GLB, 'speak');
+    const talk = await uploadAsset(
+      targetVersionId,
+      'animation',
+      'talk.glb',
+      GLB,
+      'talk',
+    );
+    expect(talk.actionName).toBe('speak');
     await uploadAsset(targetVersionId, 'lip_sync', 'lip.json', JSON_FILE);
     await uploadAsset(targetVersionId, 'preview', 'preview.png', PNG);
     await uploadAsset(targetVersionId, 'fallback_2d', 'fallback.png', PNG);
@@ -355,6 +365,59 @@ describe('Task six avatar character, version and asset management (e2e)', () => 
       .set(auth(otherToken))
       .expect(200)
       .expect('Content-Type', /image\/png/);
+  });
+
+  it('persists administrator voice/personality changes and records their audit history', async () => {
+    const beforeCount = await configHistory.count({ where: { characterId } });
+    await request(app.getHttpServer())
+      .patch(`/avatars/characters/${characterId}/voice-profile`)
+      .set(auth(adminToken))
+      .send({
+        provider: 'system',
+        voiceId: 'gentle-teacher',
+        language: 'zh-CN',
+        speed: 1.1,
+        volume: 0.9,
+        pitch: 1,
+        status: 'active',
+        reason: '管理员配置角色音色',
+      })
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`/avatars/characters/${characterId}/personality`)
+      .set(auth(adminToken))
+      .send({
+        style: '温暖启发式',
+        catchphrases: ['先看看发生了什么'],
+        greeting: '小朋友们好',
+        encouragementStyle: '先肯定，再给提示',
+        goodbyeText: '我们下次再见',
+        reason: '管理员配置角色性格',
+      })
+      .expect(200);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/avatars/characters/${characterId}`)
+      .set(auth(otherToken))
+      .expect(200);
+    expect(detail.body.voiceProfile).toMatchObject({
+      voiceId: 'gentle-teacher',
+      speed: 1.1,
+    });
+    expect(detail.body.personality).toMatchObject({
+      style: '温暖启发式',
+      catchphrases: ['先看看发生了什么'],
+    });
+    const history = await configHistory.find({
+      where: { characterId },
+      order: { id: 'ASC' },
+    });
+    expect(history).toHaveLength(beforeCount + 2);
+    expect(history.slice(-2).map((item) => item.reason)).toEqual([
+      '管理员配置角色音色',
+      '管理员配置角色性格',
+    ]);
+    expect(history.slice(-2).every((item) => item.afterSummary)).toBe(true);
   });
 
   it('creates a new model version without overwriting history and reports engine incompatibility', async () => {

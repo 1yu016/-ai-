@@ -88,7 +88,10 @@ function playAction(actionName: DigitalHumanAction) {
   currentAction = actionName
   // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放。
   // 表情由 store.expression（状态机快照）单独驱动，组件不判断业务状态。
-  currentModel?.playAnimation(actionName)
+  if (currentModel && !currentModel.playAnimation(actionName) && actionName !== 'idle') {
+    currentModel.playAnimation('idle')
+    currentAction = 'idle'
+  }
 }
 
 watch(action, (next) => playAction(next))
@@ -104,13 +107,13 @@ function applyPose(time: number) {
   const bob = Math.sin(t * 2) * 0.03
   root.position.y = 0
   if (currentAction === 'talk') root.position.y = bob + Math.abs(Math.sin(t * 6)) * 0.04
-  else if (currentAction === 'happy' || currentAction === 'praise') root.position.y = Math.abs(Math.sin(t * 5)) * 0.06
+  else if (currentAction === 'happy') root.position.y = Math.abs(Math.sin(t * 5)) * 0.06
   else root.position.y = bob
 
   if (parts.head) {
     parts.head.rotation.set(0, 0, 0)
     if (currentAction === 'listen') parts.head.rotation.x = 0.22
-    else if (currentAction === 'thinking') parts.head.rotation.z = Math.sin(t * 2) * 0.16
+    else if (currentAction === 'think') parts.head.rotation.z = Math.sin(t * 2) * 0.16
     else if (currentAction === 'question') parts.head.rotation.z = Math.sin(t * 2) * 0.2 + 0.1
   }
   if (parts.mouth) {
@@ -119,11 +122,11 @@ function applyPose(time: number) {
   }
   if (parts.armR) {
     if (currentAction === 'wave' || currentAction === 'goodbye') parts.armR.rotation.z = Math.sin(t * 7) * 0.9 - 0.2
-    else if (currentAction === 'happy' || currentAction === 'praise') parts.armR.rotation.z = Math.sin(t * 5) * 0.5 - 0.4
+    else if (currentAction === 'happy') parts.armR.rotation.z = Math.sin(t * 5) * 0.5 - 0.4
     else parts.armR.rotation.z = 0
   }
   if (parts.armL) {
-    parts.armL.rotation.z = currentAction === 'happy' || currentAction === 'praise' ? -Math.sin(t * 5) * 0.5 + 0.4 : 0
+    parts.armL.rotation.z = currentAction === 'happy' ? -Math.sin(t * 5) * 0.5 + 0.4 : 0
   }
 }
 
@@ -259,7 +262,7 @@ function disposeAll() {
   if (mountEl.value) mountEl.value.replaceChildren()
 }
 
-watch(roleId, () => {
+watch([roleId, () => store.runtime?.model?.modelUrl], () => {
   disposeAll()
   disposed = false
   void init()

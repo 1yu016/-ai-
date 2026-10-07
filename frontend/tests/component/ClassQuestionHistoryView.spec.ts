@@ -18,6 +18,21 @@ const pageData = {
   page: 1,
   pageSize: 10,
 }
+const mapData = {
+  classId: 1,
+  filters: { topic: null, domain: null, studentId: null },
+  summary: { total: 1, anonymousCount: 0, identifiedStudentCount: 1 },
+  topics: [{ name: '科学探索', count: 1 }],
+  domains: [{ name: '科学', count: 1 }],
+  frequentQuestions: [{ question: '为什么天空是蓝色的', count: 1 }],
+  interestHotspots: ['科学探索', '科学'],
+  suggestionSource: 'safe_rules',
+  studentClusters: [{ studentId: 1, studentName: '朵朵', questionCount: 1, topics: [{ name: '科学探索', count: 1 }], domains: [{ name: '科学', count: 1 }] }],
+  teachingSuggestions: ['先观察天空颜色。'],
+  activitySuggestions: ['颜色观察活动'],
+  recommendedResources: [],
+  safety: { individualRankingGenerated: false, negativeLabelsGenerated: false, note: '不排名、不贴标签。' },
+}
 
 async function mountView() {
   const router = createRouter({
@@ -38,6 +53,7 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     vi.restoreAllMocks()
     localStorage.clear()
     vi.spyOn(platformApi, 'students').mockResolvedValue(studentsData as never)
+    vi.spyOn(questionsService, 'getQuestionMap').mockResolvedValue(mapData as never)
   })
 
   it('加载真实接口并展示问题列表', async () => {
@@ -49,6 +65,7 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     expect(wrapper.text()).toContain('班级问题记录')
     expect(wrapper.text()).toContain('为什么天空是蓝色的？')
     expect(wrapper.text()).toContain('朵朵')
+    expect(wrapper.text()).toContain('问题地图')
   })
 
   it('按幼儿筛选 → 重新调用并携带 studentId', async () => {
@@ -83,12 +100,11 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     )
   })
 
-  it('后端未就绪 → 明确标记 backend-not-ready，不伪装为空列表', async () => {
+  it('正式接口失败时展示错误，不伪装为空列表', async () => {
     vi.spyOn(questionsService, 'listClassQuestions').mockRejectedValue(new Error('N/A'))
     const wrapper = await mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain('后端未就绪')
-    expect(wrapper.text()).toContain('FRONTEND_READY_BACKEND_BLOCKED')
-    expect(wrapper.text()).not.toContain('暂无正式问题')
+    expect(wrapper.text()).toContain('N/A')
+    expect(wrapper.text()).not.toContain('还没有正式问题记录')
   })
 })

@@ -4,7 +4,24 @@ export type Page<T> = { items: T[]; total: number; page: number; pageSize: numbe
 export type SchoolClass = { id: number; name: string; grade: string | null; ageRange: string | null; schoolYear: string; status: string }
 export type Student = { id: number; classId: number; studentNo: string; name: string; nickname: string | null; status: string; createdAt: string; updatedAt: string }
 export type Classroom = { id: number; name: string; location: string | null; status: string }
-export type Device = { id: number; deviceCode: string; name: string; type: string; status: string; lastOnlineAt: string | null }
+export type DeviceBindingSummary = {
+  id: number
+  classroomId: number
+  classroomName: string | null
+  classId: number
+  className: string | null
+  boundAt: string
+}
+export type Device = {
+  id: number
+  deviceCode: string
+  name: string
+  type: string
+  status: string
+  online: boolean
+  lastOnlineAt: string | null
+  binding?: DeviceBindingSummary | null
+}
 export type DeviceBinding = { id: number; deviceId: number; classroomId: number; classId: number; status: string; boundAt: string }
 export type ClassDeviceBinding = {
   id: number
@@ -12,9 +29,55 @@ export type ClassDeviceBinding = {
   classroomId: number
   classroom: { id: number; name: string } | null
   deviceId: number
-  device: { id: number; name: string; type: string; status: string } | null
+  device: { id: number; deviceCode: string; name: string; type: string; status: string; online: boolean; lastOnlineAt: string | null } | null
 }
 export type Consent = { id: number; studentId: number; consentType: string; status: string; note?: string | null }
+
+export type AdminDashboard = {
+  generatedAt: string
+  teachers: number
+  classes: number
+  students: number
+  devices: { total: number; online: number; offline: number }
+  classrooms: { today: number; active: number; abnormal: number }
+  resources: { pending: number; disabled: number }
+  ai: {
+    total: number
+    success: number
+    errors: number
+    successRate: number
+    errorRate: number
+    averageLatencyMs: number
+  }
+  storage: { indexedResourceBytes: number; physicalBytes: number }
+}
+
+export type AuditLogItem = {
+  id: number
+  actorType: 'teacher' | 'administrator'
+  actorId: number
+  action: string
+  targetType: string | null
+  targetId: string | null
+  result: 'success' | 'failure'
+  ipAddress: string | null
+  metadata: Record<string, unknown> | null
+  createdAt: string
+}
+
+export type AiCallLogItem = {
+  id: number
+  actorType: 'teacher' | 'administrator' | null
+  actorId: number | null
+  feature: string
+  provider: string | null
+  model: string | null
+  requestId: string | null
+  status: string
+  latencyMs: number | null
+  errorCode: string | null
+  createdAt: string
+}
 
 export type TeacherItem = {
   id: number
@@ -37,8 +100,17 @@ export type RewardRecord = {
   teacherId: number
   teacherName: string | null
   rewardType: string
+  rewardCategory?: 'answer' | 'cooperation' | 'focus' | 'labor' | 'exploration' | 'progress'
+  rewardForms?: Array<'points' | 'badge' | 'flower' | 'voice_praise' | 'animation'>
+  points?: number
+  badgeCode?: string | null
+  praiseText?: string | null
+  animationKey?: string | null
   stars: number
   reason: string | null
+  revokedAt?: string | null
+  revokedByTeacherId?: number | null
+  revokeReason?: string | null
   createdAt: string
 }
 
@@ -47,10 +119,13 @@ export type ClassRewardPage = {
   total: number
   page: number
   pageSize: number
-  summary: { classId: number; className: string; totalStars: number }
+  summary: { classId: number; className: string; totalStars: number; totalPoints: number }
 }
 
 export const platformApi = {
+  adminDashboard: () => http.get<AdminDashboard>('/admin/dashboard'),
+  auditLogs: (params: { page?: number; pageSize?: number; action?: string; actorType?: string; result?: string; from?: string; to?: string } = {}) => http.get<Page<AuditLogItem>>('/audit-logs', { params }),
+  aiCallLogs: (params: { page?: number; pageSize?: number } = {}) => http.get<Page<AiCallLogItem>>('/ai-call-logs', { params }),
   classes: (page = 1) => http.get<Page<SchoolClass>>('/classes', { params: { page, pageSize: 50 } }),
   listClasses: (page = 1) => http.get<Page<SchoolClass>>('/classes', { params: { page, pageSize: 50 } }),
   createClass: (data: { name: string; grade?: string; ageRange?: string; schoolYear: string }) => http.post<SchoolClass>('/classes', data),
@@ -68,9 +143,11 @@ export const platformApi = {
   listDevices: () => http.get<Device[]>('/devices'),
   createDevice: (data: { deviceCode: string; name: string; type: string }) => http.post<Device>('/devices', data),
   updateDevice: (id: number, data: Partial<Pick<Device, 'name' | 'type' | 'status'>>) => http.patch<Device>(`/devices/${id}`, data),
+  heartbeat: (id: number, deviceCode: string) => http.post<Device>(`/devices/${id}/heartbeat`, { deviceCode }),
   bindDevice: (data: { deviceId: number; classroomId: number; classId: number }) => http.post<DeviceBinding>('/device-bindings', data),
   unbindDevice: (id: number) => http.delete(`/device-bindings/${id}`),
-  createTicket: (data: { deviceId: number; classId: number; classroomId: number; expiresInSeconds?: number }) => http.post<{ ticket: string; expiresAt: string }>('/classroom-tickets', data),
+  createTicket: (data: { deviceId: number; classId: number; classroomId: number; lessonRunId?: number; expiresInSeconds?: number }) => http.post<{ ticket: string; expiresAt: string; deviceCode: string }>('/classroom-tickets', data),
+  consumeTicket: (data: { ticket: string; deviceCode: string }) => http.post<{ classId: number; classroomId: number; deviceId: number; lessonRunId: number | null; deviceCode: string }>('/classroom-tickets/consume', data),
   teachers: (params: { page?: number; pageSize?: number; keyword?: string; status?: string } = {}) => http.get<Page<TeacherItem>>('/teachers', { params }),
   createTeacher: (data: { account: string; password: string; name: string; role?: string; schoolId?: string }) => http.post<{ id: number; account: string; name: string; role: string; status: string }>('/teachers', data),
   updateTeacher: (id: number, data: Partial<Pick<TeacherItem, 'name' | 'role' | 'status'>>) => http.patch<{ id: number; account: string; name: string; role: string; status: string }>(`/teachers/${id}`, data),

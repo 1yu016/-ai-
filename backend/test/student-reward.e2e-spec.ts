@@ -599,4 +599,73 @@ describe('Stage 7.3 student reward records (e2e)', () => {
       expected[r.studentId] = (expected[r.studentId] ?? 0) + r.stars;
     expect(state).toEqual(expected);
   });
+
+  it('11. 六类奖励和五种奖励形式均能作为正式流水保存', async () => {
+    const categories = ['answer', 'cooperation', 'focus', 'labor', 'exploration', 'progress'];
+    for (const category of categories) {
+      const response = await postReward(token, {
+        requestId: rid(`category-${category}`), studentId, rewardCategory: category,
+        rewardForms: ['points', 'badge', 'flower', 'voice_praise', 'animation'],
+        points: 2, stars: 1, badgeCode: `${category}_badge`,
+        praiseTemplateId: category === 'cooperation' ? 'kind_cooperation' : 'steady_progress',
+        animationKey: 'stars', reason: `${category} 正向表现`,
+      }, 201);
+      expect(response.body.record).toMatchObject({ rewardCategory: category, points: 2, stars: 1 });
+      expect(response.body.record.rewardForms).toEqual(['animation', 'badge', 'flower', 'points', 'voice_praise']);
+      expect(response.body.record.praiseText).toEqual(expect.any(String));
+    }
+  });
+
+  it('12. 语音表扬只允许安全模板或教师确认文本，并拦截负面标签', async () => {
+    await postReward(token, {
+      requestId: rid('unsafe-unconfirmed'), studentId,
+      rewardForms: ['voice_praise'], praiseText: '继续努力',
+    }, 409);
+    await postReward(token, {
+      requestId: rid('unsafe-label'), studentId,
+      rewardForms: ['voice_praise'], praiseText: '你是差生', teacherConfirmedPraise: true,
+    }, 409);
+    const ok = await postReward(token, {
+      requestId: rid('confirmed-praise'), studentId,
+      rewardForms: ['voice_praise'], praiseText: '你的想法很有趣！', teacherConfirmedPraise: true,
+      points: 1,
+    }, 201);
+    expect(ok.body.record.praiseText).toBe('你的想法很有趣！');
+  });
+
+  it('13. 奖励撤销保留原流水、记录原因，并从有效累计中扣除', async () => {
+    const created = await postReward(token, {
+      requestId: rid('revoke-target'), studentId, rewardCategory: 'answer',
+      rewardForms: ['points', 'flower'], points: 4, stars: 2, reason: '误发测试',
+    }, 201);
+    const revokeRequestId = rid('revoke');
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${runId}/rewards/${created.body.record.id}/revoke`)
+      .set(auth(token)).send({ requestId: revokeRequestId, reason: '教师误点' }).expect(200);
+    const stored = await rewards.findOneByOrFail({ id: created.body.record.id });
+    expect(stored.revokedAt).toBeTruthy();
+    expect(stored.revokeReason).toBe('教师误点');
+    expect(stored.revokedByTeacherId).toBe(teacherId);
+    const history = await request(app.getHttpServer()).get(`/classroom-runs/${runId}/rewards`).set(auth(token)).expect(200);
+    expect(history.body.items.find((item: { id: number }) => item.id === stored.id)).toMatchObject({ revokeReason: '教师误点' });
+  });
+
+  it('14. 班级共同目标可由个人和集体奖励累积，集体奖励 requestId 幂等', async () => {
+    const goal = await request(app.getHttpServer()).post(`/classroom-runs/${runId}/growth-goals`)
+      .set(auth(token)).send({ requestId: rid('goal'), title: '合作种出成长树', targetPoints: 20 }).expect(201);
+    const body = { requestId: rid('collective'), rewardCategory: 'cooperation', points: 3, reason: '全班合作完成任务', goalId: goal.body.id };
+    const first = await request(app.getHttpServer()).post(`/classroom-runs/${runId}/collective-rewards`).set(auth(token)).send(body).expect(201);
+    const replay = await request(app.getHttpServer()).post(`/classroom-runs/${runId}/collective-rewards`).set(auth(token)).send(body).expect(201);
+    expect(replay.body.id).toBe(first.body.id);
+    const dashboard = await request(app.getHttpServer()).get(`/classroom-runs/${runId}/reward-dashboard`).set(auth(token)).expect(200);
+    expect(dashboard.body.goal.currentPoints).toBe(3);
+    expect(dashboard.body.honors.some((item: { key: string }) => item.key === 'cooperation_star')).toBe(true);
+    expect(dashboard.body.policy).toEqual({ negativeRankingEnabled: false, rotation: 'daily_category_rotation' });
+  });
+
+  it('15. 其他教师不能访问奖励看板、发放或撤销本班奖励', async () => {
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/reward-dashboard`).set(auth(otherToken)).expect(403);
+    await request(app.getHttpServer()).post(`/classroom-runs/${runId}/collective-rewards`).set(auth(otherToken))
+      .send({ requestId: rid('foreign-collective'), rewardCategory: 'cooperation', points: 1, reason: '越权' }).expect(403);
+  });
 });

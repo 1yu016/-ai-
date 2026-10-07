@@ -62,12 +62,13 @@ describe('ChatView · 课间模式与启发式助教分离', () => {
       if (current.serverNow) current.serverNow = new Date(Date.now()).toISOString()
       return { data: current } as never
     })
-    vi.spyOn(http, 'post').mockImplementation(async (url: string) => {
-      if (url.includes('/break/end')) {
+    vi.spyOn(http, 'post').mockImplementation(async (url: string, body?: unknown) => {
+      const operation = (body as { operation?: string } | undefined)?.operation
+      if (url === '/classroom-commands' && operation === 'end_break') {
         current = runningRun()
         return { data: current } as never
       }
-      if (url.includes('/break')) {
+      if (url === '/classroom-commands' && operation === 'start_break') {
         current = inBreakRun(180)
         return { data: current } as never
       }

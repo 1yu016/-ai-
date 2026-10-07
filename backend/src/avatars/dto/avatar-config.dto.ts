@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
@@ -83,5 +83,8 @@ export class ResolveAvatarQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) lessonPlanId?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) classroomRunId?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) deviceId?: number;
-  @IsOptional() @IsEnum(AvatarActionName) actionName?: AvatarActionName;
+  @IsOptional()
+  @Transform(({ value }) => (value === 'talk' ? AvatarActionName.Speak : value))
+  @IsEnum(AvatarActionName)
+  actionName?: AvatarActionName;
 }
