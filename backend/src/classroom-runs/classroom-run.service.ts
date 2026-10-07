@@ -10,6 +10,11 @@ import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AvatarService } from '../avatars/avatar.service';
 import { AvatarConfigurationService } from '../avatars/avatar-configuration.service';
+import { BreakRun } from '../classroom-engagement/entities/break-run.entity';
+import {
+  ACTIVE_BREAK_STATUSES,
+  BreakRunStatus,
+} from '../classroom-engagement/classroom-engagement.types';
 import {
   CancelClassroomAvatarBindingDto,
   SetClassroomAvatarBindingDto,
@@ -82,6 +87,8 @@ export class ClassroomRunService {
     private readonly events: Repository<ClassroomEvent>,
     @InjectRepository(ClassroomDeviceTransfer)
     private readonly transfers: Repository<ClassroomDeviceTransfer>,
+    @InjectRepository(BreakRun)
+    private readonly breakRuns: Repository<BreakRun>,
     @InjectRepository(DeviceBinding)
     private readonly bindings: Repository<DeviceBinding>,
     @InjectRepository(Classroom)
@@ -484,6 +491,7 @@ export class ClassroomRunService {
     }
     const preflight = await this.ownedRun(actor, id);
     this.assertNotInBreak(preflight);
+    await this.assertNoActiveBreak(id);
     try {
       await this.dataSource.transaction(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
@@ -491,6 +499,7 @@ export class ClassroomRunService {
         if (!run) throw new NotFoundException('课堂运行不存在');
         this.assertOwner(actor, run);
         this.assertCurrentDevice(run, dto.deviceId);
+        await this.assertNoActiveBreak(id, manager);
         if (run.version !== dto.version) throw this.versionConflict();
         if (run.status === ClassroomRunStatus.Paused)
           throw new ConflictException('课堂暂停时不能切换步骤');
@@ -729,6 +738,7 @@ export class ClassroomRunService {
     const run = await this.ownedRun(actor, id);
     this.assertCurrentDevice(run, dto.deviceId);
     this.assertActive(run);
+    await this.assertNoActiveBreak(id);
     const valid = await this.snapshotService.loadLatestValid(id);
     if (!valid) return this.restore(actor, id, dto.deviceId);
     await this.dataSource.transaction(async (manager) => {
@@ -738,6 +748,7 @@ export class ClassroomRunService {
       this.assertOwner(actor, current);
       this.assertCurrentDevice(current, dto.deviceId);
       this.assertActive(current);
+      await this.assertNoActiveBreak(id, manager);
       if (current.version !== dto.version) throw this.versionConflict();
       const elapsedSeconds = Math.max(
         valid.entity.elapsedSeconds,
@@ -796,6 +807,7 @@ export class ClassroomRunService {
     const run = await this.ownedRun(actor, id);
     this.assertCurrentDevice(run, dto.deviceId);
     this.assertActive(run);
+    await this.assertNoActiveBreak(id);
     if (
       dto.checkpointType === ClassroomCheckpointType.ResourceCompleted &&
       !dto.resourceId
@@ -814,6 +826,7 @@ export class ClassroomRunService {
       this.assertOwner(actor, current);
       this.assertCurrentDevice(current, dto.deviceId);
       this.assertActive(current);
+      await this.assertNoActiveBreak(id, manager);
       if (current.version !== dto.version) throw this.versionConflict();
       const update = await runRepo.update(
         { id, version: dto.version, deviceId: dto.deviceId },
@@ -1025,6 +1038,40 @@ export class ClassroomRunService {
         )
           this.assertNotInBreak(run);
         const now = new Date();
+        if (
+          target === ClassroomRunStatus.Completed ||
+          target === ClassroomRunStatus.Cancelled ||
+          target === ClassroomRunStatus.Failed
+        ) {
+          const breakRepo = manager.getRepository(BreakRun);
+          const activeBreak = await breakRepo.findOne({
+            where: {
+              classroomRunId: id,
+              status: In([...ACTIVE_BREAK_STATUSES]),
+            },
+          });
+          if (activeBreak) {
+            activeBreak.elapsedSeconds =
+              activeBreak.status === BreakRunStatus.Running &&
+              activeBreak.resumedAt
+                ? activeBreak.elapsedSeconds +
+                  Math.max(
+                    0,
+                    Math.floor(
+                      (now.getTime() - activeBreak.resumedAt.getTime()) / 1000,
+                    ),
+                  )
+                : activeBreak.elapsedSeconds;
+            activeBreak.status = BreakRunStatus.AutoTerminated;
+            activeBreak.resumedAt = null;
+            activeBreak.pausedAt = null;
+            activeBreak.endedAt = now;
+            activeBreak.version += 1;
+            await breakRepo.save(activeBreak);
+          }
+        } else {
+          await this.assertNoActiveBreak(id, manager);
+        }
         const updates: Partial<ClassroomRun> = {
           status: target,
           version: dto.version + 1,
@@ -1212,6 +1259,17 @@ export class ClassroomRunService {
     this.assertOwner(actor, run);
     await this.access.requireClassAccess(actor, run.classId);
     return run;
+  }
+
+  private async assertNoActiveBreak(id: number, manager?: EntityManager) {
+    const repo = manager?.getRepository(BreakRun) ?? this.breakRuns;
+    const active = await repo.exists({
+      where: {
+        classroomRunId: id,
+        status: In([...ACTIVE_BREAK_STATUSES]),
+      },
+    });
+    if (active) throw new ConflictException('课间模式进行中，请先结束课间');
   }
 
   private assertOwner(actor: JwtTeacherPayload, run: ClassroomRun) {

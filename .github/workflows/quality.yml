@@ -1,0 +1,68 @@
+name: quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, feature/member-a, feature/member-b]
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: true
+      JWT_ACCESS_SECRET: ci-only-access-secret-please-do-not-use
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 30d
+      VOLC_API_KEY: ci-placeholder
+      ARK_API_KEY: ci-placeholder
+      ARK_ENDPOINT_ID: ci-placeholder
+      DB_SYNCHRONIZE: true
+      DB_MIGRATIONS_RUN: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Backend quality gate
+        working-directory: backend
+        run: |
+          npm run lint
+          npm run type-check
+          npm run build
+          npm run test -- --runInBand
+          npm run test:e2e -- --runInBand
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chrome
+
+      - name: Frontend quality gate
+        working-directory: frontend
+        run: |
+          npm run lint -- --no-fix
+          npm run type-check
+          npm run build
+          npm run test
+          npm run test:e2e

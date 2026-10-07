@@ -55,6 +55,26 @@ export default defineConfig({
             ? '/index.html'
             : undefined,
       },
+      '/badge-definitions': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/reward-rules': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/break-runs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/audit-logs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+      '/ai-call-logs': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
       '/uploads': {
         target: 'http://localhost:3001',
         changeOrigin: true,

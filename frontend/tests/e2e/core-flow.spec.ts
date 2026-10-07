@@ -13,8 +13,30 @@ test.describe.serial('正式冻结核心流程', () => {
 
     const token = await page.evaluate(() => localStorage.getItem('kindergarten-ai-access-token'))
     expect(token).toBeTruthy()
+    const auth = { Authorization: `Bearer ${token}` }
+    const schoolClassResponse = await request.post('/classes', {
+      headers: auth,
+      data: { name: 'E2E向日葵班', grade: '中班', ageRange: '4-5', schoolYear: '2026' },
+    })
+    const schoolClassBody = await schoolClassResponse.text()
+    expect(schoolClassResponse.ok(), `创建E2E班级失败：http=${schoolClassResponse.status()} body=${schoolClassBody}`).toBeTruthy()
+    const schoolClass = JSON.parse(schoolClassBody) as { id: number }
+    const classroomResponse = await request.post('/classrooms', {
+      headers: auth,
+      data: { name: 'E2E教室', location: '测试楼层' },
+    })
+    expect(classroomResponse.ok()).toBeTruthy()
+    const classroom = await classroomResponse.json() as { id: number }
+    const deviceResponse = await request.post('/devices', {
+      headers: auth,
+      data: { deviceCode: 'E2E-SCREEN-001', name: 'E2E课堂大屏', type: 'classroom_screen' },
+    })
+    expect(deviceResponse.ok()).toBeTruthy()
+    const device = await deviceResponse.json() as { id: number }
+    expect((await request.patch(`/devices/${device.id}`, { headers: auth, data: { status: 'online' } })).ok()).toBeTruthy()
+    expect((await request.post('/device-bindings', { headers: auth, data: { classId: schoolClass.id, classroomId: classroom.id, deviceId: device.id } })).ok()).toBeTruthy()
     const upload = await request.post('/resources/upload', {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: auth,
       multipart: {
         title: 'E2E春天图片',
         category: '图片卡片',

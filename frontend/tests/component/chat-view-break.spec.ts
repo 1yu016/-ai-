@@ -17,7 +17,6 @@ function runningRun(over: Record<string, unknown> = {}): ClassroomRunPayload {
   return {
     id: 9,
     lessonPlanId: 3,
-    classId: 1,
     deviceId: 1,
     version: 1,
     status: 'running',

@@ -25,7 +25,6 @@ function routerFor(path: string, routes?: RouteRecordRaw[]) {
   const router = createRouter({ history: createMemoryHistory(), routes: routes ?? [
     { path: '/login', component: LoginView },
     { path: '/chat', component: { template: '<div>聊天页</div>' } },
-    { path: '/my-classes', component: { template: '<div>我的班级</div>' } },
     { path: '/lesson-plans', component: { template: '<div>教案列表</div>' } },
     { path: '/lesson-plans/new', component: LessonPlanEditorView },
     { path: '/classroom/lesson/:runId', component: LessonClassroomView },
@@ -61,7 +60,6 @@ describe('login and role visibility', () => {
     loginTeacher()
     const teacher = shallowMount(ChatView, { global: { plugins: [router, ElementPlus], stubs: { CourseResourcesPanel: true, FavoritesPanel: true, ClassroomAssistantPanel: true } } })
     expect(teacher.text()).toContain('备课中心')
-    expect(teacher.text()).toContain('我的班级')
   })
 
   it('accepts a free teacher prompt without generating when assistant mode opens', async () => {
@@ -268,7 +266,7 @@ describe('lesson components', () => {
       : { data: { mode: 'guided_dialogue', ability: 'guided_question', reply: '你的小手指像数字几呀？', teacherTip: '等待幼儿观察手指后再回答。', suggestedAction: null, requiresTeacherConfirmation: false } })
     vi.stubGlobal('Audio', class {
       src = ''
-      constructor() {}
+      constructor(source?: string) { this.src = source ?? '' }
       addEventListener() {}
       async play() {}
       pause() {}

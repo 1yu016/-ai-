@@ -20,6 +20,7 @@ import { StudentRewardRecord } from './entities/student-reward-record.entity';
 import { ClassroomSnapshotService } from './classroom-snapshot.service';
 import { StudentRewardService } from './student-reward.service';
 import { AvatarModule } from '../avatars/avatar.module';
+import { BreakRun } from '../classroom-engagement/entities/break-run.entity';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
@@ -28,6 +29,7 @@ export const CLASSROOM_RUN_ENTITIES = [
   ClassroomSnapshot,
   ClassroomDeviceTransfer,
   StudentRewardRecord,
+  BreakRun,
 ];
 
 @Module({
