@@ -19,7 +19,12 @@ import {
   type CommandRuntimeExecutors,
 } from './classroomAiFallback'
 import { resolveIntent } from './ClassroomIntentRouter'
+import { ClassroomIntent } from './ClassroomIntent'
 import { resolveDeviceIntent } from './DeviceIntentRouter'
+import {
+  routeTeacherVoiceCommand,
+  type TeacherCommandSynonym,
+} from './TeacherVoiceCommandRouter'
 
 export type { CommandRuntimeExecutors }
 
@@ -36,6 +41,7 @@ export interface CommandRuntimeInput {
   executors: CommandRuntimeExecutors
   deps: AiCommandFallbackDeps
   timeoutMs?: number
+  customSynonyms?: TeacherCommandSynonym[]
 }
 
 /** 未听清/空口令的统一提示（供语音与文本共用）。 */
@@ -52,16 +58,55 @@ export async function orchestrateCommand(
     return { kind: 'failed', hint: EMPTY_COMMAND_HINT }
   }
 
+  // 新版教师课堂口令：中英文确定性规则和自定义同义词优先。
+  const teacherRoute = routeTeacherVoiceCommand(text, input.customSynonyms)
+  if (teacherRoute?.kind === 'command') {
+    if (teacherRoute.match.requiresConfirmation) {
+      return {
+        kind: 'confirmation_required',
+        intent: teacherRoute.match.operation,
+        message: '该指令涉及点名、奖励或结束课堂，请教师确认后执行。',
+        match: teacherRoute.match,
+      }
+    }
+    const result = await input.executors.classroom.executeVoice(teacherRoute.match)
+    const intent = teacherRoute.match.operation === 'next_step'
+      ? ClassroomIntent.NEXT_STEP
+      : teacherRoute.match.operation === 'previous_step'
+        ? ClassroomIntent.PREVIOUS_STEP
+        : teacherRoute.match.operation
+    return { kind: 'executed', intent, message: result.message }
+  }
+  if (teacherRoute?.kind === 'resource_search') {
+    input.body = {
+      text: `播放${teacherRoute.keyword}`,
+      context: (input.body as { context?: unknown }).context,
+    }
+  }
+
   // ① 明确媒体语义 → Device（纯前端，不写后端）。
   const deviceMatch = resolveDeviceIntent(text)
   if (deviceMatch) {
-    const result = input.executors.device.execute(deviceMatch)
+    const mapped = {
+      PAUSE_MEDIA: { operation: 'pause_media' },
+      RESUME_MEDIA: { operation: 'resume_media' },
+      STOP_MEDIA: { operation: 'stop_media' },
+      CLOSE_RESOURCE: { operation: 'stop_media' },
+      VOLUME_UP: { operation: 'set_volume', parameters: { volumeDelta: 0.1 } },
+      VOLUME_DOWN: { operation: 'set_volume', parameters: { volumeDelta: -0.1 } },
+    }[deviceMatch.intent] as Pick<import('./TeacherVoiceCommandRouter').TeacherVoiceCommandMatch, 'operation' | 'parameters'>
+    const result = await input.executors.classroom.executeVoice({
+      ...mapped,
+      normalized: deviceMatch.normalized,
+      label: deviceMatch.intent,
+      requiresConfirmation: false,
+      source: 'builtin',
+    })
     return {
       kind: 'device_executed',
       intent: deviceMatch.intent,
-      executed: result.executed,
+      executed: result.success,
       message: result.message,
-      ...(result.reason ? { reason: result.reason } : {}),
     }
   }
 

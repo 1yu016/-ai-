@@ -21,6 +21,9 @@ const pageData = {
 const studentsData = {
   data: { items: [{ id: 1, classId: 1, studentNo: 'XB-001', name: '朵朵', nickname: null, status: 'active', createdAt: '', updatedAt: '' }], total: 1, page: 1, pageSize: 100 },
 }
+const classesData = {
+  data: { items: [{ id: 1, name: '小一班', grade: '小班', ageRange: '3-4', schoolYear: '', status: 'active' }], total: 1, page: 1, pageSize: 50 },
+}
 
 async function mountView() {
   const router = createRouter({
@@ -28,6 +31,9 @@ async function mountView() {
     routes: [
       { path: '/classes/:classId/rewards', name: 'class-rewards', component: ClassRewardHistoryView, meta: { requiresAuth: true } },
       { path: '/classes/:classId/students', name: 'students', component: { template: '<div>学生</div>' } },
+      { path: '/classes/:classId/questions', name: 'class-questions', component: { template: '<div>问题</div>' } },
+      { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
+      { path: '/lesson-plans', name: 'lesson-plans', component: { template: '<div>备课中心</div>' } },
     ],
   })
   router.push('/classes/1/rewards')
@@ -40,6 +46,8 @@ describe('ClassRewardHistoryView 班级成长奖励页', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     localStorage.clear()
+    vi.spyOn(platformApi, 'listClasses').mockResolvedValue(classesData as never)
+    vi.spyOn(platformApi, 'rewardLeaderboard').mockResolvedValue({ data: { items: [] } } as never)
   })
 
   it('加载真实接口并展示累计奖励与逐条明细', async () => {
@@ -50,7 +58,8 @@ describe('ClassRewardHistoryView 班级成长奖励页', () => {
     await flushPromises()
 
     expect(rewardsSpy).toHaveBeenCalledWith(1, { page: 1, pageSize: 10, studentId: undefined })
-    expect(wrapper.text()).toContain('小一班 · 成长奖励')
+    expect(wrapper.text()).toContain('小一班')
+    expect(wrapper.text()).toContain('成长奖励')
     expect(wrapper.text()).toContain('累计奖励')
     expect(wrapper.text()).toContain('🌟 2')
     expect(wrapper.findAll('.reward-item')).toHaveLength(2)

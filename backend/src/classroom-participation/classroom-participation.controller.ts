@@ -50,7 +50,7 @@ export class ClassroomParticipationController {
     return this.service.batchAttendance(request.user, runId, dto);
   }
 
-  @Get(':runId/attendance')
+  @Get(':runId/attendance/legacy')
   listAttendance(
     @Param('runId', ParseIntPipe) runId: number,
     @Req() request: AuthenticatedRequest,

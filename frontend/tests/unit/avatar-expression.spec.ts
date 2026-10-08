@@ -8,7 +8,7 @@ describe('expression controller', () => {
     expect(ExpressionController.fromAction('listen')).toBe('neutral')
     expect(ExpressionController.fromAction('talk')).toBe('talk')
     expect(ExpressionController.fromAction('happy')).toBe('happy')
-    expect(ExpressionController.fromAction('praise')).toBe('happy')
+    expect(ExpressionController.fromAction('think')).toBe('neutral')
     expect(ExpressionController.fromAction('question')).toBe('question')
     expect(ExpressionController.fromAction('encourage')).toBe('happy')
     expect(ExpressionController.fromAction('goodbye')).toBe('goodbye')

@@ -27,7 +27,9 @@ const AGE_LABELS: Record<ResourceAgeGroup, string> = {
   small: '小班', middle: '中班', large: '大班', all: '全年龄',
 }
 const TYPE_LABELS: Record<CourseResourceMediaType, string> = {
-  image: '图片', audio: '音频', video: '视频', document: '文档/课件',
+  image: '图片', audio: '音频', video: '视频', pdf: 'PDF', ppt: 'PPT课件',
+  picture_book: '绘本', animation: '动画', question_bank: '题库',
+  experiment: '实验素材', model_3d: '3D模型', document: '文档/课件',
 }
 const MIME_LIMITS: Record<string, number> = {
   'image/jpeg': 10, 'image/png': 10, 'audio/mpeg': 30,
@@ -295,7 +297,11 @@ async function enterClassroomMode() {
 }
 
 function mediaIcon(resource: CourseResource): string {
-  return { image: '🖼️', audio: '🎵', video: '🎬', document: '📄' }[resource.mediaType]
+  return {
+    image: '🖼️', audio: '🎵', video: '🎬', pdf: '📕', ppt: '📊',
+    picture_book: '📚', animation: '🎞️', question_bank: '📝',
+    experiment: '🧪', model_3d: '🧊', document: '📄',
+  }[resource.mediaType]
 }
 
 function formatDuration(seconds?: number | null): string {

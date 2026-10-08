@@ -8,6 +8,7 @@ const NOW = new Date('2026-10-02T08:00:00.000Z')
 const running = (): ClassroomRunPayload => ({
   id: 9,
   lessonPlanId: 3,
+  classId: 1,
   deviceId: 1,
   version: 1,
   status: 'running',
@@ -44,8 +45,8 @@ describe('lessonRun store · Stage 7.4 课间休息', () => {
     const post = vi.spyOn(http, 'post').mockResolvedValue({ data: inBreak(300) } as never)
     await store.startBreak(300)
     expect(post).toHaveBeenCalledWith(
-      '/classroom-runs/9/break',
-      expect.objectContaining({ version: 1, durationSeconds: 300, requestId: expect.any(String) }),
+      '/classroom-commands',
+      expect.objectContaining({ expectedVersion: 1, operation: 'start_break', parameters: { durationSeconds: 300, contentType: 'water' }, requestId: expect.any(String) }),
     )
     expect(store.isBreakActive).toBe(true)
     // 成功响应应用后端返回的 version，前端不自猜 +1
@@ -95,8 +96,8 @@ describe('lessonRun store · Stage 7.4 课间休息', () => {
     } as never)
     await store.endBreak()
     expect(post).toHaveBeenCalledWith(
-      '/classroom-runs/9/break/end',
-      expect.objectContaining({ version: 2, requestId: expect.any(String) }),
+      '/classroom-commands',
+      expect.objectContaining({ expectedVersion: 2, operation: 'end_break', requestId: expect.any(String) }),
     )
     expect(store.isBreakActive).toBe(false)
     expect(store.run?.breakEndsAt).toBeNull()

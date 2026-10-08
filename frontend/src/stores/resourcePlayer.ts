@@ -35,6 +35,9 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
   const duration = ref(0)
   const volume = ref(0.8)
   const muted = ref(false)
+  const pageIndex = ref(1)
+  const pageCount = ref<number | null>(null)
+  const zoom = ref(1)
   const isClassroomMode = ref(false)
   const errorMessage = ref('')
   const autoPlayOnOpen = ref(true)
@@ -44,8 +47,8 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
 
   const hasPlayableMedia = computed(
     () =>
-      currentResource.value?.mediaType === 'audio' ||
-      currentResource.value?.mediaType === 'video',
+      (currentResource.value?.playerMediaType ?? currentResource.value?.mediaType) === 'audio' ||
+      (currentResource.value?.playerMediaType ?? currentResource.value?.mediaType) === 'video',
   )
 
   function resetProgress() {
@@ -64,6 +67,9 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
         ? 'loading'
         : 'paused'
     errorMessage.value = ''
+    pageIndex.value = 1
+    pageCount.value = null
+    zoom.value = 1
     resetProgress()
   }
 
@@ -93,6 +99,27 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
     muted.value = !muted.value
   }
 
+  function setMuted(value: boolean) {
+    muted.value = value
+  }
+
+  function setPage(value: number, total?: number | null) {
+    pageIndex.value = Math.max(1, Math.floor(value))
+    if (total !== undefined) pageCount.value = total
+  }
+
+  function setZoom(value: number) {
+    zoom.value = Math.max(0.5, Math.min(3, value))
+  }
+
+  function restorePlayerState(state: Record<string, unknown>) {
+    if (typeof state.volume === 'number') setVolume(state.volume)
+    if (typeof state.muted === 'boolean') setMuted(state.muted)
+    if (typeof state.currentTime === 'number') setProgress(state.currentTime)
+    if (typeof state.pageIndex === 'number') setPage(state.pageIndex)
+    if (typeof state.zoom === 'number') setZoom(state.zoom)
+  }
+
   function enterClassroomMode() {
     isClassroomMode.value = true
   }
@@ -106,6 +133,9 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
     playerStatus.value = 'idle'
     currentTime.value = 0
     duration.value = 0
+    pageIndex.value = 1
+    pageCount.value = null
+    zoom.value = 1
     errorMessage.value = ''
     isClassroomMode.value = false
     autoPlayOnOpen.value = true
@@ -133,6 +163,9 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
     duration,
     volume,
     muted,
+    pageIndex,
+    pageCount,
+    zoom,
     isClassroomMode,
     errorMessage,
     autoPlayOnOpen,
@@ -145,6 +178,10 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
     setProgress,
     setVolume,
     toggleMuted,
+    setMuted,
+    setPage,
+    setZoom,
+    restorePlayerState,
     enterClassroomMode,
     exitClassroomMode,
     requestControl,

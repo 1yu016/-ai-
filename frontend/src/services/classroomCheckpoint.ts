@@ -1,7 +1,7 @@
 import { ElMessage } from 'element-plus'
 import { http } from '@/api/http'
 
-export type Attendance = 'present' | 'late' | 'absent'
+export type Attendance = 'present' | 'late' | 'absent' | 'leave'
 export type CheckpointType = 'roll_call' | 'reward'
 
 export type RewardRecord = {
@@ -13,9 +13,17 @@ export type RewardRecord = {
   teacherId: number
   teacherName: string | null
   rewardType: string
+  rewardCategory?: string
+  rewardForms?: string[]
+  points?: number
+  badgeCode?: string | null
+  praiseText?: string | null
+  animationKey?: string | null
   stars: number
   reason: string | null
   requestId: string
+  revokedAt?: string | null
+  revokeReason?: string | null
   createdAt: string
 }
 
@@ -30,6 +38,15 @@ export type RunRewardsPayload = {
   total: number
   runTitle: string
 }
+
+// Stage：课堂快速奖励原因——ClassroomOperationsView 与课堂互动面板共同复用的唯一来源。
+export const QUICK_REWARD_REASONS = [
+  '积极回答',
+  '主动参与',
+  '认真观察',
+  '乐于分享',
+  '帮助伙伴',
+] as const
 
 export type ActiveRun = {
   id: number

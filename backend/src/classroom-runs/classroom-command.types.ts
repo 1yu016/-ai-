@@ -1,0 +1,63 @@
+export enum ClassroomCommandSource {
+  Screen = 'screen',
+  Mobile = 'mobile',
+  Voice = 'voice',
+  AiDirector = 'ai_director',
+  TeacherPanel = 'teacher_panel',
+}
+
+export enum ClassroomCommandOperation {
+  PreviousStep = 'previous_step',
+  NextStep = 'next_step',
+  SwitchStep = 'switch_step',
+  PauseClass = 'pause_class',
+  ResumeClass = 'resume_class',
+  OpenResource = 'open_resource',
+  PlayResource = 'play_resource',
+  PauseMedia = 'pause_media',
+  ResumeMedia = 'resume_media',
+  StopMedia = 'stop_media',
+  PreviousPage = 'previous_page',
+  NextPage = 'next_page',
+  ZoomIn = 'zoom_in',
+  ZoomOut = 'zoom_out',
+  SetVolume = 'set_volume',
+  Mute = 'mute',
+  Unmute = 'unmute',
+  SpeakText = 'speak_text',
+  DisplayArtwork = 'display_artwork',
+  AttendanceUpdate = 'attendance_update',
+  RandomRollCall = 'random_roll_call',
+  SpecifiedRollCall = 'specified_roll_call',
+  GroupRollCall = 'group_roll_call',
+  RewardStudent = 'reward_student',
+  RevokeReward = 'revoke_reward',
+  StartBreak = 'start_break',
+  EndBreak = 'end_break',
+  CompleteClass = 'complete_class',
+  CancelClass = 'cancel_class',
+}
+
+export enum ClassroomCommandStatus {
+  Processing = 'processing',
+  Success = 'success',
+  Failure = 'failure',
+  Conflict = 'conflict',
+}
+
+export const MEDIA_CLASSROOM_COMMANDS = new Set<ClassroomCommandOperation>([
+  ClassroomCommandOperation.OpenResource,
+  ClassroomCommandOperation.PlayResource,
+  ClassroomCommandOperation.PauseMedia,
+  ClassroomCommandOperation.ResumeMedia,
+  ClassroomCommandOperation.StopMedia,
+  ClassroomCommandOperation.PreviousPage,
+  ClassroomCommandOperation.NextPage,
+  ClassroomCommandOperation.ZoomIn,
+  ClassroomCommandOperation.ZoomOut,
+  ClassroomCommandOperation.SetVolume,
+  ClassroomCommandOperation.Mute,
+  ClassroomCommandOperation.Unmute,
+  ClassroomCommandOperation.SpeakText,
+  ClassroomCommandOperation.DisplayArtwork,
+]);

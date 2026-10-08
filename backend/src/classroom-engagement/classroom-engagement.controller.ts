@@ -68,7 +68,7 @@ export class ClassroomEngagementController {
     return this.service.listRules(request.user);
   }
 
-  @Post('classroom-runs/:runId/rewards')
+  @Post('classroom-runs/:runId/engagement-rewards')
   award(
     @Param('runId', ParseIntPipe) runId: number,
     @Body() dto: AwardRewardDto,
@@ -77,7 +77,7 @@ export class ClassroomEngagementController {
     return this.service.award(request.user, runId, dto);
   }
 
-  @Get('classroom-runs/:runId/rewards')
+  @Get('classroom-runs/:runId/engagement-rewards')
   listRewards(
     @Param('runId', ParseIntPipe) runId: number,
     @Req() request: AuthenticatedRequest,

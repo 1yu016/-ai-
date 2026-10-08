@@ -249,7 +249,7 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     expect(revokeA).toHaveBeenCalled() // stale → 回收自身 blob，无 object URL 泄漏
   })
 
-  it('treats a pending video fetch as stale when switching to a non-media resource', async () => {
+  it('treats a pending video fetch as stale when switching to a protected image', async () => {
     const imageResource: ServerResource = {
       id: 4, title: '插图', aliases: [], description: '认识忍者',
       resourceType: 'image', category: '视频动画', ageGroup: 'all', tags: [],
@@ -258,8 +258,13 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
       reviewStatus: 'approved', createdAt: '2026-01-01T00:00:00.000Z',
     }
     let resolveA!: (v: { url: string; revoke: () => void }) => void
+    let resolveImage!: (v: { url: string; revoke: () => void }) => void
     const revokeA = vi.fn()
-    mocks.fetchBlob.mockImplementation(() => new Promise((res) => { resolveA = res }))
+    const revokeImage = vi.fn()
+    mocks.fetchBlob.mockImplementation((id: number) => new Promise((res) => {
+      if (id === 2) resolveA = res
+      else resolveImage = res
+    }))
 
     const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
     const store = useResourcePlayerStore()
@@ -267,13 +272,17 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     await flushPromises() // video A 的 fetch 仍 pending
 
     store.openResource(normalizeServerResource(imageResource)!, false)
-    await flushPromises() // 切到 image：loadMediaSource 的 ++mediaLoadSeq 使 A 失效
+    await flushPromises() // 切到 image：新的鉴权请求使 A 失效
+
+    resolveImage({ url: 'blob:image-4', revoke: revokeImage })
+    await flushPromises()
 
     resolveA({ url: 'blob:media-2', revoke: revokeA })
     await flushPromises()
     expect(revokeA).toHaveBeenCalled() // A stale → 只 revoke 自己
     expect(store.currentResource?.id).toBe(4) // 当前仍是 image
     expect(wrapper.find('video.stage-video').exists()).toBe(false) // video 已卸载
-    expect((wrapper.vm as unknown as { mediaSource?: string }).mediaSource ?? '').toBe('') // 不被 A 覆盖
+    expect(wrapper.get('img.stage-image').attributes('src')).toBe('blob:image-4')
+    expect(revokeImage).not.toHaveBeenCalled()
   })
 })

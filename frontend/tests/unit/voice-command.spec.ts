@@ -155,6 +155,19 @@ describe('Stage 6.3 共享录音编排（createClassroomVoiceRecorder）', () =>
     expect(onBlob).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
+
+  it('录音结束后在 ASR 回调前立即释放麦克风轨道', async () => {
+    const stopTrack = vi.fn()
+    const stream = { getTracks: () => [{ stop: stopTrack }] }
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: vi.fn(async () => stream) } })
+    vi.stubGlobal('MediaRecorder', fakeMediaRecorderClass())
+    const onBlob = vi.fn(() => expect(stopTrack).toHaveBeenCalledTimes(1))
+    const recorder = createClassroomVoiceRecorder({ onBlob, onError: vi.fn() })
+    await recorder.start()
+    recorder.stop()
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
 })
 
 describe('Stage 6.3 ASR 封装（asrRecognizeWav）', () => {

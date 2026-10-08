@@ -17,6 +17,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthGuard } from '../auth/auth.guard';
 import type { AuthenticatedRequest } from '../auth/auth.types';
 import {
+  AuditLogQueryDto,
   BindDeviceDto,
   BindTeacherDto,
   ClassQueryDto,
@@ -29,6 +30,7 @@ import {
   CreateStudentDto,
   CreateTeacherDto,
   CreateTicketDto,
+  DeviceHeartbeatDto,
   DeviceCodeParamDto,
   PageQueryDto,
   StudentQueryDto,
@@ -189,6 +191,15 @@ export class PlatformController {
   ) {
     return this.platform.updateDevice(req.user, id, dto);
   }
+  @Post('devices/:id/heartbeat')
+  @HttpCode(HttpStatus.OK)
+  heartbeat(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: DeviceHeartbeatDto,
+  ) {
+    return this.platform.heartbeat(req.user, id, dto.deviceCode);
+  }
   @Post('device-bindings') bindDevice(
     @Req() req: AuthenticatedRequest,
     @Body() dto: BindDeviceDto,
@@ -231,9 +242,9 @@ export class PlatformController {
 
   @Get('audit-logs') listAuditLogs(
     @Req() req: AuthenticatedRequest,
-    @Query() query: PageQueryDto,
+    @Query() query: AuditLogQueryDto,
   ) {
-    return this.platform.listAuditLogs(req.user, query.page, query.pageSize);
+    return this.platform.listAuditLogs(req.user, query);
   }
   @Get('ai-call-logs') listAiCallLogs(
     @Req() req: AuthenticatedRequest,
@@ -241,16 +252,24 @@ export class PlatformController {
   ) {
     return this.platform.listAiCallLogs(req.user, query.page, query.pageSize);
   }
+
+  @Get('admin/dashboard') dashboard(@Req() req: AuthenticatedRequest) {
+    return this.platform.adminDashboard(req.user);
+  }
 }
 
 @Controller('classroom-tickets')
+@UseGuards(AuthGuard)
 export class ClassroomTicketPublicController {
   constructor(private readonly platform: PlatformService) {}
 
   @Post('consume')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  consume(@Body() dto: ConsumeTicketDto) {
-    return this.platform.consumeTicket(dto.ticket, dto.deviceCode);
+  consume(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ConsumeTicketDto,
+  ) {
+    return this.platform.consumeTicket(req.user, dto.ticket, dto.deviceCode);
   }
 }

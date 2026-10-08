@@ -12,6 +12,12 @@ import { LessonPlan } from '../lesson-plans/entities/lesson-plan.entity';
 import { PlatformModule } from '../platform/platform.module';
 import { ResourceModule } from '../resources/resource.module';
 import { AiController } from './ai.controller';
+import { ClassroomDirectorV2Controller } from './classroom-director-v2.controller';
+import { ClassroomDirectorV2Service } from './classroom-director-v2.service';
+import { ClassroomDirectorV2Suggestion } from './entities/classroom-director-v2-suggestion.entity';
+import { PlatformAiService } from './platform-ai.service';
+import { CommandSynonymService } from './command-synonym.service';
+import { TeacherCommandSynonym } from './entities/teacher-command-synonym.entity';
 import { AiService } from './ai.service';
 import { AudioService } from './audio.service';
 import { ClassroomDirectorService } from './classroom-director.service';
@@ -29,6 +35,8 @@ import { ClassroomCommandOfflineLog } from './entities/classroom-command-offline
   imports: [
     TypeOrmModule.forFeature([
       ClassroomDirectorSuggestion,
+      ClassroomDirectorV2Suggestion,
+      TeacherCommandSynonym,
       ClassroomRun,
       ClassroomRunStepSnapshot,
       ClassroomEvent,
@@ -48,9 +56,12 @@ import { ClassroomCommandOfflineLog } from './entities/classroom-command-offline
     AvatarModule,
     ClassroomRunModule,
   ],
-  controllers: [AiController],
+  controllers: [AiController, ClassroomDirectorV2Controller],
   providers: [
     AiService,
+    PlatformAiService,
+    ClassroomDirectorV2Service,
+    CommandSynonymService,
     AudioService,
     ClassroomDirectorService,
     HeuristicAssistantService,

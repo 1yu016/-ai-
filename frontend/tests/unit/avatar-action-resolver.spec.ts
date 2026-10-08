@@ -39,6 +39,6 @@ describe('avatar action resolver', () => {
 
   it('falls back to the first clip when fallbackToFirst is enabled and nothing matches', () => {
     const resolver = new AvatarActionResolver([clip('Custom_Pose')])
-    expect(resolver.resolve('thinking')?.name).toBe('Custom_Pose')
+    expect(resolver.resolve('think')?.name).toBe('Custom_Pose')
   })
 })

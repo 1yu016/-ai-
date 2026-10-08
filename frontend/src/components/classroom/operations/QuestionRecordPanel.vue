@@ -6,6 +6,7 @@ import type { Student } from '@/api/platform'
 import {
   createClassroomQuestion,
   listRunQuestions,
+  updateClassroomQuestion,
   type ClassroomQuestion,
 } from '@/services/classroomQuestions'
 
@@ -13,14 +14,11 @@ const props = defineProps<{
   runId: number
   lessonStepIndex: number | null
   students: Student[]
-  /** 后端接口是否已可用；由父级决定（默认自动探测）。 */
-  backendReady?: boolean
 }>()
 
 type PanelState =
   | 'loading' // 拉取本节问题中
   | 'ready' // 问题列表可用（含 0 条）
-  | 'backend_not_ready' // 后端接口未就绪，明确展示阻塞
   | 'error' // 拉取失败（网络/权限等）
 
 const state = ref<PanelState>('loading')
@@ -29,13 +27,20 @@ const errorText = ref('')
 const questionDraft = ref('')
 const selectedStudentId = ref<number | null>(null)
 const topicDraft = ref('生活观察')
+const domainDraft = ref('科学')
+const correctionDraft = ref('')
+const anonymousDraft = ref(false)
 const submitting = ref(false)
 const subState = ref<'idle' | 'submitting' | 'error'>('idle')
 const subError = ref('')
+const editingId = ref<number | null>(null)
+const editingText = ref('')
+const updating = ref(false)
 
 const questions = ref<ClassroomQuestion[]>([])
 
 const TOPICS = ['生活观察', '科学探索', '语言表达', '艺术创作']
+const DOMAINS = ['科学', '语言', '艺术', '健康', '社会', '综合']
 
 function studentName(id: number | null): string {
   if (id == null) return ''
@@ -49,13 +54,6 @@ async function load() {
     questions.value = await listRunQuestions(props.runId)
     state.value = 'ready'
   } catch (e) {
-    // 后端接口（student_question_record / POST+GET questions）尚未实现时，
-    // 明确进入 backend_not_ready 阻塞态，绝不回落 localStorage 冒充正式数据。
-    if (props.backendReady === false) {
-      state.value = 'backend_not_ready'
-      errorText.value = '问题记录后端接口尚未就绪，暂时无法保存本节问题。'
-      return
-    }
     state.value = 'error'
     errorText.value = apiErrorMessage(e, '本节问题加载失败。')
   }
@@ -78,16 +76,44 @@ async function record() {
     const created = await createClassroomQuestion(props.runId, {
       studentId: selectedStudentId.value,
       lessonStepIndex: props.lessonStepIndex,
+      asrRawText: text,
       questionText: text,
+      teacherCorrectedText: correctionDraft.value.trim() || null,
       topic: topicDraft.value,
+      domain: domainDraft.value,
+      isAnonymous: anonymousDraft.value,
     })
-    questions.value = [created, ...questions.value]
+    questions.value = [...questions.value, created]
     questionDraft.value = ''
+    correctionDraft.value = ''
     subState.value = 'idle'
   } catch (e) {
     subState.value = 'error'
     subError.value = apiErrorMessage(e, '问题保存失败，请重试。')
     // 保留 questionDraft 供重试。
+  }
+}
+
+function beginCorrection(question: ClassroomQuestion) {
+  editingId.value = question.id
+  editingText.value = question.questionText
+}
+
+async function saveCorrection(question: ClassroomQuestion) {
+  const text = editingText.value.trim()
+  if (!text) return ElMessage.warning('教师修正文本不能为空。')
+  updating.value = true
+  try {
+    const updated = await updateClassroomQuestion(props.runId, question.id, {
+      teacherCorrectedText: text,
+    })
+    questions.value = questions.value.map((item) => item.id === updated.id ? updated : item)
+    editingId.value = null
+    ElMessage.success('教师修正已保存。')
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '教师修正保存失败。'))
+  } finally {
+    updating.value = false
   }
 }
 
@@ -104,16 +130,7 @@ onMounted(load)
       <span class="pill">{{ questions.length }} 条问题</span>
     </div>
 
-    <!-- 后端未就绪：明确阻塞，不冒充 -->
-    <div v-if="state === 'backend_not_ready'" class="blocked">
-      <span class="tag">后端未就绪</span>
-      <p>{{ errorText }}</p>
-      <p class="muted">
-        这是正式接口尚未部署（FRONTEND_READY_BACKEND_BLOCKED）。接口就绪后此处自动变为可用。
-      </p>
-    </div>
-
-    <p v-else-if="state === 'loading'">加载中…</p>
+    <p v-if="state === 'loading'">加载中…</p>
     <p v-else-if="state === 'error'" class="bad">
       {{ errorText }}
       <button class="ghost" @click="load">重试</button>
@@ -129,7 +146,12 @@ onMounted(load)
         </select>
         <input
           v-model="questionDraft"
-          placeholder="记录幼儿刚才的问题…"
+          placeholder="ASR原始文字或教师记录的问题…"
+          :disabled="submitting"
+        >
+        <input
+          v-model="correctionDraft"
+          placeholder="教师修正文字（可选）"
           :disabled="submitting"
         >
         <select v-model="topicDraft">
@@ -137,6 +159,15 @@ onMounted(load)
             {{ topic }}
           </option>
         </select>
+        <select v-model="domainDraft">
+          <option v-for="domain in DOMAINS" :key="domain" :value="domain">
+            {{ domain }}
+          </option>
+        </select>
+        <label class="anonymous-check">
+          <input v-model="anonymousDraft" type="checkbox">
+          匿名记录
+        </label>
         <button class="button" :disabled="submitting" @click="record">
           {{ submitting ? '保存中…' : '记录问题' }}
         </button>
@@ -145,16 +176,25 @@ onMounted(load)
 
       <div class="question-list">
         <article v-for="question in questions" :key="question.id">
-          <span class="topic">{{ question.topic || '未分类' }}</span>
+          <span class="topic">{{ question.topic || '未分类' }} · {{ question.domain || '未分领域' }}</span>
           <div>
-            <strong>{{ question.questionText }}</strong>
+            <template v-if="editingId === question.id">
+              <input v-model="editingText" class="correction-input" maxlength="1000">
+              <div class="edit-actions">
+                <button class="mini" :disabled="updating" @click="saveCorrection(question)">保存修正</button>
+                <button class="mini ghost" @click="editingId = null">取消</button>
+              </div>
+            </template>
+            <strong v-else>{{ question.questionText }}</strong>
             <small>
               {{
-                `${studentName(question.studentId) || '非指定幼儿'} · ${new Date(
+                `${question.isAnonymous ? '匿名幼儿' : studentName(question.studentId) || '非指定幼儿'} · ${new Date(
                   question.createdAt,
                 ).toLocaleString('zh-CN')} · ${question.teacherName ?? '教师'}`
               }}
             </small>
+            <small v-if="question.teacherCorrectedText">原始识别：{{ question.asrRawText }}</small>
+            <button v-if="editingId !== question.id" class="mini" @click="beginCorrection(question)">修正文字</button>
           </div>
         </article>
         <p v-if="!questions.length" class="empty">
@@ -199,7 +239,7 @@ onMounted(load)
 }
 .question-form {
   display: grid;
-  grid-template-columns: 140px 1fr 120px auto;
+  grid-template-columns: 140px minmax(180px, 1fr) minmax(180px, 1fr) 120px 100px 100px auto;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -212,6 +252,8 @@ onMounted(load)
   background: #fff;
   color: #60483e;
 }
+.anonymous-check { display: flex; align-items: center; gap: 6px; color: #6b584c; white-space: nowrap; }
+.anonymous-check input { width: 16px; height: 16px; }
 .button {
   border: 0;
   border-radius: 11px;
@@ -235,23 +277,6 @@ onMounted(load)
 }
 .bad {
   color: #c64e4e;
-}
-.blocked {
-  padding: 14px 16px;
-  border: 1px dashed #d9a77e;
-  border-radius: 12px;
-  background: #fff6ec;
-  color: #876b5d;
-}
-.tag {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: #f5d9bf;
-  color: #a9654c;
-  font-size: 12px;
-  font-weight: 700;
-  margin-bottom: 6px;
 }
 .question-list {
   display: grid;
@@ -284,6 +309,10 @@ onMounted(load)
 .question-list small {
   color: #9a7e6e;
 }
+.correction-input { min-width: 280px; height: 36px; border: 1px solid #efd9c8; border-radius: 9px; padding: 0 10px; }
+.edit-actions { display: flex !important; grid-auto-flow: column; justify-content: flex-start; gap: 8px !important; }
+.mini { width: fit-content; border: 0; border-radius: 8px; padding: 5px 10px; background: #e99168; color: #fff; cursor: pointer; }
+.mini.ghost { border: 1px solid #efd9c8; background: #fff; color: #876b5d; }
 .empty {
   color: #9a7e6e;
   padding: 20px;

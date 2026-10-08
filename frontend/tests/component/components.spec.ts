@@ -187,7 +187,7 @@ describe('resource components', () => {
     expect(wrapper.text()).toContain('资源暂时无法显示')
   })
 
-  it('offers an open or download action for PowerPoint resources', async () => {
+  it('requires server conversion instead of exposing a protected PowerPoint URL', async () => {
     const presentation: ServerResource = {
       ...resource,
       id: 15,
@@ -205,8 +205,8 @@ describe('resource components', () => {
     useResourcePlayerStore().openResource(item, false)
     const wrapper = mount(ResourcePlayer, { props: { resources: [item] }, global: { plugins: [ElementPlus] } })
 
-    expect(wrapper.text()).toContain('PowerPoint 课件已保存到资源库')
-    expect(wrapper.get('a.presentation-open').attributes('href')).toBe('/uploads/resources/spring.pptx')
+    expect(wrapper.text()).toContain('服务端转换为 PDF 或逐页图片')
+    expect(wrapper.find('a.presentation-open').exists()).toBe(false)
     expect(wrapper.find('iframe').exists()).toBe(false)
   })
 })
@@ -263,7 +263,9 @@ describe('lesson components', () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: introductionRun })
     const post = vi.spyOn(http, 'post').mockImplementation(async (url) => url === '/ai/tts'
       ? { data: { audioUrl: 'data:audio/mpeg;base64,AAAA' } }
-      : { data: { mode: 'guided_dialogue', ability: 'guided_question', reply: '你的小手指像数字几呀？', teacherTip: '等待幼儿观察手指后再回答。', suggestedAction: null, requiresTeacherConfirmation: false } })
+      : url === '/classroom-commands'
+        ? { data: { status: 'success', result: {}, classroomState: introductionRun } }
+        : { data: { mode: 'guided_dialogue', ability: 'guided_question', reply: '你的小手指像数字几呀？', teacherTip: '等待幼儿观察手指后再回答。', suggestedAction: null, requiresTeacherConfirmation: false } })
     vi.stubGlobal('Audio', class {
       src = ''
       constructor(source?: string) { this.src = source ?? '' }
@@ -287,6 +289,7 @@ describe('lesson components', () => {
     expect(confirmPlay).toBeTruthy()
     await confirmPlay!.trigger('click')
     await flushPromises()
+    expect(post).toHaveBeenCalledWith('/classroom-commands', expect.objectContaining({ operation: 'speak_text', targetDeviceId: 1, parameters: { text: '你觉得数字1像什么呀？' } }))
     expect(post).toHaveBeenCalledWith('/ai/tts', { text: '你觉得数字1像什么呀？' })
     wrapper.unmount()
     vi.unstubAllGlobals()
@@ -304,7 +307,7 @@ describe('lesson components', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('结束课堂'))!.trigger('click')
     await flushPromises()
     expect(ElMessageBox.confirm).toHaveBeenCalled()
-    expect(post).toHaveBeenCalledWith('/classroom-runs/9/complete', expect.objectContaining({ version: 1, requestId: expect.any(String) }))
+    expect(post).toHaveBeenCalledWith('/classroom-commands', expect.objectContaining({ expectedVersion: 1, operation: 'complete_class', requestId: expect.any(String) }))
   })
 
   it('renders a read-only page after the run has ended', async () => {

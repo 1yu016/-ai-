@@ -5,6 +5,7 @@ import {
   Index,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { RewardCategory } from '../reward-system.types';
 
 /**
  * 幼儿成长奖励长期流水（Stage 7.3）。
@@ -44,6 +45,30 @@ export class StudentRewardRecord {
   @Column({ name: 'reward_type', type: 'varchar', length: 32, default: 'flower' })
   rewardType: string;
 
+  @Column({ name: 'reward_category', type: 'simple-enum', enum: RewardCategory, default: RewardCategory.Progress })
+  rewardCategory: RewardCategory;
+
+  @Column({ name: 'reward_forms', type: 'text', default: '["flower"]' })
+  rewardForms: string;
+
+  @Column({ name: 'points', type: 'integer', default: 1 })
+  points: number;
+
+  @Column({ name: 'badge_code', type: 'varchar', length: 64, nullable: true })
+  badgeCode: string | null;
+
+  @Column({ name: 'praise_template_id', type: 'varchar', length: 64, nullable: true })
+  praiseTemplateId: string | null;
+
+  @Column({ name: 'praise_text', type: 'varchar', length: 120, nullable: true })
+  praiseText: string | null;
+
+  @Column({ name: 'teacher_confirmed_praise', type: 'boolean', default: false })
+  teacherConfirmedPraise: boolean;
+
+  @Column({ name: 'animation_key', type: 'varchar', length: 32, nullable: true })
+  animationKey: string | null;
+
   @Column({ name: 'stars', type: 'integer', default: 1 })
   stars: number;
 
@@ -52,6 +77,19 @@ export class StudentRewardRecord {
 
   @Column({ name: 'request_id', type: 'varchar', length: 100 })
   requestId: string;
+
+  @Index({ unique: true })
+  @Column({ name: 'revoke_request_id', type: 'varchar', length: 100, nullable: true })
+  revokeRequestId: string | null;
+
+  @Column({ name: 'revoked_at', type: 'datetime', nullable: true })
+  revokedAt: Date | null;
+
+  @Column({ name: 'revoked_by_teacher_id', type: 'integer', nullable: true })
+  revokedByTeacherId: number | null;
+
+  @Column({ name: 'revoke_reason', type: 'varchar', length: 200, nullable: true })
+  revokeReason: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'datetime' })
   createdAt: Date;

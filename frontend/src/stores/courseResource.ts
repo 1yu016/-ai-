@@ -18,7 +18,10 @@ export const COURSE_RESOURCE_CATEGORIES = [
 ] as const
 
 export const RESOURCE_AGE_GROUPS = ['small', 'middle', 'large', 'all'] as const
-export const RESOURCE_TYPES = ['image', 'audio', 'video', 'document'] as const
+export const RESOURCE_TYPES = [
+  'image', 'audio', 'video', 'pdf', 'ppt', 'picture_book', 'animation',
+  'question_bank', 'experiment', 'model_3d', 'document',
+] as const
 
 export type CourseResourceCategory = (typeof COURSE_RESOURCE_CATEGORIES)[number]
 export type ResourceAgeGroup = (typeof RESOURCE_AGE_GROUPS)[number]
@@ -31,6 +34,7 @@ export type CourseResource = {
   uploadedAt?: string
   category: CourseResourceCategory
   mediaType: CourseResourceMediaType
+  playerMediaType?: 'image' | 'audio' | 'video' | 'document'
   aliases: string[]
   ageGroup: ResourceAgeGroup
   ageGroups: string[]
@@ -151,6 +155,16 @@ export function normalizeServerResource(value: ServerResource): CourseResource |
     uploadedAt: value.createdAt,
     category: value.category,
     mediaType: value.resourceType,
+    playerMediaType:
+      value.resourceType === 'audio'
+        ? 'audio'
+        : value.resourceType === 'video' || value.resourceType === 'animation'
+          ? 'video'
+          : value.resourceType === 'image'
+            ? 'image'
+            : value.resourceType === 'picture_book' && value.mimeType.startsWith('image/')
+              ? 'image'
+              : 'document',
     aliases: Array.isArray(value.aliases) ? value.aliases : [],
     ageGroup: value.ageGroup,
     ageGroups: [value.ageGroup],

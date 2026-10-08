@@ -6,7 +6,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
+import { Interval } from '@nestjs/schedule';
+import {
+  DataSource,
+  EntityManager,
+  In,
+  IsNull,
+  LessThanOrEqual,
+  Repository,
+} from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AvatarService } from '../avatars/avatar.service';
 import { AvatarConfigurationService } from '../avatars/avatar-configuration.service';
@@ -48,6 +56,8 @@ import {
 } from './classroom-snapshot.service';
 import {
   ACTIVE_CLASSROOM_RUN_STATUSES,
+  CLASSROOM_BREAK_CONTENT,
+  ClassroomBreakContentType,
   ClassroomCheckpointType,
   ClassroomEventResult,
   ClassroomEventType,
@@ -70,6 +80,7 @@ import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.en
 import { ClassroomEvent } from './entities/classroom-event.entity';
 import { ClassroomRunStepSnapshot } from './entities/classroom-run-step-snapshot.entity';
 import { ClassroomRun } from './entities/classroom-run.entity';
+import { ClassroomRecordService } from './classroom-record.service';
 
 type SnapshotSourceStep = LessonStep & {
   actions?: LessonStepAction[];
@@ -101,6 +112,7 @@ export class ClassroomRunService {
     private readonly snapshotService: ClassroomSnapshotService,
     private readonly avatars: AvatarService,
     private readonly avatarConfiguration: AvatarConfigurationService,
+    private readonly classroomRecords: ClassroomRecordService,
   ) {}
 
   async start(actor: JwtTeacherPayload, dto: StartClassroomRunDto) {
@@ -296,13 +308,15 @@ export class ClassroomRunService {
     id: number,
     dto: ClassroomRunOperationDto,
   ) {
-    return this.transition(
+    const result = await this.transition(
       actor,
       id,
       dto,
       ClassroomRunStatus.Completed,
       ClassroomEventType.Complete,
     );
+    const summaryDraft = await this.classroomRecords.ensureDraft(actor, id);
+    return { ...result, summaryDraft };
   }
 
   async cancel(
@@ -329,6 +343,7 @@ export class ClassroomRunService {
     dto: StartClassroomBreakDto,
   ) {
     this.requireTeacher(actor);
+    await this.finalizeExpiredBreak(id);
     const duplicate = await this.findDuplicate(
       actor,
       dto.requestId,
@@ -346,6 +361,13 @@ export class ClassroomRunService {
       throw new ConflictException('只有运行中的课堂可以进入课间休息');
     if (isBreakActive(run))
       throw new ConflictException('当前已经处于课间休息');
+    const contentType = dto.contentType ?? ClassroomBreakContentType.Water;
+    const previousSnapshot = await this.snapshotService.loadLatestValid(id);
+    const breakContext = {
+      currentStepIndex: run.currentStepIndex,
+      playerState: previousSnapshot?.playerState ?? {},
+      capturedAt: new Date().toISOString(),
+    };
     try {
       await this.dataSource.transaction(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
@@ -360,11 +382,23 @@ export class ClassroomRunService {
           throw new ConflictException('当前已经处于课间休息');
         const now = new Date();
         const ends = new Date(now.getTime() + dto.durationSeconds * 1000);
+        const protectionAt = new Date(
+          now.getTime() +
+            Math.min(
+              dto.idleProtectionSeconds ?? 120,
+              dto.durationSeconds,
+            ) *
+              1000,
+        );
         const update = await runRepo.update(
           { id, version: dto.version, status: ClassroomRunStatus.Running },
           {
             breakStartedAt: now,
             breakEndsAt: ends,
+            breakContentType: contentType,
+            breakDurationSeconds: dto.durationSeconds,
+            breakProtectionAt: protectionAt,
+            breakContext: JSON.stringify(breakContext),
             version: dto.version + 1,
           },
         );
@@ -377,8 +411,12 @@ export class ClassroomRunService {
           ClassroomEventType.BreakStart,
           {
             durationSeconds: dto.durationSeconds,
+            contentType,
+            idleProtectionSeconds: dto.idleProtectionSeconds ?? 120,
             breakStartedAt: now.toISOString(),
             breakEndsAt: ends.toISOString(),
+            protectionAt: protectionAt.toISOString(),
+            previousStepIndex: breakContext.currentStepIndex,
             version: updated.version,
           },
           dto.requestId,
@@ -388,6 +426,23 @@ export class ClassroomRunService {
         id,
         ClassroomSnapshotReason.BreakStart,
         true,
+        {
+          interactionState: {
+            ...previousSnapshot?.interactionState,
+            breakMode: {
+              contentType,
+              avatarAction:
+                CLASSROOM_BREAK_CONTENT[contentType].avatarAction,
+              startedAt: new Date().toISOString(),
+            },
+          },
+          playerState: {
+            ...previousSnapshot?.playerState,
+            status: 'stopped',
+            operation: 'stop_media',
+            breakMediaExclusive: true,
+          },
+        },
       );
       return this.get(actor, id);
     } catch (error) {
@@ -425,7 +480,11 @@ export class ClassroomRunService {
     }
     const run = await this.ownedRun(actor, id);
     this.assertCurrentDevice(run, dto.deviceId);
-    if (!isBreakActive(run)) return this.get(actor, id);
+    if (!isBreakActive(run)) {
+      await this.finalizeExpiredBreak(id);
+      return this.get(actor, id);
+    }
+    const context = this.breakContext(run);
     try {
       await this.dataSource.transaction(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
@@ -437,7 +496,16 @@ export class ClassroomRunService {
         if (!isBreakActive(current)) return;
         const update = await runRepo.update(
           { id, version: dto.version, status: ClassroomRunStatus.Running },
-          { breakStartedAt: null, breakEndsAt: null, version: dto.version + 1 },
+          {
+            currentStepIndex: context.currentStepIndex ?? current.currentStepIndex,
+            breakStartedAt: null,
+            breakEndsAt: null,
+            breakContentType: null,
+            breakDurationSeconds: null,
+            breakProtectionAt: null,
+            breakContext: null,
+            version: dto.version + 1,
+          },
         );
         if (update.affected !== 1) throw this.versionConflict();
         const updated = await runRepo.findOneByOrFail({ id });
@@ -449,6 +517,9 @@ export class ClassroomRunService {
           {
             breakStartedAt: current.breakStartedAt?.toISOString() ?? null,
             breakEndsAt: current.breakEndsAt?.toISOString() ?? null,
+            restoredStepIndex:
+              context.currentStepIndex ?? current.currentStepIndex,
+            reason: 'teacher',
             version: updated.version,
           },
           dto.requestId,
@@ -458,6 +529,7 @@ export class ClassroomRunService {
         id,
         ClassroomSnapshotReason.BreakEnd,
         true,
+        this.breakRestorePatch(context, 'teacher'),
       );
       return this.get(actor, id);
     } catch (error) {
@@ -549,6 +621,7 @@ export class ClassroomRunService {
 
   async get(actor: JwtTeacherPayload, id: number) {
     this.requireTeacher(actor);
+    await this.finalizeExpiredBreak(id);
     const run = await this.ownedRun(actor, id);
     const steps = await this.snapshots.find({
       where: { classroomRunId: id },
@@ -569,14 +642,110 @@ export class ClassroomRunService {
     });
     return Promise.all(
       runs.map(async (run) => {
-        await this.access.requireClassAccess(actor, run.classId);
-        return this.response(run, undefined, await this.readObjectives(actor, run));
+        await this.finalizeExpiredBreak(run.id);
+        const current = (await this.runs.findOneBy({ id: run.id })) ?? run;
+        await this.access.requireClassAccess(actor, current.classId);
+        return this.response(current, undefined, await this.readObjectives(actor, current));
       }),
     );
   }
 
+  async screenState(actor: JwtTeacherPayload, deviceId: number) {
+    this.requireTeacher(actor);
+    const [device, binding] = await Promise.all([
+      this.devices.findOne({ where: { id: deviceId } }),
+      this.bindings.findOne({
+        where: { deviceId, status: BindingStatus.Active },
+        order: { boundAt: 'DESC' },
+      }),
+    ]);
+    if (!device) throw new NotFoundException('大屏设备不存在');
+    if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+      throw new ConflictException('大屏设备当前不可用于课堂');
+    if (!binding) throw new ForbiddenException('大屏设备尚未绑定班级');
+    await this.access.requireClassAccess(actor, binding.classId);
+    let run = await this.runs.findOne({
+      where: { teacherId: actor.sub, deviceId },
+      order: { updatedAt: 'DESC' },
+    });
+    if (!run)
+      return {
+        page: 'idle',
+        deviceId,
+        classroomState: null,
+        serverNow: new Date().toISOString(),
+      };
+    await this.finalizeExpiredBreak(run.id);
+    run = (await this.runs.findOneBy({ id: run.id })) ?? run;
+    await this.access.requireClassAccess(actor, run.classId);
+    if (
+      TERMINAL_CLASSROOM_RUN_STATUSES.includes(
+        run.status as (typeof TERMINAL_CLASSROOM_RUN_STATUSES)[number],
+      )
+    ) {
+      if (run.status === ClassroomRunStatus.Failed)
+        return {
+          page: 'recovery',
+          deviceId,
+          classroomState: await this.restore(actor, run.id, deviceId),
+          serverNow: new Date().toISOString(),
+        };
+      const endedAt = run.endedAt?.getTime() ?? 0;
+      if (endedAt && Date.now() - endedAt > 30 * 60 * 1000)
+        return {
+          page: 'idle',
+          deviceId,
+          classroomState: null,
+          serverNow: new Date().toISOString(),
+        };
+      return {
+        page: 'summary',
+        deviceId,
+        classroomState: await this.restore(actor, run.id, deviceId),
+        serverNow: new Date().toISOString(),
+      };
+    }
+    const restored = await this.restore(actor, run.id, deviceId);
+    if (restored.manualInterventionRequired)
+      return {
+        page: 'recovery',
+        deviceId,
+        classroomState: restored,
+        serverNow: new Date().toISOString(),
+      };
+    if (isBreakActive(run))
+      return {
+        page:
+          run.breakProtectionAt && run.breakProtectionAt.getTime() <= Date.now()
+            ? 'protection'
+            : 'break',
+        deviceId,
+        classroomState: restored,
+        serverNow: new Date().toISOString(),
+      };
+    const step = await this.snapshots.findOne({
+      where: { classroomRunId: run.id, stepIndex: restored.currentStepIndex },
+    });
+    const stepDescriptor = [step?.type, step?.title, step?.content]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const page = /drawing|artwork|paint|绘画|作品/.test(stepDescriptor)
+      ? 'drawing'
+      : /reward|honor|奖励|荣誉/.test(stepDescriptor)
+        ? 'reward'
+        : 'classroom';
+    return {
+      page,
+      deviceId,
+      classroomState: restored,
+      serverNow: new Date().toISOString(),
+    };
+  }
+
   async restore(actor: JwtTeacherPayload, id: number, deviceId: number) {
     this.requireTeacher(actor);
+    await this.finalizeExpiredBreak(id);
     const run = await this.ownedRun(actor, id);
     this.assertCurrentDevice(run, deviceId);
     const steps = await this.snapshots.find({
@@ -1253,6 +1422,137 @@ export class ClassroomRunService {
     if (active) throw new ConflictException('该班级或设备已经存在进行中的课堂');
   }
 
+  /** 大屏断线时仍由服务端结算到期课间；读取接口中的结算是重启后的兜底。 */
+  @Interval('classroom-break-expiry', 1_000)
+  async settleExpiredBreaks(): Promise<void> {
+    const expired = await this.runs.find({
+      where: {
+        status: ClassroomRunStatus.Running,
+        breakEndsAt: LessThanOrEqual(new Date()),
+      },
+      select: { id: true },
+    });
+    for (const item of expired) await this.finalizeExpiredBreak(item.id);
+  }
+
+  /**
+   * 课间自然到期采用惰性落库：任一大屏、手机或教师端读取课堂时都会执行。
+   * requestId 由课间结束时间确定，因此服务重启、并发重连也只会结算一次。
+   */
+  private async finalizeExpiredBreak(id: number): Promise<void> {
+    const initial = await this.runs.findOne({ where: { id } });
+    if (
+      !initial?.breakStartedAt ||
+      !initial.breakEndsAt ||
+      initial.status !== ClassroomRunStatus.Running ||
+      initial.breakEndsAt.getTime() > Date.now()
+    )
+      return;
+    const context = this.breakContext(initial);
+    const requestId = `break-auto:${id}:${initial.breakEndsAt.getTime()}`;
+    let settled = false;
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const runRepo = manager.getRepository(ClassroomRun);
+        const current = await runRepo.findOne({ where: { id } });
+        if (
+          !current?.breakStartedAt ||
+          !current.breakEndsAt ||
+          current.status !== ClassroomRunStatus.Running ||
+          current.breakEndsAt.getTime() > Date.now()
+        )
+          return;
+        const update = await runRepo.update(
+          {
+            id,
+            version: current.version,
+            status: ClassroomRunStatus.Running,
+          },
+          {
+            currentStepIndex:
+              context.currentStepIndex ?? current.currentStepIndex,
+            breakStartedAt: null,
+            breakEndsAt: null,
+            breakContentType: null,
+            breakDurationSeconds: null,
+            breakProtectionAt: null,
+            breakContext: null,
+            version: current.version + 1,
+          },
+        );
+        if (update.affected !== 1) return;
+        const updated = await runRepo.findOneByOrFail({ id });
+        await manager.getRepository(ClassroomEvent).save(
+          manager.getRepository(ClassroomEvent).create({
+            classroomRunId: id,
+            eventType: ClassroomEventType.BreakEnd,
+            requestId,
+            operatorType: AuthUserType.Teacher,
+            operatorId: current.teacherId,
+            deviceId: current.deviceId,
+            payload: JSON.stringify({
+              reason: 'elapsed',
+              restoredStepIndex: updated.currentStepIndex,
+              version: updated.version,
+            }),
+            result: ClassroomEventResult.Success,
+          }),
+        );
+        settled = true;
+      });
+    } catch (error) {
+      if (!this.isUniqueViolation(error)) throw error;
+    }
+    if (settled)
+      await this.snapshotService.capture(
+        id,
+        ClassroomSnapshotReason.BreakEnd,
+        true,
+        this.breakRestorePatch(context, 'elapsed'),
+      );
+  }
+
+  private breakContext(run: ClassroomRun): {
+    currentStepIndex?: number;
+    playerState?: Record<string, unknown>;
+  } {
+    const parsed = this.parseJson(run.breakContext);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const value = parsed as Record<string, unknown>;
+    return {
+      currentStepIndex: Number.isInteger(value.currentStepIndex)
+        ? Number(value.currentStepIndex)
+        : undefined,
+      playerState:
+        value.playerState &&
+        typeof value.playerState === 'object' &&
+        !Array.isArray(value.playerState)
+          ? (value.playerState as Record<string, unknown>)
+          : {},
+    };
+  }
+
+  private breakRestorePatch(
+    context: { playerState?: Record<string, unknown> },
+    reason: 'teacher' | 'elapsed',
+  ): ClassroomSnapshotPatch {
+    const previous = context.playerState ?? {};
+    return {
+      interactionState: {
+        breakMode: null,
+        breakEndedBy: reason,
+        breakEndedAt: new Date().toISOString(),
+      },
+      playerState: {
+        ...previous,
+        // 浏览器禁止无手势自动播放；恢复原位置但保持暂停，由教师继续。
+        status: previous.status === 'playing' ? 'paused' : previous.status,
+        autoPlay: false,
+        restoredAfterBreak: true,
+      },
+    };
+  }
+
   private async ownedRun(actor: JwtTeacherPayload, id: number) {
     const run = await this.runs.findOne({ where: { id } });
     if (!run) throw new NotFoundException('课堂运行不存在');
@@ -1370,6 +1670,15 @@ export class ClassroomRunService {
         : run.elapsedSeconds;
     return {
       ...run,
+      breakContent:
+        run.breakContentType &&
+        Object.values(ClassroomBreakContentType).includes(run.breakContentType)
+          ? {
+              type: run.breakContentType,
+              ...CLASSROOM_BREAK_CONTENT[run.breakContentType],
+            }
+          : null,
+      breakRestore: this.breakContext(run),
       elapsedSeconds: liveElapsedSeconds,
       // Stage 7.4：权威服务器时间，供各端做时钟偏移校准（倒计时 = breakEndsAt - effectiveServerNow）。
       serverNow: new Date().toISOString(),

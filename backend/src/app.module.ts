@@ -35,6 +35,18 @@ import { ClassroomParticipation2026092800013 } from './migrations/202609280013-C
 import { ClassroomParticipationModule } from './classroom-participation/classroom-participation.module';
 import { ClassroomEngagement2026093000014 } from './migrations/202609300014-ClassroomEngagement';
 import { ClassroomEngagementModule } from './classroom-engagement/classroom-engagement.module';
+import { ClassroomCommandBus2026100600014 } from './migrations/202610060014-ClassroomCommandBus';
+import { FormalAttendanceRollCall2026100600015 } from './migrations/202610060015-FormalAttendanceRollCall';
+import { RewardGrowthHonor2026100600016 } from './migrations/202610060016-RewardGrowthHonor';
+import { ClassroomBreakMode2026100600017 } from './migrations/202610060017-ClassroomBreakMode';
+import { ClassroomDirector2026100600018 } from './migrations/202610060018-ClassroomDirector';
+import { TeacherCommandSynonym2026100600019 } from './migrations/202610060019-TeacherCommandSynonym';
+import { StudentQuestionMap2026100600020 } from './migrations/202610060020-StudentQuestionMap';
+import { ClassroomRecords2026100700021 } from './migrations/202610070021-ClassroomRecords';
+import { StudentArtworkRecords2026100700022 } from './migrations/202610070022-StudentArtworkRecords';
+import { ArtworkModule } from './artworks/artwork.module';
+import { ClassroomMobileModule } from './classroom-mobile/classroom-mobile.module';
+import { ClassroomMobileRealtime2026100700023 } from './migrations/202610070023-ClassroomMobileRealtime';
 
 @Module({
   imports: [
@@ -92,6 +104,16 @@ import { ClassroomEngagementModule } from './classroom-engagement/classroom-enga
             ClassroomCommands2026092800012,
             ClassroomParticipation2026092800013,
             ClassroomEngagement2026093000014,
+            ClassroomCommandBus2026100600014,
+            FormalAttendanceRollCall2026100600015,
+            RewardGrowthHonor2026100600016,
+            ClassroomBreakMode2026100600017,
+            ClassroomDirector2026100600018,
+            TeacherCommandSynonym2026100600019,
+            StudentQuestionMap2026100600020,
+            ClassroomRecords2026100700021,
+            StudentArtworkRecords2026100700022,
+            ClassroomMobileRealtime2026100700023,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',
@@ -108,6 +130,8 @@ import { ClassroomEngagementModule } from './classroom-engagement/classroom-enga
     AvatarModule,
     ClassroomParticipationModule,
     ClassroomEngagementModule,
+    ArtworkModule,
+    ClassroomMobileModule,
   ],
   controllers: [AppController],
   providers: [AppService],

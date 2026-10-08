@@ -14,27 +14,6 @@ test.describe.serial('正式冻结核心流程', () => {
     const token = await page.evaluate(() => localStorage.getItem('kindergarten-ai-access-token'))
     expect(token).toBeTruthy()
     const auth = { Authorization: `Bearer ${token}` }
-    const schoolClassResponse = await request.post('/classes', {
-      headers: auth,
-      data: { name: 'E2E向日葵班', grade: '中班', ageRange: '4-5', schoolYear: '2026' },
-    })
-    const schoolClassBody = await schoolClassResponse.text()
-    expect(schoolClassResponse.ok(), `创建E2E班级失败：http=${schoolClassResponse.status()} body=${schoolClassBody}`).toBeTruthy()
-    const schoolClass = JSON.parse(schoolClassBody) as { id: number }
-    const classroomResponse = await request.post('/classrooms', {
-      headers: auth,
-      data: { name: 'E2E教室', location: '测试楼层' },
-    })
-    expect(classroomResponse.ok()).toBeTruthy()
-    const classroom = await classroomResponse.json() as { id: number }
-    const deviceResponse = await request.post('/devices', {
-      headers: auth,
-      data: { deviceCode: 'E2E-SCREEN-001', name: 'E2E课堂大屏', type: 'classroom_screen' },
-    })
-    expect(deviceResponse.ok()).toBeTruthy()
-    const device = await deviceResponse.json() as { id: number }
-    expect((await request.patch(`/devices/${device.id}`, { headers: auth, data: { status: 'online' } })).ok()).toBeTruthy()
-    expect((await request.post('/device-bindings', { headers: auth, data: { classId: schoolClass.id, classroomId: classroom.id, deviceId: device.id } })).ok()).toBeTruthy()
     const upload = await request.post('/resources/upload', {
       headers: auth,
       multipart: {
@@ -107,6 +86,7 @@ test.describe.serial('正式冻结核心流程', () => {
       data: { deviceId: deviceBody.id, classroomId: classroomBody.id, classId: classBody.id },
     })
     expect(bindDevice.ok()).toBeTruthy()
+    expect((await request.post(`/devices/${deviceBody.id}/heartbeat`, { headers: adminHeaders, data: { deviceCode: 'E2E-DEV-CF01' } })).ok()).toBeTruthy()
 
     await page.goto('/lesson-plans/new')
     await page.locator('.el-form-item').filter({ hasText: '教案标题' }).locator('input').fill('E2E冻结教案')
@@ -155,6 +135,7 @@ test.describe.serial('正式冻结核心流程', () => {
     await expect(page.getByText('已完成')).toBeVisible()
     await page.getByRole('button', { name: '进入课堂' }).click()
     await expect(page).toHaveURL(/\/classroom\/lesson\/\d+$/)
+    await page.getByRole('button', { name: '跳过开场' }).click()
     await expect(page.getByRole('heading', { name: '观察图片' })).toBeVisible()
 
     await page.getByRole('button', { name: '下一步' }).click()
@@ -167,7 +148,14 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.reload()
     await expect(page.getByRole('heading', { name: '说说发现' })).toBeVisible()
     await page.getByRole('button', { name: '结束课堂' }).click()
-    await page.getByRole('button', { name: '确认' }).click()
+    await page.getByRole('button', { name: '确认结束', exact: true }).click()
+    await expect(page).toHaveURL(/\/classroom\/lesson\/\d+\/summary$/)
+    await page.getByRole('button', { name: '查看课堂记录与 AI 总结' }).click()
+    await expect(page).toHaveURL(/\/classroom\/records\/\d+$/)
+    await expect(page.getByRole('heading', { name: '星星探索课' }).or(page.getByRole('heading', { name: 'E2E冻结教案' }))).toBeVisible()
+    await expect(page.getByText('课堂时间线', { exact: true })).toBeVisible()
+    await expect(page.getByText(/总结草稿/)).toBeVisible()
+    await page.getByRole('button', { name: '返回备课中心' }).click()
     await expect(page).toHaveURL(/\/lesson-plans$/)
 
     const savedCard = page.locator('.el-card').filter({ hasText: 'E2E冻结教案' })
@@ -185,11 +173,66 @@ test.describe.serial('正式冻结核心流程', () => {
     await expect(page.getByText('你好呀，我们一起聊聊吧！')).toBeVisible()
   })
 
-  test.skip('管理员审核资源', async () => {
-    // 当前工作区没有阶段9管理员审核接口和页面，作为正式冻结阻断项保留。
+  test('管理员审核并停用异常资源', async ({ page, request }) => {
+    const teacherLogin = await request.post('/auth/login', {
+      data: { account: 'e2e_teacher', password: 'E2eTeacher123!' },
+    })
+    expect(teacherLogin.ok()).toBeTruthy()
+    const teacherBody = (await teacherLogin.json()) as { access_token: string }
+    const teacherHeaders = { Authorization: `Bearer ${teacherBody.access_token}` }
+
+    const upload = await request.post('/resources/upload', {
+      headers: teacherHeaders,
+      multipart: {
+        title: 'E2E管理员审核图片',
+        category: '图片卡片',
+        ageGroup: 'middle',
+        aliases: '[]',
+        tags: '["e2e-admin-review"]',
+        file: {
+          name: 'e2e-admin-review.png',
+          mimeType: 'image/png',
+          buffer: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+            'base64',
+          ),
+        },
+      },
+    })
+    expect(upload.ok()).toBeTruthy()
+    const resource = (await upload.json()) as { id: number }
+    const submitReview = await request.post(`/resources/${resource.id}/submit-review`, {
+      headers: teacherHeaders,
+    })
+    expect(submitReview.ok()).toBeTruthy()
+
+    await page.goto('/login')
+    await page.getByRole('button', { name: '管理员登录' }).click()
+    await page.getByLabel('账号').fill('e2e_admin')
+    await page.getByLabel('密码').fill('E2eAdmin123!')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(page).toHaveURL(/\/chat$/)
+
+    await page.goto(`/resources/${resource.id}/review`)
+    await expect(page.getByRole('heading', { name: '资源审核' })).toBeVisible()
+    await expect(page.locator('.info dd').filter({ hasText: 'E2E管理员审核图片' })).toBeVisible()
+    await page.getByRole('button', { name: '通过', exact: true }).click()
+    await expect(page.locator('.info dd').filter({ hasText: '已通过' })).toBeVisible()
+
+    await page.getByRole('button', { name: '停用异常资源' }).click()
+    await page.getByRole('button', { name: '确认停用' }).click()
+    await expect(page.locator('.info dd').filter({ hasText: '已停用' })).toBeVisible()
   })
 
-  test.skip('普通教师访问管理员页面被拒绝', async () => {
-    // 当前工作区没有管理员路由，无法进行真实越权页面测试。
+  test('普通教师访问管理员页面被拒绝', async ({ page }) => {
+    await page.goto('/login')
+    await page.getByLabel('账号').fill('e2e_teacher')
+    await page.getByLabel('密码').fill('E2eTeacher123!')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(page).toHaveURL(/\/chat$/)
+
+    await page.goto('/admin')
+    await expect(page).toHaveURL(/\/forbidden$/)
+    await expect(page.getByRole('heading', { name: '暂无访问权限' })).toBeVisible()
   })
 })

@@ -16,6 +16,12 @@ import {
 import { useLessonPlanStore } from '@/stores/lessonPlan'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
+const resourceMocks = vi.hoisted(() => ({ fetchBlob: vi.fn() }))
+vi.mock('@/api/resources', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/api/resources')>()
+  return { ...original, fetchAuthedBlob: resourceMocks.fetchBlob }
+})
+
 // Stage 6.6：备课资源绑定 —— 选择资源、save payload 携带 resourceId、重开教案回显、图片渲染。
 const imageResource: ServerResource = {
   id: 12,
@@ -47,6 +53,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     setActivePinia(createPinia())
     const user = useUserStore()
     user.setLogin('token', { teacherId: 1, account: 'teacher', name: '老师' })
+    resourceMocks.fetchBlob.mockResolvedValue({ url: 'blob:protected-image', revoke: vi.fn() })
   })
 
   it('资源选择器：点击“选择”发出 update:modelValue 与 selected 事件', async () => {
@@ -172,7 +179,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     expect(wrapper.text()).not.toContain('资源已失效')
   })
 
-  it('图片资源：ResourcePlayer 渲染 <img> 并指向资源地址', async () => {
+  it('图片资源：ResourcePlayer 通过鉴权 Blob 渲染 <img>', async () => {
     const wrapper = mount(ResourcePlayer, {
       props: { resources: [] },
       global: { plugins: [ElementPlus] },
@@ -182,6 +189,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     await flushPromises()
     const image = wrapper.find('img.stage-image')
     expect(image.exists()).toBe(true)
-    expect(image.attributes('src')).toContain('/resources/12/download')
+    expect(resourceMocks.fetchBlob).toHaveBeenCalledWith(12)
+    expect(image.attributes('src')).toBe('blob:protected-image')
   })
 })
