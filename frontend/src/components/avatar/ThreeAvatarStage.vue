@@ -44,6 +44,7 @@ let fpsWindowStart = 0
 let fpsFrames = 0
 let fpsBadCount = 0
 let currentAction: DigitalHumanAction = 'idle'
+let loadGeneration = 0
 
 // 程序化占位角色的可动部件引用
 const parts = { head: null as THREE.Object3D | null, mouth: null as THREE.Object3D | null, armR: null as THREE.Object3D | null, armL: null as THREE.Object3D | null }
@@ -82,6 +83,100 @@ function buildProcedural(): THREE.Group {
   const armR = new THREE.Mesh(armGeo, accentMat); armR.position.set(0.52, 0.46, 0)
 
   group.add(body, head, armL, armR)
+  parts.head = head
+  parts.mouth = mouth
+  parts.armL = armL
+  parts.armR = armR
+  return group
+}
+
+function buildProceduralBear(): THREE.Group {
+  const group = new THREE.Group()
+  const fur = new THREE.MeshStandardMaterial({ color: 0xb97842, roughness: 0.82 })
+  const lightFur = new THREE.MeshStandardMaterial({ color: 0xf4c995, roughness: 0.78 })
+  const dark = new THREE.MeshStandardMaterial({ color: 0x3d2922, roughness: 0.72 })
+  const sweater = new THREE.MeshStandardMaterial({ color: 0x79b9aa, roughness: 0.7 })
+  const scarf = new THREE.MeshStandardMaterial({ color: 0xf18f6b, roughness: 0.62 })
+
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.52, 32, 24), sweater)
+  body.scale.set(0.92, 1.08, 0.72)
+  body.position.y = 0.22
+
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.34, 24, 18), lightFur)
+  belly.scale.set(0.9, 1.05, 0.34)
+  belly.position.set(0, 0.18, 0.39)
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 24), fur)
+  head.scale.set(1, 0.92, 0.92)
+  head.position.y = 1.06
+
+  const earGeometry = new THREE.SphereGeometry(0.18, 20, 16)
+  const earL = new THREE.Mesh(earGeometry, fur)
+  const earR = new THREE.Mesh(earGeometry, fur)
+  earL.position.set(-0.36, 1.42, 0.02)
+  earR.position.set(0.36, 1.42, 0.02)
+
+  const innerEarGeometry = new THREE.SphereGeometry(0.1, 16, 12)
+  const innerEarL = new THREE.Mesh(innerEarGeometry, lightFur)
+  const innerEarR = new THREE.Mesh(innerEarGeometry, lightFur)
+  innerEarL.position.set(-0.36, 1.43, 0.14)
+  innerEarR.position.set(0.36, 1.43, 0.14)
+
+  const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.25, 24, 18), lightFur)
+  muzzle.scale.set(1, 0.72, 0.58)
+  muzzle.position.set(0, 0.94, 0.42)
+
+  const eyeGeometry = new THREE.SphereGeometry(0.055, 14, 10)
+  const eyeL = new THREE.Mesh(eyeGeometry, dark)
+  const eyeR = new THREE.Mesh(eyeGeometry, dark)
+  eyeL.position.set(-0.17, 1.17, 0.43)
+  eyeR.position.set(0.17, 1.17, 0.43)
+
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.075, 14, 10), dark)
+  nose.scale.set(1.1, 0.75, 0.65)
+  nose.position.set(0, 1.01, 0.62)
+
+  const mouth = new THREE.Mesh(new THREE.SphereGeometry(0.05, 12, 8), dark)
+  mouth.scale.set(1, 0.35, 0.45)
+  mouth.position.set(0, 0.88, 0.61)
+
+  const scarfRing = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.065, 12, 28), scarf)
+  scarfRing.rotation.x = Math.PI / 2
+  scarfRing.position.set(0, 0.66, 0.03)
+
+  const armGeometry = new THREE.CapsuleGeometry(0.12, 0.43, 8, 16)
+  const armL = new THREE.Mesh(armGeometry, fur)
+  const armR = new THREE.Mesh(armGeometry, fur)
+  armL.position.set(-0.57, 0.29, 0)
+  armR.position.set(0.57, 0.29, 0)
+  armL.rotation.z = -0.16
+  armR.rotation.z = 0.16
+
+  const legGeometry = new THREE.CapsuleGeometry(0.14, 0.28, 8, 16)
+  const legL = new THREE.Mesh(legGeometry, fur)
+  const legR = new THREE.Mesh(legGeometry, fur)
+  legL.position.set(-0.23, -0.46, 0.02)
+  legR.position.set(0.23, -0.46, 0.02)
+
+  group.add(
+    body,
+    belly,
+    head,
+    earL,
+    earR,
+    innerEarL,
+    innerEarR,
+    muzzle,
+    eyeL,
+    eyeR,
+    nose,
+    mouth,
+    scarfRing,
+    armL,
+    armR,
+    legL,
+    legR,
+  )
   parts.head = head
   parts.mouth = mouth
   parts.armL = armL
@@ -157,10 +252,31 @@ function loop(time: number) {
   lastTime = time
 }
 
+function fitCameraToObject(object: THREE.Object3D) {
+  if (!camera) return
+  const box = new THREE.Box3().setFromObject(object)
+  if (box.isEmpty()) return
+  const size = box.getSize(new THREE.Vector3())
+  const center = box.getCenter(new THREE.Vector3())
+  const verticalFov = THREE.MathUtils.degToRad(camera.fov)
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect)
+  const heightDistance = size.y / (2 * Math.tan(verticalFov / 2))
+  const widthDistance = size.x / (2 * Math.tan(horizontalFov / 2))
+  const depth = Math.max(size.z, 0.1)
+  const distance = Math.max(heightDistance, widthDistance, depth) * 1.28
+
+  camera.position.set(center.x, center.y + size.y * 0.03, center.z + distance)
+  camera.near = Math.max(distance / 100, 0.01)
+  camera.far = Math.max(distance + Math.max(size.x, size.y, size.z) * 12, 100)
+  camera.lookAt(center)
+  camera.updateProjectionMatrix()
+}
+
 function bindModel(model: AvatarLoadedModel) {
   currentModel = model
   root = model.root
   scene?.add(root)
+  fitCameraToObject(root)
 }
 
 // fit 取景：根据模型实际包围盒调整相机距离，保证「人物主体完整可辨认 + 适当留白」。
@@ -203,6 +319,7 @@ function startRenderLoop() {
 }
 
 async function init() {
+  const generation = ++loadGeneration
   if (disposed) return
   store.setModelState('loading')
   if (!mountEl.value) return
@@ -231,6 +348,17 @@ async function init() {
   key.position.set(1.5, 2.5, 2)
   scene.add(ambient, key)
 
+  // 本地小熊角色使用独立的程序化3D形象，避免只改角色名称却继续显示机器人。
+  if (roleId.value === 'bear') {
+    root = buildProceduralBear()
+    scene.add(root)
+    fitCameraToObject(root)
+    store.setModelState('loaded')
+    playAction(store.action)
+    startRenderLoop()
+    return
+  }
+
   // 三级降级：课堂运行时模型（resolve contentUrl）→ 内置默认 GLB → 程序化占位/2D。
   // 模型始终不阻塞课堂：任意一级失败都继续尝试下一级。
   const runtimeModelUrl = store.runtime?.model?.modelUrl ?? null
@@ -242,10 +370,13 @@ async function init() {
   const loadContext: AvatarLoadContext = { getToken: () => useUserStore().accessToken }
 
   for (const [url, format] of candidates) {
-    if (disposed) return
+    if (disposed || generation !== loadGeneration) return
     try {
       const model = await loadAvatarModel(url, format, loadContext)
-      if (disposed) return
+      if (disposed || generation !== loadGeneration) {
+        model.dispose()
+        return
+      }
       bindModel(model)
       store.setModelState('loaded')
       playAction(store.action)
@@ -260,6 +391,7 @@ async function init() {
   if (disposed) return
   root = buildProcedural()
   scene.add(root)
+  fitCameraToObject(root)
   store.setModelState('loaded')
   playAction(store.action)
   frameCamera()
@@ -279,6 +411,7 @@ function disposeScene() {
 
 function disposeAll() {
   if (disposed) return
+  loadGeneration += 1
   disposed = true
   resizeObserver?.disconnect()
   resizeObserver = null

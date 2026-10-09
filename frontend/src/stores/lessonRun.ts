@@ -43,7 +43,7 @@ function adaptRun(data: ClassroomRunPayload): LessonRun {
     lessonTitle: data.title ?? '',
     lessonObjectives: (data.objectives ?? '').trim(),
     ageGroup: '',
-    steps: data.steps,
+    steps: Array.isArray(data.steps) ? data.steps : [],
     startedAt: data.startedAt,
     endedAt: data.endedAt ?? null,
     updatedAt: data.updatedAt,

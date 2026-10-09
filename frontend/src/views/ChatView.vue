@@ -15,6 +15,7 @@ import { useRouter } from 'vue-router'
 import { apiErrorMessage, http } from '@/api/http'
 import ClassroomAssistantPanel from '@/components/ClassroomAssistantPanel.vue'
 import CourseResourcesPanel from '@/components/CourseResourcesPanel.vue'
+import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 import FavoritesPanel from '@/components/FavoritesPanel.vue'
 import {
   RECORDING_MIME_TYPE,
@@ -39,6 +40,7 @@ import {
   type CourseResource,
 } from '@/stores/courseResource'
 import { useFavoriteStore } from '@/stores/favorite'
+import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import {
   RESOURCE_PLAYER_CLAIM_EVENT,
   useResourcePlayerStore,
@@ -70,12 +72,14 @@ const router = useRouter()
 const userStore = useUserStore()
 const conversationStore = useConversationStore()
 const favoriteStore = useFavoriteStore()
+const digitalHumanStore = useDigitalHumanStore()
 const courseResourceStore = useCourseResourceStore()
 const resourcePlayerStore = useResourcePlayerStore()
 const classroomCommandStore = useClassroomCommandStore()
 const classroomAssistantStore = useClassroomAssistantStore()
 const lessonRunStore = useLessonRunStore()
 const { isLogin, isAdmin, teacherInfo } = storeToRefs(userStore)
+const { roleName: digitalHumanRoleName } = storeToRefs(digitalHumanStore)
 const {
   processing: commandProcessing,
   feedback: commandFeedback,
@@ -113,6 +117,7 @@ const activeSession = computed(() => conversationStore.activeSession)
 const activeNavigation = ref<'chat' | 'resources' | 'favorites'>('chat')
 const accountMenuOpen = ref(false)
 const accountAreaRef = ref<HTMLElement | null>(null)
+const historyPanelOpen = ref(false)
 const sessionSearch = ref('')
 const renamingSessionId = ref<string | null>(null)
 const renameInput = ref('')
@@ -174,6 +179,58 @@ const voiceStatusText = computed(() => {
   }
   return ''
 })
+
+const latestAssistantMessage = computed(() =>
+  [...messages.value].reverse().find((message) => message.role === 'assistant'),
+)
+
+const digitalHumanCaption = computed(() => {
+  if (recording.value) return '我在认真听，请慢慢说。'
+  if (recognizing.value) return '我正在听懂你刚才说的话。'
+  if (sending.value || voiceReplyLoading.value || assistantLoading.value) {
+    return '让我想一想，马上回答你。'
+  }
+  if (synthesizing.value) return '我正在准备把回答说给你听。'
+  if (playingResourceTitle.value) return `正在播放《${playingResourceTitle.value}》。`
+  return (
+    latestAssistantMessage.value?.content ||
+    '你好呀，我是小花老师。今天想和我聊什么？'
+  )
+})
+
+const digitalHumanStatus = computed(() => {
+  if (recording.value) return '正在倾听'
+  if (
+    recognizing.value ||
+    sending.value ||
+    voiceReplyLoading.value ||
+    assistantLoading.value ||
+    synthesizing.value
+  ) {
+    return '正在思考'
+  }
+  if (playingAudio.value) return '正在说话'
+  return '在线陪伴'
+})
+
+let avatarSettleTimer: ReturnType<typeof setTimeout> | null = null
+
+function settleAvatarSoon(delay = 1400) {
+  if (avatarSettleTimer) clearTimeout(avatarSettleTimer)
+  avatarSettleTimer = setTimeout(() => {
+    avatarSettleTimer = null
+    if (
+      !recording.value &&
+      !sending.value &&
+      !recognizing.value &&
+      !voiceReplyLoading.value &&
+      !assistantLoading.value &&
+      !playingAudio.value
+    ) {
+      digitalHumanStore.transition({ type: 'settle' })
+    }
+  }, delay)
+}
 // ===== 新增：语音对话状态 结束 =====
 
 function saveHistory() {
@@ -189,7 +246,42 @@ async function scrollToBottom() {
   bottomRef.value?.scrollIntoView({ block: 'end', behavior: 'smooth' })
 }
 
-watch(() => messages.value.length, scrollToBottom)
+watch(
+  () => messages.value.length,
+  () => {
+    void scrollToBottom()
+    const latest = messages.value.at(-1)
+    if (latest?.role === 'assistant' && !playingAudio.value) {
+      digitalHumanStore.transition({ type: 'ai_response', emotion: 'happy' })
+      settleAvatarSoon()
+    }
+  },
+)
+watch(recording, (active) => {
+  if (active) {
+    digitalHumanStore.transition({ type: 'teacher_command', command: 'listen' })
+  } else {
+    settleAvatarSoon(250)
+  }
+})
+watch(
+  () =>
+    sending.value ||
+    recognizing.value ||
+    voiceReplyLoading.value ||
+    assistantLoading.value ||
+    synthesizing.value,
+  (busy) => {
+    if (busy) {
+      digitalHumanStore.transition({ type: 'ai_response', emotion: 'think' })
+    } else {
+      settleAvatarSoon(350)
+    }
+  },
+)
+watch(playingAudio, (active) => {
+  digitalHumanStore.transition({ type: active ? 'tts_start' : 'tts_end' })
+})
 watch(
   () => conversationStore.currentOwnerKey,
   () => {
@@ -207,6 +299,8 @@ watch(commandNavigationRequest, (request) => {
 onMounted(() => {
   conversationStore.initialize()
   conversationStore.selectAvailableSession()
+  digitalHumanStore.show()
+  digitalHumanStore.setCompact(false)
   document.addEventListener('click', closeAccountMenuOnOutsideClick)
   document.addEventListener('contextmenu', closeContextMenuOnOutsideClick)
   document.addEventListener('keydown', closeFloatingMenusOnEscape)
@@ -1079,6 +1173,8 @@ onBeforeUnmount(() => {
     stopChatAudioForResourcePlayer,
   )
   componentUnmounted = true
+  if (avatarSettleTimer) clearTimeout(avatarSettleTimer)
+  digitalHumanStore.transition({ type: 'settle' })
   classroomAssistantStore.cancel()
   lessonRunStore.stopPolling()
   if (mediaRecorder?.state === 'recording') mediaRecorder.stop()
@@ -1384,6 +1480,13 @@ onBeforeUnmount(() => {
           >
             {{ assistantActive ? '返回聊天' : '启发引导' }}
           </ElButton>
+          <ElButton
+            class="history-toggle-button"
+            :type="historyPanelOpen ? 'primary' : 'default'"
+            @click="historyPanelOpen = !historyPanelOpen"
+          >
+            {{ historyPanelOpen ? '收起对话' : '对话记录' }}
+          </ElButton>
           <span class="text-badge">
             {{ assistantActive ? '教师控制 · 先预览再播放' : '文字 · 语音' }}
           </span>
@@ -1429,58 +1532,91 @@ onBeforeUnmount(() => {
         @end="endAssistantInteraction"
       />
 
-      <div v-if="!isBreakActive" class="message-area" aria-live="polite">
-        <div v-if="messages.length === 0" class="welcome">
-          <div class="welcome-icon" aria-hidden="true">✨</div>
-          <h2>你好呀，小朋友！</h2>
-          <p>
-            今天想聊些什么？可以告诉我你喜欢的故事、小动物，或者问我一个问题。
-          </p>
-        </div>
-
-        <div
-          v-for="message in messages"
-          :key="message.id"
-          class="message-row"
-          :class="message.role === 'user' ? 'from-user' : 'from-assistant'"
-        >
-          <div class="message-avatar" aria-hidden="true">
-            {{ message.role === 'assistant' ? '🌼' : '我' }}
+      <div
+        v-if="!isBreakActive"
+        class="digital-human-experience"
+        :class="{ 'history-open': historyPanelOpen }"
+      >
+        <div class="avatar-orbit avatar-orbit-one" aria-hidden="true"></div>
+        <div class="avatar-orbit avatar-orbit-two" aria-hidden="true"></div>
+        <div class="avatar-stage-wrap">
+          <div class="avatar-live-status" role="status">
+            <span aria-hidden="true"></span>
+            {{ digitalHumanStatus }}
           </div>
-          <div class="message-bubble">
-            <div class="message-content">{{ message.content }}</div>
-            <button
-              type="button"
-              class="favorite-message-button"
-              :class="{ active: favoriteStore.isFavorite(message.id) }"
-              :aria-label="
-                favoriteStore.isFavorite(message.id) ? '取消收藏' : '收藏消息'
-              "
-              :title="
-                favoriteStore.isFavorite(message.id) ? '取消收藏' : '收藏'
-              "
-              @click="toggleMessageFavorite(message)"
-            >
-              {{ favoriteStore.isFavorite(message.id) ? '★ 已收藏' : '☆ 收藏' }}
+          <DigitalHumanStage class="chat-digital-human" mode="immersive" />
+          <div class="avatar-caption" aria-live="polite">
+            <small>{{ digitalHumanRoleName }}</small>
+            <p>{{ digitalHumanCaption }}</p>
+          </div>
+          <div class="avatar-quick-guide">
+            <span>可以打字，也可以按下语音和我说话</span>
+            <button type="button" @click="historyPanelOpen = true">
+              查看完整对话
             </button>
           </div>
         </div>
 
-        <div v-if="sending" class="message-row from-assistant">
-          <div class="message-avatar" aria-hidden="true">🌼</div>
-          <div class="message-bubble typing" aria-label="小花老师正在思考">
-            正在想一想…
-          </div>
-        </div>
-        <!-- ===== 新增：语音提问的 AI 回复加载提示 开始 ===== -->
-        <div v-if="voiceReplyLoading" class="message-row from-assistant">
-          <div class="message-avatar" aria-hidden="true">🌼</div>
-          <div class="message-bubble typing" aria-label="小花老师正在思考">
-            正在想一想…
-          </div>
-        </div>
-        <!-- ===== 新增：语音提问的 AI 回复加载提示 结束 ===== -->
-        <div ref="bottomRef"></div>
+        <Transition name="history-drawer">
+          <section
+            v-show="historyPanelOpen"
+            class="message-area history-drawer"
+            aria-label="对话记录"
+            aria-live="polite"
+          >
+            <div class="history-drawer-heading">
+              <div>
+                <small>本次陪伴</small>
+                <h2>对话记录</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="收起对话记录"
+                @click="historyPanelOpen = false"
+              >
+                ×
+              </button>
+            </div>
+
+            <div v-if="messages.length === 0" class="welcome">
+              <div class="welcome-icon" aria-hidden="true">🌼</div>
+              <h2>你好呀，小朋友！</h2>
+              <p>今天想聊些什么？可以告诉我你喜欢的故事、小动物，或者问我一个问题。</p>
+            </div>
+
+            <div
+              v-for="message in messages"
+              :key="message.id"
+              class="message-row"
+              :class="message.role === 'user' ? 'from-user' : 'from-assistant'"
+            >
+              <div class="message-avatar" aria-hidden="true">
+                {{ message.role === 'assistant' ? '🌼' : '我' }}
+              </div>
+              <div class="message-bubble">
+                <div class="message-content">{{ message.content }}</div>
+                <button
+                  type="button"
+                  class="favorite-message-button"
+                  :class="{ active: favoriteStore.isFavorite(message.id) }"
+                  :aria-label="favoriteStore.isFavorite(message.id) ? '取消收藏' : '收藏消息'"
+                  :title="favoriteStore.isFavorite(message.id) ? '取消收藏' : '收藏'"
+                  @click="toggleMessageFavorite(message)"
+                >
+                  {{ favoriteStore.isFavorite(message.id) ? '★ 已收藏' : '☆ 收藏' }}
+                </button>
+              </div>
+            </div>
+
+            <div v-if="sending || voiceReplyLoading" class="message-row from-assistant">
+              <div class="message-avatar" aria-hidden="true">🌼</div>
+              <div class="message-bubble typing" aria-label="小花老师正在思考">
+                正在想一想…
+              </div>
+            </div>
+            <div ref="bottomRef"></div>
+          </section>
+        </Transition>
       </div>
 
       <div v-if="!isBreakActive" class="composer">
@@ -2191,6 +2327,7 @@ h1 {
 
 .assistant-mode-button,
 .break-mode-button,
+.history-toggle-button,
 .command-mode-button {
   height: 36px;
   border-radius: 11px;
@@ -2261,6 +2398,241 @@ h1 {
   overflow-y: auto;
   padding: 28px;
   scrollbar-color: #e9d7c8 transparent;
+}
+
+.digital-human-experience {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 50% 76%, rgb(255 220 181 / 58%), transparent 28%),
+    radial-gradient(circle at 16% 18%, rgb(255 241 183 / 72%), transparent 27%),
+    radial-gradient(circle at 86% 28%, rgb(214 241 228 / 66%), transparent 25%),
+    linear-gradient(180deg, #fffdf8 0%, #fff8ee 100%);
+}
+
+.digital-human-experience::before {
+  position: absolute;
+  z-index: -1;
+  right: 9%;
+  bottom: -62px;
+  left: 9%;
+  height: 150px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgb(202 157 112 / 20%), transparent 68%);
+  content: '';
+  filter: blur(4px);
+}
+
+.avatar-orbit {
+  position: absolute;
+  z-index: -1;
+  border: 1px solid rgb(225 178 126 / 24%);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.avatar-orbit-one {
+  top: 12%;
+  left: 13%;
+  width: 88px;
+  height: 88px;
+  box-shadow: 0 0 0 20px rgb(255 255 255 / 18%);
+}
+
+.avatar-orbit-two {
+  right: 10%;
+  bottom: 24%;
+  width: 46px;
+  height: 46px;
+  background: rgb(255 255 255 / 38%);
+}
+
+.avatar-stage-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 6px 32px 104px;
+  transition: width 0.28s ease, transform 0.28s ease;
+}
+
+.history-open .avatar-stage-wrap {
+  width: 58%;
+  transform: translateX(-2%);
+}
+
+.chat-digital-human {
+  width: 100%;
+  height: 100%;
+}
+
+.avatar-live-status {
+  position: absolute;
+  z-index: 5;
+  top: 18px;
+  left: 22px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 68%);
+  color: #806858;
+  box-shadow: 0 8px 24px rgb(116 82 58 / 8%);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.avatar-live-status span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #55b98a;
+  box-shadow: 0 0 0 5px rgb(85 185 138 / 14%);
+}
+
+.avatar-caption {
+  position: absolute;
+  z-index: 5;
+  bottom: 55px;
+  left: 50%;
+  width: min(74%, 560px);
+  box-sizing: border-box;
+  padding: 13px 18px;
+  border: 1px solid rgb(236 211 188 / 90%);
+  border-radius: 18px;
+  background: rgb(255 253 249 / 88%);
+  color: #57483f;
+  box-shadow: 0 14px 38px rgb(99 67 45 / 12%);
+  backdrop-filter: blur(12px);
+  text-align: center;
+  transform: translateX(-50%);
+}
+
+.avatar-caption small {
+  display: block;
+  margin-bottom: 3px;
+  color: #c27c5d;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.avatar-caption p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.avatar-quick-guide {
+  position: absolute;
+  z-index: 5;
+  bottom: 18px;
+  left: 50%;
+  width: min(80%, 600px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #9a8372;
+  font-size: 11px;
+  transform: translateX(-50%);
+}
+
+.avatar-quick-guide button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: #f4e5d8;
+  color: #8d604b;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.history-drawer {
+  position: absolute;
+  z-index: 10;
+  top: 14px;
+  right: 14px;
+  bottom: 14px;
+  width: min(44%, 420px);
+  box-sizing: border-box;
+  border: 1px solid rgb(236 215 196 / 92%);
+  border-radius: 22px;
+  background: rgb(255 253 249 / 94%);
+  box-shadow: 0 18px 44px rgb(87 57 37 / 16%);
+  backdrop-filter: blur(16px);
+}
+
+.history-drawer-heading {
+  position: sticky;
+  z-index: 2;
+  top: -28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -28px -28px 18px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #f1e3d6;
+  border-radius: 22px 22px 0 0;
+  background: rgb(255 253 249 / 96%);
+}
+
+.history-drawer-heading small {
+  color: #bf7f63;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.history-drawer-heading h2 {
+  margin: 2px 0 0;
+  font-size: 17px;
+}
+
+.history-drawer-heading button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  background: #f7e9de;
+  color: #8c6552;
+  cursor: pointer;
+  font-size: 21px;
+}
+
+.history-drawer .welcome {
+  margin-top: 48px;
+}
+
+.history-drawer .message-bubble {
+  max-width: calc(100% - 46px);
+  font-size: 13px;
+}
+
+.history-drawer-enter-active,
+.history-drawer-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.history-drawer-enter-from,
+.history-drawer-leave-to {
+  opacity: 0;
+  transform: translateX(20px);
 }
 
 .welcome {
@@ -2647,6 +3019,40 @@ h1 {
 
   .chat-card {
     min-height: 0;
+  }
+
+  .digital-human-experience {
+    min-height: 360px;
+  }
+
+  .avatar-stage-wrap,
+  .history-open .avatar-stage-wrap {
+    width: 100%;
+    min-height: 360px;
+    padding: 4px 12px 100px;
+    transform: none;
+  }
+
+  .avatar-caption {
+    width: calc(100% - 32px);
+    bottom: 52px;
+  }
+
+  .avatar-quick-guide span {
+    display: none;
+  }
+
+  .history-drawer {
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+  }
+
+  .avatar-live-status {
+    top: 12px;
+    left: 12px;
   }
 
   .chat-header,

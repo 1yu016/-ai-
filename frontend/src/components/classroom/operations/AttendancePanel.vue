@@ -124,7 +124,8 @@ function confirmVoice() {
         <input type="checkbox" :checked="selectedSet.has(student.id)" aria-label="选择幼儿" @change="toggleStudent(student.id)">
         <span class="avatar">🧒</span>
         <div>
-          <strong>{{ student.nickname || student.name }}</strong>
+          <strong>{{ student.name }}</strong>
+          <span v-if="student.nickname && student.nickname !== student.name" class="nickname">（{{ student.nickname }}）</span>
           <small>{{ student.studentNo }}</small>
         </div>
         <div class="row-actions">
@@ -240,6 +241,10 @@ function confirmVoice() {
   display: block;
   color: #a38270;
   margin-top: 3px;
+}
+.nickname {
+  color: #a38270;
+  font-size: 13px;
 }
 .row-actions {
   display: flex;

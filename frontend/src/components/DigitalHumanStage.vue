@@ -16,7 +16,15 @@ const face = computed(() => action.value === 'think' ? '🤔' : action.value ===
 // opening = 课堂开场视觉专用：隐藏开发用角色选择器/资产名，字幕移到舞台下方，加载与失败文案走友好态。
 // controls=false = 普通课堂/大屏卡片模式：隐藏角色选择器与角色名按钮（selector），只保留主体与字幕。
 // far = 使用更远的相机机位（配合 ThreeAvatarStage 的 fit 取景），用于数字人大屏。
-const props = withDefaults(defineProps<{ opening?: boolean; controls?: boolean; far?: boolean }>(), { opening: false, controls: true, far: false })
+const props = withDefaults(
+  defineProps<{
+    opening?: boolean
+    controls?: boolean
+    far?: boolean
+    mode?: 'default' | 'immersive'
+  }>(),
+  { opening: false, controls: true, far: false, mode: 'default' },
+)
 
 function detectWebGL(): boolean {
   try {
@@ -40,7 +48,7 @@ function listen() { store.transition({ type: 'teacher_command', command: 'listen
 </script>
 
 <template>
-  <aside v-if="visible" class="digital-human" :class="{ compact, speaking: action === 'talk', opening: props.opening }" aria-label="数字人课堂助手">
+  <aside v-if="visible" class="digital-human" :class="{ compact, speaking: action === 'talk', opening: props.opening, immersive: props.mode === 'immersive' }" aria-label="数字人课堂助手">
     <!-- 普通课堂：说话气泡贴在人物附近 -->
     <div v-if="!props.opening" class="speech"><span>{{ actionText[action] }}</span><small v-if="error">{{ error }}</small></div>
 
@@ -121,6 +129,27 @@ function listen() { store.transition({ type: 'teacher_command', command: 'listen
 .speaking .avatar { animation: bounce .45s ease-in-out infinite alternate; }
 .action-listen .face { transform: translateY(2px); }
 .action-wave { transform: rotate(-3deg); }
+.digital-human.immersive {
+  width: min(100%, 560px);
+  max-width: none;
+  height: 100%;
+  min-height: 330px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-content: stretch;
+  gap: 8px;
+}
+.digital-human.immersive .speech {
+  position: absolute;
+  z-index: 3;
+  top: 18px;
+  right: 10px;
+  max-width: 180px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+}
+.digital-human.immersive :deep(.three-avatar-stage) { width: 100%; height: 100%; min-width: 280px; min-height: 330px; }
+.digital-human.immersive .avatar { margin: auto; transform: scale(1.45); }
+.digital-human.immersive .role-controls { z-index: 3; padding: 6px 10px; border: 1px solid rgba(232, 222, 209, 0.85); border-radius: 999px; background: rgba(255, 255, 255, 0.78); backdrop-filter: blur(8px); transform: translateY(-32px); }
 @keyframes float { 50% { transform: translateY(-5px); } }
 @keyframes bounce { to { transform: translateY(-5px); } }
 </style>

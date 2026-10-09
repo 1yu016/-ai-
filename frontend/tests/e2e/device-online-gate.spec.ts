@@ -127,8 +127,8 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     await pageA.goto(`/classroom/screen/${device.id}`)
     await expect(pageA.locator('.screen-header').getByText(/Gate大屏A|在线|连接中/).first()).toBeVisible({ timeout: 20_000 })
     // 2) Network 确认签发 + 心跳
-    await expect.poll(() => seenIssue.length).toBeGreaterThanOrEqual(1, { timeout: 20_000 })
-    await expect.poll(() => seenHeartbeat.length).toBeGreaterThanOrEqual(1, { timeout: 20_000 })
+    await expect.poll(() => seenIssue.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1)
+    await expect.poll(() => seenHeartbeat.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1)
     await expect(pageA.locator('.status-dot.online')).toBeVisible({ timeout: 20_000 })
 
     // 3) 保持打开 >90s → device 始终 online（心跳每 30s 续期，拒绝手工 heartbeat，仅靠页面自动）

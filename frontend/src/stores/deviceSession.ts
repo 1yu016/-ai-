@@ -35,9 +35,10 @@ export const useDeviceSessionStore = defineStore('deviceSession', {
     ensureSession(deviceId: number) {
       if (this.tokens[deviceId]) return this.tokens[deviceId]
       const persisted = readStoredTokens()
-      if (persisted[String(deviceId)]) {
-        this.tokens[deviceId] = persisted[String(deviceId)]
-        return this.tokens[deviceId]
+      const persistedToken = persisted[String(deviceId)]
+      if (persistedToken) {
+        this.tokens[deviceId] = persistedToken
+        return persistedToken
       }
       return null
     },

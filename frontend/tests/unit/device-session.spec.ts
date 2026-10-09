@@ -98,8 +98,7 @@ describe('formal screen device-session heartbeat store', () => {
   it('recording a disabled/fault heartbeat keeps the device offline', async () => {
     const store = useDeviceSessionStore()
     vi.spyOn(deviceSessionApi, 'issue').mockResolvedValue({ data: issued } as never)
-    const heartbeat = vi.spyOn(deviceSessionApi, 'heartbeat')
-      .mockRejectedValue({ response: { status: 409 } })
+    vi.spyOn(deviceSessionApi, 'heartbeat').mockRejectedValue({ response: { status: 409 } })
     store.startHeartbeat(5)
     await ready()
     expect(store.online[5]).toBe(false)

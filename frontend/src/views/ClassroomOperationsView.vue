@@ -8,9 +8,7 @@ import { platformApi, type Student } from '@/api/platform'
 import { useLessonRunStore, type ClassroomRunPayload, type StartBreakOptions } from '@/stores/lessonRun'
 import {
   restoreCheckpoint,
-  saveCheckpoint,
   QUICK_REWARD_REASONS,
-  type ActiveRun,
   type Attendance,
 } from '@/services/classroomCheckpoint'
 import AttendancePanel from '@/components/classroom/operations/AttendancePanel.vue'
@@ -23,6 +21,14 @@ import QuestionRecordPanel from '@/components/classroom/operations/QuestionRecor
 import ArtworkReviewPanel from '@/components/classroom/operations/ArtworkReviewPanel.vue'
 
 type Tab = 'engagement' | 'insights' | 'remote'
+
+type RollCallStudentPayload = {
+  id?: unknown
+  studentId?: unknown
+  displayName?: unknown
+  name?: unknown
+  nickname?: unknown
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -73,6 +79,25 @@ const REWARD_FORMS = [['points', '积分'], ['badge', '徽章'], ['flower', '小
 const displayStudents = computed(() =>
   students.value.filter((s) => s.status !== 'disabled'),
 )
+
+function validText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function resolveRollCallStudent(payload?: RollCallStudentPayload | null) {
+  if (!payload) return null
+  const id = Number(payload.id ?? payload.studentId)
+  if (!Number.isInteger(id) || id <= 0) return null
+  const localStudent = students.value.find((student) => student.id === id)
+  const displayName =
+    validText(localStudent?.name) ??
+    validText(payload.displayName) ??
+    validText(payload.name) ??
+    validText(payload.nickname) ??
+    validText(localStudent?.nickname) ??
+    `幼儿 ${id}`
+  return { id, displayName }
+}
 const presentCount = computed(
   () =>
     displayStudents.value.filter(
@@ -100,8 +125,11 @@ async function load() {
     const classes = await platformApi.classes()
     classOptions.value = classes.data.items
     const active = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>('/classroom-runs/active')
-    const current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
+    let current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
     if (current) {
+      if (!Array.isArray(current.steps)) {
+        current = (await http.get<ClassroomRunPayload>(`/classroom-runs/${current.id}`)).data
+      }
       store.adoptRun(current)
       selectedClassId.value = current.classId ?? classOptions.value[0]?.id ?? null
     } else {
@@ -183,9 +211,9 @@ async function randomRoll() {
   if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
   try {
     const response = await store.command('random_roll_call', undefined, 'teacher_panel')
-    const result = response?.result as { student?: { id: number; displayName: string } } | undefined
-    const target = result?.student
-    if (!target) return
+    const result = response?.result as { student?: RollCallStudentPayload } | undefined
+    const target = resolveRollCallStudent(result?.student)
+    if (!target) return ElMessage.error('点名成功，但返回的幼儿信息不完整，请刷新后重试。')
     selectedStudent.value = target.id
     rollMessage.value = `请 ${target.displayName} 小朋友回答问题！`
   } catch (e) {
@@ -208,10 +236,11 @@ async function executeRoll(
   if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
   try {
     const response = await store.command(operation, parameters, 'teacher_panel')
-    const result = response?.result as { student?: { id: number; displayName: string } } | undefined
-    if (!result?.student) return
-    selectedStudent.value = result.student.id
-    rollMessage.value = `请 ${result.student.displayName} 小朋友回答问题！`
+    const result = response?.result as { student?: RollCallStudentPayload } | undefined
+    const target = resolveRollCallStudent(result?.student)
+    if (!target) return ElMessage.error('点名成功，但返回的幼儿信息不完整，请刷新后重试。')
+    selectedStudent.value = target.id
+    rollMessage.value = `请 ${target.displayName} 小朋友回答问题！`
   } catch (e) {
     ElMessage.error(apiErrorMessage(e, '点名失败，请检查考勤状态后重试。'))
   }

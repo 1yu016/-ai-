@@ -93,6 +93,30 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
     expect(http.get).toHaveBeenCalledWith('/classroom-runs/9/restore', { params: { deviceId: 2 } })
   })
 
+  it('活动课堂接口只返回摘要时继续加载完整课堂详情', async () => {
+    const get = vi.spyOn(http, 'get').mockImplementation(async (url: string) => {
+      if (url === '/classes') return classes as never
+      if (url.startsWith('/students')) return students as never
+      if (url === '/classroom-runs/active') {
+        const summary: Partial<typeof run> = { ...run }
+        delete summary.steps
+        return { data: summary } as never
+      }
+      if (url === '/classroom-runs/9') return { data: run } as never
+      if (url.startsWith('/classroom-runs/9/restore')) {
+        return { data: { attendanceState: {}, rewardState: {} } } as never
+      }
+      throw new Error(`unexpected GET ${url}`)
+    })
+
+    const wrapper = await mountOps()
+    await flushPromises()
+
+    expect(get).toHaveBeenCalledWith('/classroom-runs/9')
+    expect(wrapper.text()).toContain('明明')
+    expect(wrapper.text()).not.toContain("reading 'find'")
+  })
+
   it('页面恢复：restore 返回的状态渲染为已到人数与小红花总数', async () => {
     // 旧版嵌套形状，验证兼容性
     mockGets({ attendanceState: { attendance: { 1: 'present' } }, rewardState: { awards: { 1: 3 } } })
@@ -156,5 +180,24 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
     expect(post).toHaveBeenCalledWith('/classroom-commands', expect.objectContaining({ operation: 'reward_student', parameters: expect.objectContaining({ studentId: 1 }) }))
     // 失败后小红花总数保持 0，不提前 +1
     expect(wrapper.text()).toContain('小红花 0')
+  })
+
+  it('随机点名缺少 displayName 时按学生 id 回退到正式姓名，不显示 undefined', async () => {
+    mockGets()
+    vi.spyOn(http, 'post').mockResolvedValue({
+      data: {
+        status: 'success',
+        result: { student: { id: 2 } },
+        classroomState: { ...run, version: 4 },
+      },
+    } as never)
+
+    const wrapper = await mountOps()
+    await flushPromises()
+    await wrapper.find('.head-actions .button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请 红红 小朋友回答问题！')
+    expect(wrapper.text()).not.toContain('undefined')
   })
 })
