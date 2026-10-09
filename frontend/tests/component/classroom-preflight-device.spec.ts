@@ -93,4 +93,21 @@ describe('ClassroomPreflight device error semantics', () => {
     expect(wrapper.text()).not.toContain('无法开始课堂')
     expect(enterButton(wrapper)?.disabled).toBe(false)
   })
+
+  it('refreshes the backend device state when running checks again', async () => {
+    const wrapper = await mountPreflight('offline')
+    expect(enterButton(wrapper)?.disabled).toBe(true)
+
+    vi.mocked(platformApi.listDevices).mockResolvedValue({
+      data: [{ id: 55, name: '正式大屏', status: 'online', binding: { className: '中班' } }],
+    } as never)
+    const refresh = wrapper.findAll('button').find((button) => button.text().includes('重新检查'))!
+    await refresh.trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 220))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('正式大屏（online）')
+    expect(wrapper.text()).toContain('已完成')
+    expect(enterButton(wrapper)?.disabled).toBe(false)
+  })
 })
