@@ -577,9 +577,40 @@ describe('Stage 7.3 student reward records (e2e)', () => {
     expect(ownCount).toBeGreaterThanOrEqual(2); // 朵朵在本 run 已有 2+ 条独立记录
   });
 
+  it('8b. GET 班级成长榜 → 聚合未撤销奖励并稳定排序', async () => {
+    const res = await request(app.getHttpServer())
+      .get(`/classes/${classId}/rewards/leaderboard?limit=5`)
+      .set(auth(token))
+      .expect(200);
+    expect(res.body).toMatchObject({
+      classId,
+      className: '小一班',
+    });
+    expect(res.body.items.length).toBeGreaterThan(0);
+    expect(res.body.items.length).toBeLessThanOrEqual(5);
+    for (let index = 0; index < res.body.items.length; index += 1) {
+      const item = res.body.items[index];
+      expect(item.rank).toBe(index + 1);
+      expect(typeof item.studentId).toBe('number');
+      expect(typeof item.totalStars).toBe('number');
+      if (index > 0) {
+        const previous = res.body.items[index - 1];
+        expect(
+          previous.totalStars > item.totalStars ||
+            (previous.totalStars === item.totalStars &&
+              previous.studentId < item.studentId),
+        ).toBe(true);
+      }
+    }
+  });
+
   it('9. 另一教师访问无权限班级 → 403', async () => {
     await request(app.getHttpServer())
       .get(`/classes/${classId}/rewards`)
+      .set(auth(otherToken))
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`/classes/${classId}/rewards/leaderboard`)
       .set(auth(otherToken))
       .expect(403);
   });

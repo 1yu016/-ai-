@@ -315,6 +315,51 @@ export class PlatformService {
     };
   }
 
+  /**
+   * 班级成长榜使用正式、未撤销的奖励流水聚合。
+   * 结果只含展示名和星星总数，并在查询前执行班级权限校验。
+   */
+  async rewardLeaderboard(
+    actor: JwtTeacherPayload,
+    classId: number,
+    limit: number,
+  ) {
+    const schoolClass = await this.access.requireClassAccess(actor, classId);
+    const rows = await this.rewards
+      .createQueryBuilder('r')
+      .innerJoin(Student, 'student', 'student.id = r.student_id')
+      .select('r.student_id', 'studentId')
+      .addSelect('COALESCE(student.nickname, student.name)', 'studentName')
+      .addSelect('COALESCE(SUM(r.stars), 0)', 'totalStars')
+      .where('r.class_id = :classId', { classId })
+      .andWhere('r.revoked_at IS NULL')
+      .andWhere('student.class_id = :classId', { classId })
+      .andWhere('student.status = :activeStatus', {
+        activeStatus: RecordStatus.Active,
+      })
+      .groupBy('r.student_id')
+      .addGroupBy('student.nickname')
+      .addGroupBy('student.name')
+      .orderBy('totalStars', 'DESC')
+      .addOrderBy('r.student_id', 'ASC')
+      .limit(limit)
+      .getRawMany<{
+        studentId: number | string;
+        studentName: string | null;
+        totalStars: number | string;
+      }>();
+    return {
+      classId,
+      className: schoolClass.name,
+      items: rows.map((row, index) => ({
+        rank: index + 1,
+        studentId: Number(row.studentId),
+        studentName: row.studentName,
+        totalStars: Number(row.totalStars),
+      })),
+    };
+  }
+
   async listTeachers(actor: JwtTeacherPayload, query: TeacherQueryDto) {
     this.access.requireAdministrator(actor);
     const builder = this.teachers.createQueryBuilder('t');

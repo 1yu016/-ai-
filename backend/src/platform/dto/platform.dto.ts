@@ -43,6 +43,11 @@ export class ClassRewardQueryDto extends PageQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) studentId?: number;
 }
 
+/** 班级成长榜只返回有限条聚合结果，避免一次查询暴露完整幼儿名单。 */
+export class RewardLeaderboardQueryDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20) limit = 5;
+}
+
 export class DeviceCodeParamDto {
   @IsString()
   @IsNotEmpty()

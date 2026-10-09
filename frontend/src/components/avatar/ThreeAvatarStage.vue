@@ -348,9 +348,29 @@ async function init() {
   key.position.set(1.5, 2.5, 2)
   scene.add(ambient, key)
 
-  // 本地小熊角色使用独立的程序化3D形象，避免只改角色名称却继续显示机器人。
-  if (roleId.value === 'bear') {
+  // 本地角色使用旧字符串 ID；正式角色库使用数据库数字 ID。
+  // 因此渲染选择必须同时读取后端角色分类，避免小熊老师仍显示默认机器人。
+  const roleCategory = store.runtime?.character?.category ?? null
+  const roleName = store.runtime?.character?.name ?? ''
+  const isBearRole =
+    roleId.value === 'bear' ||
+    roleCategory === 'cartoon_animal' ||
+    roleName.includes('小熊')
+  const isKindergartenRole =
+    roleId.value === 'garden' || roleCategory === 'kindergarten_custom'
+
+  if (isBearRole) {
     root = buildProceduralBear()
+    scene.add(root)
+    fitCameraToObject(root)
+    store.setModelState('loaded')
+    playAction(store.action)
+    startRenderLoop()
+    return
+  }
+
+  if (isKindergartenRole) {
+    root = buildProcedural()
     scene.add(root)
     fitCameraToObject(root)
     store.setModelState('loaded')

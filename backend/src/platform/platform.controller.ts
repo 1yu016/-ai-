@@ -33,6 +33,7 @@ import {
   DeviceHeartbeatDto,
   DeviceCodeParamDto,
   PageQueryDto,
+  RewardLeaderboardQueryDto,
   StudentQueryDto,
   SyncStudentsDto,
   TeacherQueryDto,
@@ -101,6 +102,13 @@ export class PlatformController {
     @Query() query: ClassRewardQueryDto,
   ) {
     return this.platform.listClassRewards(req.user, classId, query);
+  }
+  @Get('classes/:classId/rewards/leaderboard') rewardLeaderboard(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+    @Query() query: RewardLeaderboardQueryDto,
+  ) {
+    return this.platform.rewardLeaderboard(req.user, classId, query.limit);
   }
   @Delete('classes/:classId/teachers/:teacherId')
   @HttpCode(HttpStatus.NO_CONTENT)
