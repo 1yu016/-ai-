@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import ManagementLayout from '@/components/ManagementLayout.vue'
+import { useRoute } from 'vue-router'
+import ClassWorkspaceLayout from '@/components/ClassWorkspaceLayout.vue'
 import {
   platformApi,
   type ClassRewardPage,
   type RewardRecord,
   type Student,
+  type RewardLeaderboardItem,
 } from '@/api/platform'
-import { apiErrorMessage } from '@/api/http'
+import { apiErrorMessage, http } from '@/api/http'
+import ClassRewardLeaderboard from '@/components/classroom/operations/ClassRewardLeaderboard.vue'
 
 const route = useRoute()
-const router = useRouter()
 const classId = Number(route.params.classId)
 
 const loading = ref(true)
@@ -25,6 +26,7 @@ const data = ref<ClassRewardPage | null>(null)
 const items = ref<RewardRecord[]>([])
 const total = ref(0)
 const totalStars = ref(0)
+const totalPoints = ref(0)
 const className = ref(`班级 ${classId}`)
 
 function formatDate(value: string): string {
@@ -50,6 +52,7 @@ async function load() {
     items.value = rewardResult.data.items
     total.value = rewardResult.data.total
     totalStars.value = rewardResult.data.summary?.totalStars ?? 0
+    totalPoints.value = rewardResult.data.summary?.totalPoints ?? 0
     className.value = rewardResult.data.summary?.className ?? className.value
     students.value = studentResult.data.items
   } catch (e) {
@@ -59,21 +62,55 @@ async function load() {
   }
 }
 
+async function revoke(record: RewardRecord) {
+  const reason = window.prompt('请输入撤销原因（原奖励记录仍会保留）')?.trim()
+  if (!reason) return
+  try {
+    await http.post(`/classroom-runs/${record.classroomRunId}/rewards/${record.id}/revoke`, {
+      requestId: `revoke-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      reason,
+    })
+    await load()
+  } catch (e) {
+    error.value = apiErrorMessage(e, '撤销失败，仅进行中的本班课堂允许撤销。')
+  }
+}
+
 function applyFilter() {
   page.value = 1
   void load()
 }
 
-onMounted(load)
+// 班级 Top5 排行榜与下方历史流水分开请求；接口未就绪/失败进入 error 态，不伪造总榜。
+const leaderboard = ref<RewardLeaderboardItem[]>([])
+const leaderboardLoading = ref(false)
+const leaderboardError = ref('')
+async function loadLeaderboard() {
+  leaderboardError.value = ''
+  leaderboardLoading.value = true
+  try {
+    const r = await platformApi.rewardLeaderboard(classId, 5)
+    leaderboard.value = r.data.items.slice(0, 5)
+  } catch {
+    leaderboard.value = []
+    leaderboardError.value = '排行榜加载失败'
+  } finally {
+    leaderboardLoading.value = false
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadLeaderboard()
+})
 </script>
 
 <template>
-  <ManagementLayout>
+  <ClassWorkspaceLayout>
     <div class="page">
       <header class="page-head">
         <div>
           <p class="eyebrow">🌟 成长奖励</p>
-          <h1>{{ className }} · 成长奖励</h1>
           <p class="muted">班级全部历史奖励明细，按时间倒序逐条展示。</p>
         </div>
         <div class="toolbar">
@@ -84,15 +121,23 @@ onMounted(load)
             </option>
           </select>
           <button class="button" @click="applyFilter">刷新</button>
-          <button class="ghost" @click="router.push({ name: 'students', params: { classId } })">
-            返回学生列表
-          </button>
         </div>
       </header>
+
+      <div class="lb-block">
+        <ClassRewardLeaderboard
+          :items="leaderboard"
+          :loading="leaderboardLoading"
+          :error="leaderboardError"
+          :title="`班级成长榜`"
+          @retry="void loadLeaderboard()"
+        />
+      </div>
 
       <div class="summary panel">
         <strong>累计奖励</strong>
         <span class="summary-stars">🌟 {{ totalStars }}</span>
+        <span class="summary-stars">✨ {{ totalPoints }} 成长能量</span>
       </div>
 
       <div class="panel">
@@ -103,18 +148,21 @@ onMounted(load)
           更早课堂的累计小红花未包含逐条明细。
         </p>
         <ul v-else class="reward-list">
-          <li v-for="record in items" :key="record.id" class="reward-item">
+          <li v-for="record in items" :key="record.id" class="reward-item" :class="{ revoked: record.revokedAt }">
             <span class="reward-date">{{ formatDate(record.createdAt) }}</span>
             <div class="reward-body">
               <strong class="reward-student">
                 🧒 {{ record.studentName ?? `幼儿 ${record.studentId}` }}
               </strong>
-              <span class="reward-stars">🌟 +{{ record.stars }}</span>
+              <span class="reward-stars">{{ record.revokedAt ? '已撤销' : `✨ +${record.points ?? record.stars} · 🌟 +${record.stars}` }}</span>
             </div>
             <p class="reward-reason">{{ record.reason || '（未填原因）' }}</p>
             <div class="reward-meta">
               <small v-if="record.lessonTitle">课程：{{ record.lessonTitle }}</small>
               <small v-if="record.teacherName">教师：{{ record.teacherName }}</small>
+              <small>类型：{{ record.rewardCategory }}</small>
+              <small v-if="record.revokedAt">撤销原因：{{ record.revokeReason }}</small>
+              <button v-else class="revoke" @click="revoke(record)">撤销误发</button>
             </div>
           </li>
         </ul>
@@ -131,7 +179,7 @@ onMounted(load)
         </div>
       </div>
     </div>
-  </ManagementLayout>
+  </ClassWorkspaceLayout>
 </template>
 
 <style scoped>
@@ -147,6 +195,7 @@ onMounted(load)
 .button:disabled, .ghost:disabled { opacity: 0.55; cursor: not-allowed; }
 .ghost { border: 1px solid #efd9c8; background: #fffdf9; color: #876b5d; }
 .panel { margin-top: 20px; padding: 20px; border: 1px solid #f0ddce; border-radius: 18px; background: #fffdf9; box-shadow: 0 10px 28px #b9795114; }
+.lb-block { margin-top: 20px; }
 .summary { display: flex; align-items: center; gap: 14px; }
 .summary strong { color: #876b5d; }
 .summary-stars { font-size: 24px; font-weight: 800; color: #c07a3e; }
@@ -162,6 +211,8 @@ onMounted(load)
   border-radius: 14px;
   background: #fffdf9;
 }
+.reward-item.revoked { opacity:.68;background:#f7f4f1; }.reward-item.revoked .reward-reason { text-decoration:line-through; }
+.revoke { margin-left:auto;border:1px solid #e6b9aa;border-radius:8px;background:#fff7f4;color:#b25f4c;padding:4px 9px;cursor:pointer; }
 .reward-date { color: #9a7e6e; font-size: 13px; font-variant-numeric: tabular-nums; }
 .reward-body { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .reward-student { color: #60483e; font-size: 16px; }

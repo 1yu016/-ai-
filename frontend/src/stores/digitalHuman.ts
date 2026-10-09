@@ -6,8 +6,8 @@ import type { AvatarModelFormat, AvatarRuntimeConfig } from '@/avatar/types'
 import { AvatarStateMachine, type AvatarState, type AvatarStateEvent } from '@/avatar/state/AvatarStateMachine'
 import type { AvatarExpressionName } from '@/avatar/expression/ExpressionController'
 
-export const DIGITAL_HUMAN_ACTIONS = ['idle', 'listen', 'thinking', 'talk', 'happy', 'question', 'encourage', 'praise', 'wave', 'goodbye'] as const
-export type DigitalHumanAction = (typeof DIGITAL_HUMAN_ACTIONS)[number]
+export const DIGITAL_HUMAN_ACTIONS = ['idle', 'listen', 'think', 'talk', 'question', 'happy', 'encourage', 'wave', 'goodbye'] as const
+export type DigitalHumanAction = (typeof DIGITAL_HUMAN_ACTIONS)[number] | 'thinking' | 'praise'
 export const DIGITAL_HUMAN_MODEL_STATES = ['idle', 'loading', 'loaded', 'error'] as const
 export type DigitalHumanModelState = (typeof DIGITAL_HUMAN_MODEL_STATES)[number]
 
@@ -47,7 +47,8 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
 
   // 动作状态只能由白名单动作驱动，不执行任意脚本/未知动作
   function setAction(next: DigitalHumanAction) {
-    if (!DIGITAL_HUMAN_ACTIONS.includes(next)) return
+    const canonical = next === 'thinking' ? 'think' : next === 'praise' ? 'encourage' : next
+    if (!DIGITAL_HUMAN_ACTIONS.includes(canonical)) return
     action.value = next
   }
   // 手动播放白名单动作（渲染层/临时播放用，不改变业务状态）。
@@ -85,7 +86,13 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   // 将 resolve 响应映射为前端运行时配置（缺失字段用安全默认值）。
   function toRuntimeConfig(data: ResolveAvatarResponse): AvatarRuntimeConfig {
     const format: AvatarModelFormat | null =
-      data.version?.modelFormat === 'gltf' ? 'gltf' : data.version?.modelFormat === 'glb' ? 'glb' : null
+      data.version?.modelFormat === 'gltf'
+        ? 'gltf'
+        : data.version?.modelFormat === 'glb'
+          ? 'glb'
+          : data.version?.modelFormat === 'vrm'
+            ? 'vrm'
+            : null
     return {
       character: data.character
         ? { id: data.character.id, name: data.character.name, category: data.character.category ?? null }
@@ -106,7 +113,7 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
 
   async function loadRoles() {
     try {
-      const result = await listAvatarCharacters()
+      const result = await listAvatarCharacters({ status: 'approved' })
       const remoteRoles = result.items.map((role) => ({ id: String(role.id), name: role.name, category: role.category ?? null, description: role.description ?? null, status: role.status ?? null }))
       if (remoteRoles.length) {
         roles.value = remoteRoles
@@ -129,8 +136,18 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
     }
   }
 
+  function previewRuntime(config: AvatarRuntimeConfig) {
+    runtime.value = config
+    if (config.character) {
+      roleId.value = String(config.character.id)
+      roleName.value = config.character.name
+    }
+    modelState.value = 'idle'
+    error.value = ''
+  }
+
   function setFallback(message = '') { fallback.value = true; loading.value = false; error.value = message; action.value = 'idle'; currentState.value = 'idle'; expression.value = 'neutral' }
   function reset() { avatarMachine.reset(); currentState.value = 'idle'; expression.value = 'neutral'; action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; selectRole('flower') }
 
-  return { action, currentState, expression, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, setFallback, reset }
+  return { action, currentState, expression, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, previewRuntime, setFallback, reset }
 })

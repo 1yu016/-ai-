@@ -191,8 +191,8 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
           schoolId: 'garden-recovery',
           name: '原课堂大屏',
           type: DeviceType.ClassroomScreen,
-          status: DeviceStatus.Offline,
-          lastOnlineAt: null,
+          status: DeviceStatus.Online,
+          lastOnlineAt: new Date(),
         }),
       )
     ).id;
@@ -203,8 +203,8 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
           schoolId: 'garden-recovery',
           name: '接管大屏',
           type: DeviceType.ClassroomScreen,
-          status: DeviceStatus.Offline,
-          lastOnlineAt: null,
+          status: DeviceStatus.Online,
+          lastOnlineAt: new Date(),
         }),
       )
     ).id;

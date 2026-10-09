@@ -20,6 +20,11 @@ import { useUserStore } from '@/stores/user'
 const store = useDigitalHumanStore()
 const { action, expression, compact, roleId } = storeToRefs(store)
 const mountEl = ref<HTMLElement | null>(null)
+// opening：开场舞台使用更远的相机机位，确保看到完整身体；不影响普通课堂参数。
+// far：数字人大屏模式，同样使用宽松取景（配合 fit 取景），但保留普通 UI（字幕/角色控制由上层控制）。
+const props = defineProps<{ opening?: boolean; far?: boolean }>()
+const isOpening = typeof props.opening === 'boolean' ? props.opening : false
+const isFar = typeof props.far === 'boolean' ? props.far : false
 
 // 模型部署路径：文件存在时走真实 GLTF 加载，否则用程序化占位角色
 const DEFAULT_MODEL_URL = '/avatar/RobotExpressive.glb'
@@ -88,7 +93,11 @@ function playAction(actionName: DigitalHumanAction) {
   currentAction = actionName
   // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放。
   // 表情由 store.expression（状态机快照）单独驱动，组件不判断业务状态。
-  currentModel?.playAnimation(actionName)
+  const canonicalAction = actionName === 'thinking' ? 'think' : actionName === 'praise' ? 'encourage' : actionName
+  if (currentModel && !currentModel.playAnimation(canonicalAction) && actionName !== 'idle') {
+    currentModel.playAnimation('idle')
+    currentAction = 'idle'
+  }
 }
 
 watch(action, (next) => playAction(next))
@@ -104,13 +113,13 @@ function applyPose(time: number) {
   const bob = Math.sin(t * 2) * 0.03
   root.position.y = 0
   if (currentAction === 'talk') root.position.y = bob + Math.abs(Math.sin(t * 6)) * 0.04
-  else if (currentAction === 'happy' || currentAction === 'praise') root.position.y = Math.abs(Math.sin(t * 5)) * 0.06
+  else if (currentAction === 'happy') root.position.y = Math.abs(Math.sin(t * 5)) * 0.06
   else root.position.y = bob
 
   if (parts.head) {
     parts.head.rotation.set(0, 0, 0)
     if (currentAction === 'listen') parts.head.rotation.x = 0.22
-    else if (currentAction === 'thinking') parts.head.rotation.z = Math.sin(t * 2) * 0.16
+    else if (currentAction === 'think') parts.head.rotation.z = Math.sin(t * 2) * 0.16
     else if (currentAction === 'question') parts.head.rotation.z = Math.sin(t * 2) * 0.2 + 0.1
   }
   if (parts.mouth) {
@@ -119,11 +128,11 @@ function applyPose(time: number) {
   }
   if (parts.armR) {
     if (currentAction === 'wave' || currentAction === 'goodbye') parts.armR.rotation.z = Math.sin(t * 7) * 0.9 - 0.2
-    else if (currentAction === 'happy' || currentAction === 'praise') parts.armR.rotation.z = Math.sin(t * 5) * 0.5 - 0.4
+    else if (currentAction === 'happy') parts.armR.rotation.z = Math.sin(t * 5) * 0.5 - 0.4
     else parts.armR.rotation.z = 0
   }
   if (parts.armL) {
-    parts.armL.rotation.z = currentAction === 'happy' || currentAction === 'praise' ? -Math.sin(t * 5) * 0.5 + 0.4 : 0
+    parts.armL.rotation.z = currentAction === 'happy' ? -Math.sin(t * 5) * 0.5 + 0.4 : 0
   }
 }
 
@@ -154,6 +163,25 @@ function bindModel(model: AvatarLoadedModel) {
   scene?.add(root)
 }
 
+// fit 取景：根据模型实际包围盒调整相机距离，保证「人物主体完整可辨认 + 适当留白」。
+// 统一覆盖 opening / 普通课堂 / 数字人大屏三种模式，不依赖模型具体高度；
+// 普通课堂 margin 1.9，开场 2.2（更宽松 breathing space），
+// 大屏 far 1.5：容器已放大，收紧留白让数字人主体成为大屏视觉焦点。
+function frameCamera() {
+  if (!root || !camera) return
+  const box = new THREE.Box3().setFromObject(root)
+  if (box.isEmpty()) return
+  const size = box.getSize(new THREE.Vector3())
+  const center = box.getCenter(new THREE.Vector3())
+  const margin = isOpening ? 2.2 : isFar ? 1.5 : 1.9
+  const targetHeight = size.y * margin
+  const vFov = THREE.MathUtils.degToRad(camera.fov)
+  const distance = (targetHeight / 2) / Math.tan(vFov / 2)
+  camera.position.set(center.x, center.y, center.z + distance)
+  camera.lookAt(center)
+  camera.updateProjectionMatrix()
+}
+
 function startRenderLoop() {
   if (!renderer || !camera || !mountEl.value) return
   renderer.setAnimationLoop(loop)
@@ -168,6 +196,8 @@ function startRenderLoop() {
     renderer.setSize(w, h)
     camera.aspect = w / h
     camera.updateProjectionMatrix()
+    // 容器尺寸变化后重新按模型包围盒取景，保证不裁头/裁脚。
+    frameCamera()
   })
   resizeObserver.observe(mountEl.value)
 }
@@ -187,8 +217,14 @@ async function init() {
 
   scene = new THREE.Scene()
   camera = new THREE.PerspectiveCamera(45, renderer.domElement.width / renderer.domElement.height, 0.1, 100)
-  camera.position.set(0, 0.95, 2.6)
-  camera.lookAt(0, 0.95, 0)
+  if (isOpening) {
+    // 开场舞台：拉远机位以显示完整身体，保留 breathing space；非 opener 不改变课堂机位。
+    camera.position.set(0, 1.05, 4.2)
+    camera.lookAt(0, 1.05, 0)
+  } else {
+    camera.position.set(0, 0.95, 2.6)
+    camera.lookAt(0, 0.95, 0)
+  }
 
   const ambient = new THREE.AmbientLight(0xffffff, 0.8)
   const key = new THREE.DirectionalLight(0xffffff, 1.2)
@@ -214,6 +250,7 @@ async function init() {
       store.setModelState('loaded')
       playAction(store.action)
       currentModel?.setExpression(store.expression ?? 'neutral', 1)
+      frameCamera()
       startRenderLoop()
       return
     } catch {
@@ -225,6 +262,7 @@ async function init() {
   scene.add(root)
   store.setModelState('loaded')
   playAction(store.action)
+  frameCamera()
   startRenderLoop()
 }
 
@@ -259,7 +297,7 @@ function disposeAll() {
   if (mountEl.value) mountEl.value.replaceChildren()
 }
 
-watch(roleId, () => {
+watch([roleId, () => store.runtime?.model?.modelUrl], () => {
   disposeAll()
   disposed = false
   void init()

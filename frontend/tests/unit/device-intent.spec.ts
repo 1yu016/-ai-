@@ -178,13 +178,14 @@ describe('commandRuntime 总编排：Device / Classroom / fallback 共用单入�
       volume: 0.8,
     })
     const next = vi.fn()
+    const command = vi.fn(async () => ({ classroomState: {} }))
     const classroom = new ClassroomCommandExecutor(
-      { next, previous: vi.fn(), pause: vi.fn(), resume: vi.fn(), repeat: vi.fn() } as never,
+      { run: { id: 1, deviceId: 9, version: 1 }, command, next, previous: vi.fn(), pause: vi.fn(), resume: vi.fn(), repeat: vi.fn() } as never,
       resourcePlayer,
     )
     const device = new DeviceCommandExecutor(resourcePlayer)
     const executors = { classroom, device }
-    return { resourcePlayer, executors, next }
+    return { resourcePlayer, executors, next, command }
   }
 
   function deps(overrides: Partial<{ post: () => Promise<unknown>; isCurrent: () => boolean }> = {}) {
@@ -197,11 +198,12 @@ describe('commandRuntime 总编排：Device / Classroom / fallback 共用单入�
   const run = (executors: { classroom: unknown; device: unknown }, deps: unknown, text: string, runId = 1) =>
     orchestrateCommand({ text, runId, body: { text, context: {} }, executors: executors as never, deps: deps as never })
 
-  it('“暂停视频”→ device_executed（走媒体，不写课堂后端）', async () => {
-    const { executors, next } = build()
+  it('“暂停视频”→ 统一课堂命令总线后再控制媒体', async () => {
+    const { executors, next, command } = build()
     const outcome = await run(executors, deps(), '暂停视频')
     expect(outcome.kind).toBe('device_executed')
     if (outcome.kind === 'device_executed') expect(outcome.intent).toBe(DeviceIntent.PAUSE_MEDIA)
+    expect(command).toHaveBeenCalledWith('pause_media', {}, 'voice', 9)
     expect(next).not.toHaveBeenCalled()
   })
 
@@ -224,12 +226,11 @@ describe('commandRuntime 总编排：Device / Classroom / fallback 共用单入�
     const { executors, resourcePlayer } = build()
     const post = vi.fn(async () => ({ intent: 'pause_media', reply: '准备暂停当前媒体。' }))
     const outcome = await runAiCommandFallback(1, '复杂表达', { text: '复杂表达' }, { post, isCurrent: () => true }, executors)
-    expect(outcome.kind).toBe('device_executed')
-    if (outcome.kind === 'device_executed') {
-      expect(outcome.intent).toBe(DeviceIntent.PAUSE_MEDIA)
-      expect(outcome.executed).toBe(true)
+    expect(outcome.kind).toBe('confirmation_required')
+    if (outcome.kind === 'confirmation_required') {
+      expect(outcome.match.operation).toBe('pause_media')
     }
-    expect(resourcePlayer.requestControl).toHaveBeenCalledWith('pause')
+    expect(resourcePlayer.requestControl).not.toHaveBeenCalled()
   })
 
   it('AI fallback 放行 play_resource → 进入资源确认流程（resource_pending），不直接交给 DeviceCommandExecutor', async () => {

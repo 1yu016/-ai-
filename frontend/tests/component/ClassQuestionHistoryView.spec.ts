@@ -10,6 +10,9 @@ import ClassQuestionHistoryView from '@/views/ClassQuestionHistoryView.vue'
 const studentsData = {
   data: { items: [{ id: 1, classId: 1, studentNo: 'XB-001', name: '朵朵', nickname: null, status: 'active', createdAt: '', updatedAt: '' }], total: 1, page: 1, pageSize: 100 },
 }
+const classesData = {
+  data: { items: [{ id: 1, name: '小一班', grade: '小班', ageRange: '3-4', schoolYear: '', status: 'active' }], total: 1, page: 1, pageSize: 50 },
+}
 const pageData = {
   items: [
     { id: 1, studentId: 1, studentName: '朵朵', classId: 1, classroomRunId: 9, lessonStepIndex: 0, questionText: '为什么天空是蓝色的？', topic: '科学探索', teacherId: 1, teacherName: '王雪梅', createdAt: '2026-10-02T15:00:00.000Z' },
@@ -18,6 +21,21 @@ const pageData = {
   page: 1,
   pageSize: 10,
 }
+const mapData = {
+  classId: 1,
+  filters: { topic: null, domain: null, studentId: null },
+  summary: { total: 1, anonymousCount: 0, identifiedStudentCount: 1 },
+  topics: [{ name: '科学探索', count: 1 }],
+  domains: [{ name: '科学', count: 1 }],
+  frequentQuestions: [{ question: '为什么天空是蓝色的', count: 1 }],
+  interestHotspots: ['科学探索', '科学'],
+  suggestionSource: 'safe_rules',
+  studentClusters: [{ studentId: 1, studentName: '朵朵', questionCount: 1, topics: [{ name: '科学探索', count: 1 }], domains: [{ name: '科学', count: 1 }] }],
+  teachingSuggestions: ['先观察天空颜色。'],
+  activitySuggestions: ['颜色观察活动'],
+  recommendedResources: [],
+  safety: { individualRankingGenerated: false, negativeLabelsGenerated: false, note: '不排名、不贴标签。' },
+}
 
 async function mountView() {
   const router = createRouter({
@@ -25,6 +43,9 @@ async function mountView() {
     routes: [
       { path: '/classes/:classId/questions', name: 'class-questions', component: ClassQuestionHistoryView, meta: { requiresAuth: true } },
       { path: '/classes/:classId/students', name: 'students', component: { template: '<div>学生</div>' } },
+      { path: '/classes/:classId/rewards', name: 'class-rewards', component: { template: '<div>奖励</div>' } },
+      { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
+      { path: '/lesson-plans', name: 'lesson-plans', component: { template: '<div>备课中心</div>' } },
     ],
   })
   router.push('/classes/1/questions')
@@ -38,6 +59,8 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     vi.restoreAllMocks()
     localStorage.clear()
     vi.spyOn(platformApi, 'students').mockResolvedValue(studentsData as never)
+    vi.spyOn(questionsService, 'getQuestionMap').mockResolvedValue(mapData as never)
+    vi.spyOn(platformApi, 'listClasses').mockResolvedValue(classesData as never)
   })
 
   it('加载真实接口并展示问题列表', async () => {
@@ -46,9 +69,10 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     await flushPromises()
     // 注意实际调用会传 params 到 GET；这里验证 service 被调用并渲染结果
     expect(listSpy).toHaveBeenCalled()
-    expect(wrapper.text()).toContain('班级问题记录')
+    expect(wrapper.text()).toContain('儿童问题')
     expect(wrapper.text()).toContain('为什么天空是蓝色的？')
     expect(wrapper.text()).toContain('朵朵')
+    expect(wrapper.text()).toContain('问题地图')
   })
 
   it('按幼儿筛选 → 重新调用并携带 studentId', async () => {
@@ -83,12 +107,11 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     )
   })
 
-  it('后端未就绪 → 明确标记 backend-not-ready，不伪装为空列表', async () => {
+  it('正式接口失败时展示错误，不伪装为空列表', async () => {
     vi.spyOn(questionsService, 'listClassQuestions').mockRejectedValue(new Error('N/A'))
     const wrapper = await mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain('后端未就绪')
-    expect(wrapper.text()).toContain('FRONTEND_READY_BACKEND_BLOCKED')
-    expect(wrapper.text()).not.toContain('暂无正式问题')
+    expect(wrapper.text()).toContain('N/A')
+    expect(wrapper.text()).not.toContain('还没有正式问题记录')
   })
 })

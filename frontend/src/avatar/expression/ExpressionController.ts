@@ -11,12 +11,11 @@ export type AvatarExpressionName = 'neutral' | 'happy' | 'question' | 'encourage
 export const ACTION_EXPRESSION_MAP: Record<AvatarActionName, AvatarExpressionName> = {
   idle: 'neutral',
   listen: 'neutral',
-  thinking: 'neutral',
+  think: 'neutral',
   talk: 'talk',
   happy: 'happy',
   question: 'question',
   encourage: 'happy',
-  praise: 'happy',
   wave: 'neutral',
   goodbye: 'goodbye',
 }

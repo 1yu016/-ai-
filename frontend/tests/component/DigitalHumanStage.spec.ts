@@ -40,6 +40,15 @@ describe('DigitalHumanStage container', () => {
     expect(wrapper.text()).toContain('我来和你说一说')
   })
 
+  it('controls=false 隐藏角色选择器与角色名按钮（卡片/大屏不暴露 selector）', async () => {
+    const wrapper = mount(DigitalHumanStage, { props: { controls: false } })
+    await flushPromises()
+    expect(wrapper.find('.role-controls').exists()).toBe(false)
+    expect(wrapper.find('.role-name').exists()).toBe(false)
+    // 主体仍渲染。
+    expect(wrapper.find('.avatar').exists()).toBe(true)
+  })
+
   it('unmounts the stage without throwing', () => {
     const wrapper = mount(DigitalHumanStage)
     wrapper.unmount()

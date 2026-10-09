@@ -6,19 +6,18 @@
 import type { AnimationClip } from 'three'
 
 // 数字人动作名（与 digitalHuman store 动作白名单一致）
-export const AVATAR_ACTION_NAMES = ['idle', 'listen', 'thinking', 'talk', 'happy', 'question', 'encourage', 'praise', 'wave', 'goodbye'] as const
+export const AVATAR_ACTION_NAMES = ['idle', 'listen', 'think', 'talk', 'question', 'happy', 'encourage', 'wave', 'goodbye'] as const
 export type AvatarActionName = (typeof AVATAR_ACTION_NAMES)[number]
 
 // 动作 → clip 名称关键词（按出现顺序匹配；GLB 建模习惯命名，如 Idle_Stand / Talk_Wave）
 export const AVATAR_ACTION_KEYWORDS: Record<AvatarActionName, readonly string[]> = {
   idle: ['Idle', 'idle', 'Stand'],
   listen: ['Listening', 'Listen'],
-  thinking: ['Think', 'Thinking'],
+  think: ['Think', 'Thinking'],
   talk: ['Talk', 'Talking'],
   happy: ['Happy', 'Celebrate', 'Dance'],
   question: ['Question', 'Look'],
   encourage: ['Encourage', 'Wave', 'Cheer', 'Dance'],
-  praise: ['Praise', 'Dance', 'Happy'],
   wave: ['Wave', 'Waving', 'Hi'],
   goodbye: ['Goodbye', 'Wave', 'Sad', 'Dance'],
 }

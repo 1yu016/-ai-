@@ -119,6 +119,9 @@ export const useUserStore = defineStore('user', () => {
   }
 
   function logout() {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('classroom-mobile-logout'))
+    }
     isLogin.value = false
     accessToken.value = ''
     refreshToken.value = ''

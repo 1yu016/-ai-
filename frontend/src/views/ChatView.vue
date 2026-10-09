@@ -440,6 +440,13 @@ function commandResourceTypeLabel(resource: CourseResource): string {
     image: '图片',
     audio: '音频',
     video: '视频',
+    pdf: 'PDF',
+    ppt: 'PPT课件',
+    picture_book: '绘本',
+    animation: '动画',
+    question_bank: '题库',
+    experiment: '实验素材',
+    model_3d: '3D模型',
     document: '文档/课件',
   }[resource.mediaType]
 }

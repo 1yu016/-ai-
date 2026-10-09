@@ -80,6 +80,14 @@ export function evaluateResourceCommand(
   if (isQuestion(normalized)) {
     return { allowed: false, message: RESOURCE_SAFETY_DECLINE_HINT }
   }
+  // 显式“打开/播放”动词比模型分类更可靠。即使模型把“打开视频”
+  // 误判成 play_resource，也必须保持教师原始指令的执行语义。
+  if (/^(?:请|帮我|麻烦你?)?\s*(?:打开|open)(?:\s|$|[^a-z])/.test(normalized)) {
+    return { allowed: true, intent: 'open_resource' }
+  }
+  if (/^(?:请|帮我|麻烦你?)?\s*(?:播放|播一下|放一下|play)(?:\s|$|[^a-z])/.test(normalized)) {
+    return { allowed: true, intent: 'play_resource' }
+  }
   if (isResourceIntent(aiIntent)) {
     return { allowed: true, intent: aiIntent }
   }

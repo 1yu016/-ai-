@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElButton, ElInput, ElMessage } from 'element-plus'
+import { ElButton, ElInput, ElMessage, ElMessageBox } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import { resourceApi } from '@/api/resources'
 import type { ResourceResponse, ResourceReviewStatus } from '@/api/resources'
@@ -108,6 +108,31 @@ async function reject(): Promise<void> {
   }
 }
 
+async function disableResource(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      '停用后该资源不能进入正式课堂，确定继续吗？',
+      '停用异常资源',
+      { confirmButtonText: '确认停用', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  acting.value = true
+  try {
+    await resourceApi.review(resourceId.value, {
+      status: 'disabled',
+      comment: rejectComment.value.trim() || '管理员停用异常资源',
+    })
+    ElMessage.success('资源已停用，正式课堂将无法使用')
+    await Promise.all([store.getById(resourceId.value), loadPending()])
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '资源停用失败'))
+  } finally {
+    acting.value = false
+  }
+}
+
 function openReview(id: number): void {
   void router.push({ name: 'resource-review', params: { id } })
 }
@@ -149,6 +174,13 @@ function openReview(id: number): void {
               <ElButton type="success" :loading="acting" @click="approve">通过</ElButton>
               <ElButton type="danger" :loading="acting" @click="reject">驳回</ElButton>
             </template>
+            <ElButton
+              v-if="store.detail.reviewStatus !== 'disabled'"
+              type="danger"
+              plain
+              :loading="acting"
+              @click="disableResource"
+            >停用异常资源</ElButton>
             <span v-if="store.detail.reviewStatus === 'approved'" class="ok-badge">已通过</span>
             <span v-if="store.detail.reviewStatus === 'pending'" class="warn-badge">等待审核</span>
           </div>

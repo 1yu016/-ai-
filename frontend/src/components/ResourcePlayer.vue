@@ -25,6 +25,9 @@ const {
   duration,
   volume,
   muted,
+  pageIndex,
+  pageCount,
+  zoom,
   isClassroomMode,
   errorMessage,
   hasPlayableMedia,
@@ -39,8 +42,11 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const sourceUrl = computed(
   () => currentResource.value?.contentUrl || currentResource.value?.dataUrl || '',
 )
-// 受保护媒体通过带 Authorization 的 blob 加载，供 <audio>/<video> 使用，
-// 避免原生媒体元素无法携带 token 导致 401。
+const effectiveMediaType = computed(
+  () => currentResource.value?.playerMediaType ?? currentResource.value?.mediaType,
+)
+// 资源库文件统一通过带 Authorization 的请求转成 blob URL。这样图片、PDF、
+// 音频和视频都不会把 Token 写进 URL，也不会绕过服务端资源权限检查。
 const mediaSource = ref('')
 let activeBlobRevoke: (() => void) | null = null
 // 每次进场加载都自增的世代号，用于丢弃「迟到」的过期响应：仅当本次 fetch 仍是
@@ -65,12 +71,21 @@ function releaseActiveBlob() {
 }
 async function loadMediaSource(resource: CourseResource) {
   const loadId = ++mediaLoadSeq
-  if (resource.mediaType !== 'audio' && resource.mediaType !== 'video') {
+  if (isPresentationResource(resource)) {
     releaseActiveBlob()
     return null
   }
   try {
-    const { url, revoke } = await fetchAuthedBlob(Number(resource.id))
+    if (resource.source !== 'library') {
+      releaseActiveBlob()
+      mediaSource.value = resource.contentUrl || resource.dataUrl || ''
+      return mediaSource.value
+    }
+    const resourceId = Number(resource.id)
+    if (!Number.isInteger(resourceId) || resourceId <= 0) {
+      throw new Error('资源编号无效')
+    }
+    const { url, revoke } = await fetchAuthedBlob(resourceId)
     if (loadId !== mediaLoadSeq) {
       // 已被更新的资源取代：仅回收本次自己的 object URL，绝不触碰正在使用的当前 blob。
       revoke()
@@ -91,14 +106,22 @@ async function loadMediaSource(resource: CourseResource) {
     return null
   }
 }
-const isPresentation = computed(() => {
-  const resource = currentResource.value
-  if (!resource) return false
+function isPresentationResource(resource: CourseResource): boolean {
   return (
+    resource.mediaType === 'ppt' ||
     resource.mimeType === 'application/vnd.ms-powerpoint' ||
     resource.mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
     /\.pptx?$/i.test(resource.fileName)
   )
+}
+const isPresentation = computed(() => {
+  const resource = currentResource.value
+  return resource ? isPresentationResource(resource) : false
+})
+const documentSource = computed(() => {
+  if (!mediaSource.value) return ''
+  const separator = mediaSource.value.includes('#') ? '&' : '#'
+  return `${mediaSource.value}${separator}page=${pageIndex.value}&zoom=${Math.round(zoom.value * 100)}`
 })
 const currentIndex = computed(() =>
   props.resources.findIndex(
@@ -113,8 +136,8 @@ const progressMaximum = computed(() => Math.max(duration.value, 1))
 const isPlaying = computed(() => playerStatus.value === 'playing')
 
 function activeMedia(): HTMLMediaElement | null {
-  if (currentResource.value?.mediaType === 'audio') return audioRef.value
-  if (currentResource.value?.mediaType === 'video') return videoRef.value
+  if (effectiveMediaType.value === 'audio') return audioRef.value
+  if (effectiveMediaType.value === 'video') return videoRef.value
   return null
 }
 
@@ -137,8 +160,8 @@ async function play() {
   if (!media) return
   // 受保护媒体源尚未就绪（mediaSource 为空）时不播放，避免空源 NotSupportedError。
   if (
-    (currentResource.value?.mediaType === 'audio' ||
-      currentResource.value?.mediaType === 'video') &&
+    (effectiveMediaType.value === 'audio' ||
+      effectiveMediaType.value === 'video') &&
     !mediaSource.value
   ) {
     return
@@ -197,6 +220,9 @@ function updateDuration(event: Event) {
   const media = event.currentTarget as HTMLMediaElement
   media.volume = volume.value
   media.muted = muted.value
+  if (currentTime.value > 0 && Number.isFinite(media.duration)) {
+    media.currentTime = Math.min(currentTime.value, media.duration)
+  }
   playerStore.setProgress(media.currentTime, media.duration)
   if (playerStatus.value === 'loading') playerStore.setStatus('paused')
 }
@@ -216,6 +242,30 @@ function changeVolume(value: number | number[]) {
 
 function setVolume(value: number) {
   playerStore.setVolume(value)
+}
+
+function previousPage() {
+  playerStore.setPage(Math.max(1, pageIndex.value - 1))
+}
+
+function nextPage() {
+  const maximum = pageCount.value ?? 999
+  playerStore.setPage(Math.min(maximum, pageIndex.value + 1))
+}
+
+function zoomIn() {
+  playerStore.setZoom(Math.min(3, zoom.value + 0.25))
+}
+
+function zoomOut() {
+  playerStore.setZoom(Math.max(0.5, zoom.value - 0.25))
+}
+
+async function retryCurrentResource() {
+  const resource = currentResource.value
+  if (!resource) return
+  playerStore.setStatus('loading')
+  await loadMediaSource(resource)
 }
 
 function handleEnded() {
@@ -311,15 +361,15 @@ watch(
     if (!resource) return
     stopMediaElements()
     const loaded = await loadMediaSource(resource)
-    if (
-      (resource.mediaType === 'audio' || resource.mediaType === 'video') &&
-      !loaded
-    ) {
+    if (!loaded && !isPresentationResource(resource)) {
       return
     }
     await nextTick()
     const media = activeMedia()
-    if (!media) return
+    if (!media) {
+      if (!isPresentationResource(resource)) playerStore.setStatus('paused')
+      return
+    }
     media.volume = volume.value
     media.muted = muted.value
     if (!autoPlayOnOpen.value) {
@@ -399,6 +449,10 @@ defineExpose({
   seek,
   previous,
   next,
+  previousPage,
+  nextPage,
+  zoomIn,
+  zoomOut,
 })
 </script>
 
@@ -414,11 +468,11 @@ defineExpose({
       <div class="resource-heading">
         <span class="resource-type-icon" aria-hidden="true">
           {{
-            currentResource.mediaType === 'image'
+            effectiveMediaType === 'image'
               ? '🖼️'
-              : currentResource.mediaType === 'audio'
+              : effectiveMediaType === 'audio'
                 ? '🎵'
-                : currentResource.mediaType === 'video'
+                : effectiveMediaType === 'video'
                   ? '🎬'
                   : isPresentation
                     ? '📊'
@@ -448,18 +502,19 @@ defineExpose({
 
     <div class="player-stage">
       <img
-        v-if="currentResource.mediaType === 'image'"
+        v-if="effectiveMediaType === 'image'"
         class="stage-image"
-        :src="sourceUrl"
+        :src="mediaSource"
         :alt="currentResource.title"
+        :style="{ transform: `scale(${zoom})` }"
         @load="handleVisualLoaded"
         @error="handleVisualError"
       />
 
-      <div v-else-if="currentResource.mediaType === 'audio'" class="audio-stage">
+      <div v-else-if="effectiveMediaType === 'audio'" class="audio-stage">
         <div class="album-art" aria-hidden="true">
           <img
-            v-if="currentResource.coverUrl"
+            v-if="currentResource.source === 'browser' && currentResource.coverUrl"
             :src="currentResource.coverUrl"
             alt=""
           />
@@ -481,11 +536,11 @@ defineExpose({
       </div>
 
       <video
-        v-else-if="currentResource.mediaType === 'video'"
+        v-else-if="effectiveMediaType === 'video'"
         ref="videoRef"
         class="stage-video"
         :src="mediaSource"
-        :poster="currentResource.coverUrl || undefined"
+        :poster="currentResource.source === 'browser' ? currentResource.coverUrl || undefined : undefined"
         playsinline
         preload="metadata"
         @loadedmetadata="updateDuration"
@@ -499,7 +554,7 @@ defineExpose({
       <iframe
         v-else-if="!isPresentation"
         class="stage-document"
-        :src="sourceUrl"
+        :src="documentSource"
         :title="`${currentResource.title} PDF预览`"
         @load="handleVisualLoaded"
       ></iframe>
@@ -507,20 +562,14 @@ defineExpose({
       <div v-else class="presentation-stage">
         <div class="presentation-icon" aria-hidden="true">📊</div>
         <h3>{{ currentResource.title }}</h3>
-        <p>PowerPoint 课件已保存到资源库。浏览器无法稳定预览 PPT，请打开或下载后使用 PowerPoint/WPS 放映。</p>
-        <a
-          class="presentation-open"
-          :href="sourceUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          打开或下载课件
-        </a>
+        <p>该 PowerPoint 课件需要由服务端转换为 PDF 或逐页图片后播放，避免依赖浏览器原生预览。</p>
       </div>
 
-      <p v-if="errorMessage" class="player-error" role="alert">
-        {{ errorMessage }}
-      </p>
+      <div v-if="errorMessage" class="player-error" role="alert">
+        <strong>资源加载失败</strong>
+        <span>{{ errorMessage }}</span>
+        <ElButton type="primary" @click="retryCurrentResource">重新加载</ElButton>
+      </div>
     </div>
 
     <div v-if="hasPlayableMedia" class="media-controls">
@@ -560,9 +609,11 @@ defineExpose({
     </div>
 
     <footer v-else class="non-media-controls">
-      <ElButton :disabled="!canGoPrevious" @click="previous">上一项</ElButton>
-      <span>按 ESC 可退出课堂模式</span>
-      <ElButton :disabled="!canGoNext" @click="next">下一项</ElButton>
+      <ElButton :disabled="pageIndex <= 1" @click="previousPage">上一页</ElButton>
+      <ElButton @click="zoomOut">缩小</ElButton>
+      <span>第 {{ pageIndex }} 页 · {{ Math.round(zoom * 100) }}%</span>
+      <ElButton @click="zoomIn">放大</ElButton>
+      <ElButton :disabled="pageCount !== null && pageIndex >= pageCount" @click="nextPage">下一页</ElButton>
     </footer>
   </section>
 </template>
@@ -689,6 +740,10 @@ defineExpose({
   box-shadow: 0 14px 40px rgb(52 35 25 / 18%);
 }
 
+.stage-image {
+  transition: transform 180ms ease;
+}
+
 .stage-video {
   width: 100%;
   height: 100%;
@@ -796,13 +851,19 @@ defineExpose({
 
 .player-error {
   position: absolute;
-  bottom: 16px;
-  margin: 0;
-  padding: 9px 13px;
-  border-radius: 10px;
-  background: #fff0f0;
+  inset: 50% auto auto 50%;
+  display: grid;
+  width: min(90%, 460px);
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #f4c8c8;
+  border-radius: 18px;
+  background: rgb(255 240 240 / 96%);
   color: #b64747;
-  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 16px 46px rgb(90 45 45 / 16%);
 }
 
 .media-controls,

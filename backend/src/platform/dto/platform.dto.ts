@@ -14,6 +14,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  AuditResult,
   ConsentStatus,
   ConsentType,
   DeviceStatus,
@@ -22,10 +23,19 @@ import {
   TeacherClassRole,
 } from '../platform.types';
 import { AccountStatus, TeacherRole } from '../../auth/entities/teacher.entity';
+import { AuthUserType } from '../../auth/entities/refresh-token-session.entity';
 
 export class PageQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 20;
+}
+
+export class AuditLogQueryDto extends PageQueryDto {
+  @IsOptional() @IsString() @MaxLength(100) action?: string;
+  @IsOptional() @IsEnum(AuthUserType) actorType?: AuthUserType;
+  @IsOptional() @IsEnum(AuditResult) result?: AuditResult;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
 }
 
 /** Stage 7.3：班级成长奖励历史查询，支持按幼儿筛选。 */
@@ -151,6 +161,10 @@ export class CreateTicketDto {
 
 export class ConsumeTicketDto {
   @IsString() @IsNotEmpty() @MaxLength(512) ticket: string;
+  @IsString() @IsNotEmpty() @MaxLength(100) deviceCode: string;
+}
+
+export class DeviceHeartbeatDto {
   @IsString() @IsNotEmpty() @MaxLength(100) deviceCode: string;
 }
 

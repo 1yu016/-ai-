@@ -15,16 +15,21 @@
 backend/data/*.sqlite
 backend/data/*.sqlite-shm
 backend/data/*.sqlite-wal
+backend/data/*.sqlite.bak-*
+backend/data/*.bak-*
 backend/uploads/resources/*
 !backend/uploads/resources/.gitkeep
 backend/uploads/avatars/*
 !backend/uploads/avatars/.gitkeep
+backend/uploads/artworks/*
+!backend/uploads/artworks/.gitkeep
 
 # Logs and test output
 **/*.log
 frontend/playwright-report/
 frontend/test-results/
 frontend/.tmp/
+/.tmp/
 
 # Local media and temporary working files
 test-resources/*
@@ -37,6 +42,17 @@ output/
 Java对象引用工作原理图*.png
 local_audio_transcribe.ps1
 local_wav_recognize.ps1
+.tmp/
+.docx-review-content.txt
+temp-two-person-docx-render*/
+temp_extract_docx.py
+
+# Generated document review artifacts
+.docx-review-content.txt
+.docx-review-pages/
+temp-docx-source-render/
+temp-two-person-docx-render*/
+temp_extract_docx.py
 
 # Editor and operating-system files
 .DS_Store

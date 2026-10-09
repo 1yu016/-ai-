@@ -5,6 +5,7 @@ import { apiErrorMessage } from '@/api/http'
 import type { Student } from '@/api/platform'
 import {
   confirmArtworkReview,
+  deliverArtworkReview,
   generateArtworkAiDraft,
   uploadStudentArtwork,
   validateArtworkFile,
@@ -17,6 +18,8 @@ const props = defineProps<{
   students: Student[]
   /** 后端作品上传接口是否已可用；默认自动探测（未就绪时页面阻塞）。 */
   backendReady?: boolean
+  deviceId?: number
+  runVersion?: number
 }>()
 
 type Stage =
@@ -33,16 +36,61 @@ const stage = ref<Stage>('file_pick')
 const errorText = ref('')
 const file = ref<File | null>(null)
 const previewUrl = ref<string | null>(null)
-const selectedStudentId = ref<number | null>(null)
+const selectedStudentId = ref<number | null>(props.students[0]?.id ?? null)
 const artwork = ref<StudentArtwork | null>(null)
 const aiDraft = ref('')
 const teacherComment = ref('')
 const confirmSaving = ref(false)
+const delivering = ref(false)
+const delivered = ref(false)
+const cameraActive = ref(false)
+const cameraVideo = ref<HTMLVideoElement | null>(null)
+let cameraStream: MediaStream | null = null
 
-// 由于后端作品接口当前未部署，默认进入 backend-not-ready 显式阻塞态。
-// 父级传入 backendReady=true 时展示完整可用流程（接口就绪后即可运行）。
-if (props.backendReady !== true) {
+if (props.backendReady === false) {
   stage.value = 'backend_not_ready'
+}
+
+async function startCamera() {
+  try {
+    stopCamera()
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    cameraActive.value = true
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    if (cameraVideo.value) {
+      cameraVideo.value.srcObject = cameraStream
+      await cameraVideo.value.play()
+    }
+  } catch (e) {
+    stopCamera()
+    ElMessage.error(apiErrorMessage(e, '摄像头不可用，请检查权限或改用本地图片。'))
+  }
+}
+
+function stopCamera() {
+  cameraStream?.getTracks().forEach((track) => track.stop())
+  cameraStream = null
+  cameraActive.value = false
+  if (cameraVideo.value) cameraVideo.value.srcObject = null
+}
+
+async function capturePhoto() {
+  const video = cameraVideo.value
+  if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return
+  const canvas = document.createElement('canvas')
+  canvas.width = video.videoWidth
+  canvas.height = video.videoHeight
+  canvas.getContext('2d')?.drawImage(video, 0, 0)
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+  if (!blob) {
+    ElMessage.error('拍照失败，请重新尝试。')
+    return
+  }
+  stopCamera()
+  resetObjectUrl()
+  file.value = new File([blob], `artwork-${Date.now()}.jpg`, { type: 'image/jpeg' })
+  previewUrl.value = URL.createObjectURL(file.value)
+  stage.value = 'preview'
 }
 
 function resetObjectUrl() {
@@ -73,6 +121,10 @@ function pickFile(event: Event) {
 
 async function upload() {
   if (!file.value) return
+  if (selectedStudentId.value == null) {
+    ElMessage.warning('请先选择幼儿，以核验照片和作品授权。')
+    return
+  }
   stage.value = 'uploading'
   errorText.value = ''
   try {
@@ -119,11 +171,11 @@ async function confirmComment() {
   confirmSaving.value = true
   errorText.value = ''
   try {
-    await confirmArtworkReview({
+    const confirmed = await confirmArtworkReview({
       artworkId: artwork.value.id,
       teacherComment: text,
     })
-    artwork.value = { ...artwork.value, teacherComment: text, confirmedAt: new Date().toISOString() }
+    artwork.value = { ...artwork.value, teacherComment: confirmed.teacherComment, confirmedAt: confirmed.confirmedAt }
     stage.value = 'confirmed'
   } catch (e) {
     // 确认失败保持 teacher_confirm 待确认态，不假装成功。
@@ -133,7 +185,28 @@ async function confirmComment() {
   }
 }
 
+async function deliver() {
+  if (!artwork.value || !props.deviceId || !props.runVersion) return
+  delivering.value = true
+  try {
+    await deliverArtworkReview({
+      artworkId: artwork.value.id,
+      requestId: globalThis.crypto?.randomUUID?.() ?? `artwork-${Date.now()}`,
+      deviceId: props.deviceId,
+      targetDeviceId: props.deviceId,
+      expectedVersion: props.runVersion,
+    })
+    delivered.value = true
+    ElMessage.success('作品和教师评价已投递到课堂大屏。')
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '投递失败，请刷新课堂状态后重试。'))
+  } finally {
+    delivering.value = false
+  }
+}
+
 function startOver() {
+  stopCamera()
   resetObjectUrl()
   file.value = null
   previewUrl.value = null
@@ -142,9 +215,11 @@ function startOver() {
   teacherComment.value = ''
   stage.value = 'file_pick'
   errorText.value = ''
+  delivered.value = false
 }
 
 function onUnmount() {
+  stopCamera()
   resetObjectUrl()
 }
 
@@ -156,7 +231,7 @@ onBeforeUnmount(onUnmount)
     <div class="section-head">
       <div>
         <h2>绘画作品评价</h2>
-        <p class="muted">上传作品 → 生成 AI 评价草稿 → 教师确认后保存正式评价。</p>
+        <p class="muted">拍照或上传作品 → AI 生成可编辑草稿 → 教师确认后才能投递大屏。</p>
       </div>
     </div>
 
@@ -179,11 +254,19 @@ onBeforeUnmount(onUnmount)
     <template v-else>
       <div v-if="stage === 'file_pick' || stage === 'preview'" class="pick">
         <select v-model.number="selectedStudentId">
-          <option :value="null">不指定幼儿</option>
+          <option :value="null">请选择幼儿（用于核验授权）</option>
           <option v-for="student in students" :key="student.id" :value="student.id">
             {{ student.nickname || student.name }}
           </option>
         </select>
+        <div class="camera-actions">
+          <button v-if="!cameraActive" class="ghost" type="button" @click="startCamera">📷 使用大屏摄像头</button>
+          <template v-else>
+            <button class="button" type="button" @click="capturePhoto">拍下作品</button>
+            <button class="ghost" type="button" @click="stopCamera">关闭摄像头</button>
+          </template>
+        </div>
+        <video v-show="cameraActive" ref="cameraVideo" class="camera-preview" muted playsinline></video>
         <label class="upload-box">
           <span>🖼️</span>
           <strong>{{ file ? file.name : '选择一幅作品' }}</strong>
@@ -191,7 +274,7 @@ onBeforeUnmount(onUnmount)
           <input type="file" accept="image/jpeg,image/png" @change="pickFile">
         </label>
         <img v-if="previewUrl" :src="previewUrl" alt="作品预览" class="preview">
-        <button class="button" :disabled="!file" @click="upload">
+        <button class="button" :disabled="!file || selectedStudentId == null" @click="upload">
           上传作品
         </button>
       </div>
@@ -221,6 +304,14 @@ onBeforeUnmount(onUnmount)
         <span class="tag ok">已确认 ✓</span>
         <p class="review">{{ artwork?.teacherComment }}</p>
         <p class="muted">评价已正式保存为教师确认版本。</p>
+        <button
+          v-if="deviceId && runVersion"
+          class="button"
+          :disabled="delivering || delivered"
+          @click="deliver"
+        >
+          {{ delivered ? '已投递到大屏' : delivering ? '投递中…' : '在大屏展示并朗读' }}
+        </button>
         <button class="ghost" @click="startOver">再评价一件作品</button>
       </div>
     </template>
@@ -237,6 +328,8 @@ onBeforeUnmount(onUnmount)
 .blocked { padding: 14px 16px; border: 1px dashed #d9a77e; border-radius: 12px; background: #fff6ec; color: #876b5d; }
 .bad { color: #c64e4e; padding: 10px 12px; border: 1px solid #efc6bf; border-radius: 10px; background: #fff4f1; }
 .pick { display: grid; gap: 12px; }
+.camera-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.camera-preview { width: 100%; max-height: 280px; border-radius: 12px; background: #2b2927; object-fit: contain; }
 .pick select { height: 40px; border: 1px solid #efd9c8; border-radius: 10px; padding: 0 11px; background: #fff; color: #60483e; }
 .upload-box { display: grid; gap: 4px; justify-items: center; padding: 18px; border: 1px dashed #e0c2ad; border-radius: 12px; background: #fff8f0; cursor: pointer; text-align: center; color: #9a7e6e; }
 .upload-box input { display: none; }

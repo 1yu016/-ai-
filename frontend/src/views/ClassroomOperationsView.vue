@@ -5,15 +5,17 @@ import { storeToRefs } from 'pinia'
 import { ElDialog, ElMessage } from 'element-plus'
 import { http, apiErrorMessage } from '@/api/http'
 import { platformApi, type Student } from '@/api/platform'
-import { useLessonRunStore, type ClassroomRunPayload } from '@/stores/lessonRun'
+import { useLessonRunStore, type ClassroomRunPayload, type StartBreakOptions } from '@/stores/lessonRun'
 import {
-  postReward,
   restoreCheckpoint,
   saveCheckpoint,
+  QUICK_REWARD_REASONS,
   type ActiveRun,
   type Attendance,
 } from '@/services/classroomCheckpoint'
 import AttendancePanel from '@/components/classroom/operations/AttendancePanel.vue'
+import type { VoiceAttendanceCandidate } from '@/components/classroom/operations/AttendancePanel.vue'
+import { isRecordingSupported, webmToWav, RECORDING_MIME_TYPE } from '@/services/recordingAudio'
 import RewardPanel from '@/components/classroom/operations/RewardPanel.vue'
 import BreakModePanel from '@/components/classroom/operations/BreakModePanel.vue'
 import RemoteControlPanel from '@/components/classroom/operations/RemoteControlPanel.vue'
@@ -41,6 +43,13 @@ const attendance = ref<Record<number, Attendance>>({})
 const selectedStudent = ref<number | null>(null)
 const awards = ref<Record<number, number>>({})
 const rollMessage = ref('')
+const voiceCandidates = ref<VoiceAttendanceCandidate[]>([])
+const voiceTranscript = ref('')
+const voiceBusy = ref(false)
+const voiceRecording = ref(false)
+let attendanceRecorder: MediaRecorder | null = null
+let attendanceStream: MediaStream | null = null
+let attendanceChunks: Blob[] = []
 // Stage 7.4：课堂/课间权威状态来自 lessonRun store（breakStartedAt/breakEndsAt + serverNow 时钟校准）。
 // run 直接复用 store 的 run，保证与 LessonClassroomView/大屏通过 polling 多端同步。
 const store = useLessonRunStore()
@@ -49,11 +58,17 @@ const remoteFeedback = ref('')
 const pendingCommands = ref<string[]>([])
 const online = ref(navigator.onLine)
 // Stage 7.3：发奖励走 POST rewards 原子接口；本地先弹快速原因选择，确认后再写后端。
-const QUICK_REASONS = ['积极回答', '主动参与', '乐于分享', '帮助伙伴', '认真观察']
+// 原因取值与课堂互动面板共用同一来源（QUICK_REWARD_REASONS），避免两套。
 const rewardDialogOpen = ref(false)
 const rewardTarget = ref<Student | null>(null)
 const rewardReason = ref('')
 const rewardSubmitting = ref(false)
+const rewardCategory = ref('progress')
+const rewardForms = ref<string[]>(['flower', 'animation'])
+const rewardPoints = ref(1)
+const rewardPraiseTemplate = ref('steady_progress')
+const REWARD_CATEGORIES = [['answer', '回答'], ['cooperation', '合作'], ['focus', '专注'], ['labor', '劳动'], ['exploration', '探索'], ['progress', '进步']] as const
+const REWARD_FORMS = [['points', '积分'], ['badge', '徽章'], ['flower', '小红花'], ['voice_praise', '语音表扬'], ['animation', '奖励动画']] as const
 
 const displayStudents = computed(() =>
   students.value.filter((s) => s.status !== 'disabled'),
@@ -84,19 +99,25 @@ async function load() {
   try {
     const classes = await platformApi.classes()
     classOptions.value = classes.data.items
-    selectedClassId.value ??= classOptions.value[0]?.id ?? null
+    const active = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>('/classroom-runs/active')
+    const current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
+    if (current) {
+      store.adoptRun(current)
+      selectedClassId.value = current.classId ?? classOptions.value[0]?.id ?? null
+    } else {
+      store.clearRun()
+      selectedClassId.value ??= classOptions.value[0]?.id ?? null
+    }
     if (selectedClassId.value) {
       const result = await platformApi.students(selectedClassId.value)
       students.value = result.data.items
     }
-    const active = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>('/classroom-runs/active')
-    const current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
-    if (current) store.adoptRun(current)
-    else store.clearRun()
     if (run.value) {
       const restored = await restoreCheckpoint(run.value)
       attendance.value = restored.attendance
       awards.value = restored.rewards
+      const formal = await http.get<{ attendanceState: Record<number, Attendance> }>(`/classroom-runs/${run.value.id}/attendance`)
+      attendance.value = formal.data.attendanceState
     }
   } catch (e) {
     error.value = apiErrorMessage(e, '互动数据加载失败，请稍后重试。')
@@ -107,6 +128,11 @@ async function load() {
 
 async function chooseClass() {
   if (!selectedClassId.value) return
+  if (run.value?.classId && selectedClassId.value !== run.value.classId) {
+    selectedClassId.value = run.value.classId
+    ElMessage.warning('进行中的课堂只能操作当前课堂班级。')
+    return
+  }
   const result = await platformApi.students(selectedClassId.value)
   students.value = result.data.items
   attendance.value = {}
@@ -118,26 +144,146 @@ async function chooseClass() {
   }
 }
 
-function setAttendance(student: Student, value: Attendance) {
-  attendance.value = { ...attendance.value, [student.id]: value }
-  void saveCheckpoint('roll_call', run.value, attendance.value)
+async function setAttendance(student: Student, value: Attendance) {
+  if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
+  try {
+    const response = await store.command(
+      'attendance_update',
+      { studentId: student.id, status: value },
+      'teacher_panel',
+    )
+    const result = response?.result as { attendanceState?: Record<number, Attendance> } | undefined
+    attendance.value = result?.attendanceState ?? { ...attendance.value, [student.id]: value }
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '考勤状态未保存，请刷新后重试。'))
+  }
 }
 
-function randomRoll() {
-  const pool = displayStudents.value.filter((s) => s.id !== selectedStudent.value)
-  const target =
-    pool[Math.floor(Math.random() * Math.max(pool.length, 1))] ??
-    displayStudents.value[0]
-  if (target) {
-    selectedStudent.value = target.id
-    rollMessage.value = `请 ${target.nickname || target.name} 小朋友回答问题！`
-    setAttendance(target, 'present')
+async function batchAttendance(
+  updates: Array<{ studentId: number; status: Attendance }>,
+  attendanceSource: 'batch' | 'voice_confirmed' = 'batch',
+) {
+  if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
+  try {
+    const response = await store.command(
+      'attendance_update',
+      { updates, attendanceSource },
+      attendanceSource === 'voice_confirmed' ? 'voice' : 'teacher_panel',
+    )
+    const result = response?.result as { attendanceState?: Record<number, Attendance> } | undefined
+    if (result?.attendanceState) attendance.value = result.attendanceState
+    if (attendanceSource === 'voice_confirmed') clearVoiceCandidates()
+    ElMessage.success(`已保存 ${updates.length} 条正式考勤`)
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '批量考勤未保存，请刷新后重试。'))
   }
+}
+
+async function randomRoll() {
+  if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
+  try {
+    const response = await store.command('random_roll_call', undefined, 'teacher_panel')
+    const result = response?.result as { student?: { id: number; displayName: string } } | undefined
+    const target = result?.student
+    if (!target) return
+    selectedStudent.value = target.id
+    rollMessage.value = `请 ${target.displayName} 小朋友回答问题！`
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '随机点名失败，请刷新后重试。'))
+  }
+}
+
+async function specifiedRoll(student: Student) {
+  await executeRoll('specified_roll_call', { studentId: student.id })
+}
+
+async function groupRoll(studentIds: number[]) {
+  await executeRoll('group_roll_call', { studentIds, groupKey: `temporary-${studentIds.join('-')}` })
+}
+
+async function executeRoll(
+  operation: 'specified_roll_call' | 'group_roll_call',
+  parameters: Record<string, unknown>,
+) {
+  if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
+  try {
+    const response = await store.command(operation, parameters, 'teacher_panel')
+    const result = response?.result as { student?: { id: number; displayName: string } } | undefined
+    if (!result?.student) return
+    selectedStudent.value = result.student.id
+    rollMessage.value = `请 ${result.student.displayName} 小朋友回答问题！`
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '点名失败，请检查考勤状态后重试。'))
+  }
+}
+
+async function startVoiceAttendance() {
+  if (voiceBusy.value || voiceRecording.value) return
+  if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
+  if (!isRecordingSupported()) return ElMessage.error('当前浏览器不支持录音，请使用最新版 Chrome 或 Edge。')
+  try {
+    attendanceStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    attendanceChunks = []
+    attendanceRecorder = new MediaRecorder(attendanceStream, { mimeType: RECORDING_MIME_TYPE })
+    attendanceRecorder.ondataavailable = (event) => { if (event.data.size) attendanceChunks.push(event.data) }
+    attendanceRecorder.onstop = () => void processVoiceAttendance()
+    attendanceRecorder.start()
+    voiceRecording.value = true
+  } catch (e) {
+    stopAttendanceStream()
+    ElMessage.error(apiErrorMessage(e, '无法使用麦克风，请检查浏览器权限。'))
+  }
+}
+
+function stopVoiceAttendance() {
+  if (!voiceRecording.value || !attendanceRecorder) return
+  voiceRecording.value = false
+  if (attendanceRecorder.state !== 'inactive') attendanceRecorder.stop()
+}
+
+async function processVoiceAttendance() {
+  voiceBusy.value = true
+  stopAttendanceStream()
+  try {
+    if (!attendanceChunks.length) throw new Error('没有录到有效声音')
+    const wav = await webmToWav(new Blob(attendanceChunks, { type: RECORDING_MIME_TYPE }))
+    const form = new FormData()
+    form.append('file', wav, 'attendance.wav')
+    const asr = await http.post<{ text: string }>('/ai/asr', form)
+    voiceTranscript.value = asr.data.text.trim()
+    const result = await http.post<{
+      candidates: VoiceAttendanceCandidate[]
+      requiresTeacherConfirmation: true
+    }>(`/classroom-runs/${run.value!.id}/attendance/voice-candidates`, {
+      transcript: voiceTranscript.value,
+    })
+    voiceCandidates.value = result.data.candidates
+    ElMessage.info('语音考勤仅生成候选，请核对后点击确认。')
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '语音考勤识别失败，请重试或手动登记。'))
+  } finally {
+    voiceBusy.value = false
+    attendanceChunks = []
+    attendanceRecorder = null
+  }
+}
+
+function clearVoiceCandidates() {
+  voiceCandidates.value = []
+  voiceTranscript.value = ''
+}
+
+function stopAttendanceStream() {
+  attendanceStream?.getTracks().forEach((track) => track.stop())
+  attendanceStream = null
 }
 
 function award(student: Student) {
   rewardTarget.value = student
   rewardReason.value = ''
+  rewardCategory.value = 'progress'
+  rewardForms.value = ['flower', 'animation']
+  rewardPoints.value = 1
   rewardDialogOpen.value = true
 }
 
@@ -151,7 +297,22 @@ async function confirmReward() {
   }
   rewardSubmitting.value = true
   try {
-    const result = await postReward(run.value, student.id, 1, rewardReason.value)
+    const response = await store.command(
+      'reward_student',
+      {
+        studentId: student.id,
+        stars: rewardForms.value.includes('flower') ? 1 : undefined,
+        points: rewardPoints.value,
+        rewardCategory: rewardCategory.value,
+        rewardForms: rewardForms.value,
+        reason: rewardReason.value || undefined,
+        praiseTemplateId: rewardForms.value.includes('voice_praise') ? rewardPraiseTemplate.value : undefined,
+        animationKey: rewardForms.value.includes('animation') ? 'stars' : undefined,
+      },
+      'teacher_panel',
+    )
+    const result = response?.result as { studentTotal?: number } | undefined
+    if (result?.studentTotal == null) throw new Error('奖励接口未返回累计结果')
     awards.value = { ...awards.value, [student.id]: result.studentTotal }
     selectedStudent.value = student.id
     rollMessage.value = `已奖励 ${student.nickname || student.name} 1 朵小红花！`
@@ -166,9 +327,9 @@ async function confirmReward() {
 }
 
 // Stage 7.4：课间休息走真实 API。POST 成功（store 应用后端新 run）后才显示课间 UI。
-async function startBreak(durationSeconds: number) {
+async function startBreak(options: StartBreakOptions) {
   try {
-    await store.startBreak(durationSeconds)
+    await store.startBreak(options, 'teacher_panel')
   } catch (e) {
     ElMessage.error(apiErrorMessage(e, '课间休息未开启，请重试。'))
   }
@@ -176,7 +337,7 @@ async function startBreak(durationSeconds: number) {
 
 async function endBreak() {
   try {
-    await store.endBreak()
+    await store.endBreak('teacher_panel')
   } catch (e) {
     ElMessage.error(apiErrorMessage(e, '提前结束课间失败，请重试。'))
   }
@@ -188,16 +349,9 @@ async function remote(action: 'pause' | 'resume' | 'next') {
     return
   }
   try {
-    const path =
-      action === 'next'
-        ? `/classroom-runs/${run.value.id}/steps/${run.value.currentStepIndex + 1}`
-        : `/classroom-runs/${run.value.id}/${action}`
-    const result = await http.post<ActiveRun>(path, {
-      requestId: `ops-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      version: run.value.version,
-      deviceId: run.value.deviceId,
-    })
-    store.adoptRun(result.data as unknown as ClassroomRunPayload)
+    if (action === 'next') await store.next('teacher_panel')
+    else if (action === 'pause') await store.pause('teacher_panel')
+    else await store.resume('teacher_panel')
     remoteFeedback.value =
       action === 'next'
         ? '已切换到下一环节。'
@@ -277,6 +431,8 @@ onBeforeUnmount(() => {
   store.stopPolling()
   window.removeEventListener('online', onlineChanged)
   window.removeEventListener('offline', onlineChanged)
+  if (attendanceRecorder?.state !== 'inactive') attendanceRecorder?.stop()
+  stopAttendanceStream()
 })
 </script>
 
@@ -316,7 +472,7 @@ onBeforeUnmount(() => {
       <section class="toolbar panel">
         <label>
           当前班级
-          <select v-model.number="selectedClassId" @change="chooseClass">
+          <select v-model.number="selectedClassId" :disabled="!!run" @change="chooseClass">
             <option v-for="item in classOptions" :key="item.id" :value="item.id">
               {{ item.name }}
             </option>
@@ -334,12 +490,23 @@ onBeforeUnmount(() => {
           :attendance="attendance"
           :selected-student="selectedStudent"
           :roll-message="rollMessage"
+          :voice-candidates="voiceCandidates"
+          :voice-transcript="voiceTranscript"
+          :voice-busy="voiceBusy"
+          :voice-recording="voiceRecording"
           @set-attendance="setAttendance"
+          @batch-attendance="batchAttendance"
           @random-roll="randomRoll"
+          @specified-roll="specifiedRoll"
+          @group-roll="groupRoll"
+          @start-voice="startVoiceAttendance"
+          @stop-voice="stopVoiceAttendance"
+          @confirm-voice="(updates) => batchAttendance(updates, 'voice_confirmed')"
+          @clear-voice="clearVoiceCandidates"
           @award="award"
         />
         <aside class="side-stack">
-          <RewardPanel :award-total="awardTotal" />
+          <RewardPanel :award-total="awardTotal" :run-id="run?.id" />
           <BreakModePanel
             :active="isBreakActive"
             :remaining-seconds="breakRemainingSeconds"
@@ -369,6 +536,9 @@ onBeforeUnmount(() => {
           :run-id="run.id"
           :lesson-step-index="run.currentStepIndex"
           :students="students"
+          :backend-ready="true"
+          :device-id="run.deviceId"
+          :run-version="run.version"
         />
       </div>
     </template>
@@ -388,13 +558,22 @@ onBeforeUnmount(() => {
     <ElDialog
       v-model="rewardDialogOpen"
       :title="rewardTarget ? `奖励 ${rewardTarget.nickname || rewardTarget.name} 🌟` : '奖励'"
-      width="360px"
+      width="520px"
       append-to-body
     >
+      <p class="muted">奖励类型</p>
+      <div class="reason-chips">
+        <button v-for="item in REWARD_CATEGORIES" :key="item[0]" :class="{ active: rewardCategory === item[0] }" @click="rewardCategory = item[0]">{{ item[1] }}</button>
+      </div>
+      <p class="muted">奖励形式（可多选）</p>
+      <div class="reward-form-grid">
+        <label v-for="item in REWARD_FORMS" :key="item[0]"><input v-model="rewardForms" type="checkbox" :value="item[0]"> {{ item[1] }}</label>
+      </div>
+      <label class="reason-custom">积分<input v-model.number="rewardPoints" type="number" min="0" max="20"></label>
       <p class="muted">快速原因（可跳过）</p>
       <div class="reason-chips">
         <button
-          v-for="reason in QUICK_REASONS"
+          v-for="reason in QUICK_REWARD_REASONS"
           :key="reason"
           :class="{ active: rewardReason === reason }"
           @click="rewardReason = reason"
@@ -708,6 +887,8 @@ onBeforeUnmount(() => {
   background: #fff;
   color: #60483e;
 }
+.reward-form-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px; }
+.reward-form-grid label { padding:8px;border:1px solid #efd9c8;border-radius:10px;color:#765f52;background:#fffdf9; }
 .alert {
   max-width: 1180px;
   margin: 0 auto 14px;
