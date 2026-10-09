@@ -377,7 +377,14 @@ async function openBreakConfig() {
   classroomAssistantStore.deactivate()
   await syncActiveRun()
   if (!lessonRunStore.run) {
-    ElMessage.warning('当前没有进行中的课堂，无法开启课间模式')
+    breakConfigOpen.value = false
+    // Element Plus 会保留刚点击按钮的焦点底色；失败后主动移除焦点，
+    // 避免教师误以为课间模式已经开启。
+    await nextTick()
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
+    ElMessage.warning('当前没有进行中的课堂，请先到“我的班级”开始上课')
     return
   }
   breakConfigOpen.value = true
