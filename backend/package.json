@@ -20,7 +20,8 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json",
-    "backup:verify": "node scripts/verify-backup.mjs"
+    "backup:verify": "node scripts/verify-backup.mjs",
+    "seed:avatars": "node scripts/seed-default-avatars.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",
