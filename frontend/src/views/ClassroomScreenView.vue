@@ -14,6 +14,7 @@ import {
 } from '@/stores/lessonRun'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 import { useUserStore } from '@/stores/user'
+import { useDeviceSessionStore } from '@/stores/deviceSession'
 import { connectScreenRealtime } from '@/services/classroomRealtime'
 
 const route = useRoute()
@@ -22,6 +23,14 @@ const runStore = useLessonRunStore()
 const resourceStore = useCourseResourceStore()
 const playerStore = useResourcePlayerStore()
 const userStore = useUserStore()
+const deviceSessionStore = useDeviceSessionStore()
+const { online: deviceOnlineState, error: deviceErrorState } = storeToRefs(deviceSessionStore)
+const screenOnline = computed(() =>
+  deviceId.value ? deviceOnlineState.value[deviceId.value] === true : false,
+)
+const screenError = computed(() =>
+  deviceId.value ? deviceErrorState.value[deviceId.value] || '' : '',
+)
 const { run, currentStep, currentResource, breakRemainingSeconds, busy } = storeToRefs(runStore)
 const {
   currentResource: playingResource,
@@ -244,6 +253,7 @@ watch(deviceId, async () => {
   if (deviceId.value) {
     await refreshScreen({ initial: true })
     startRealtime()
+    deviceSessionStore.startHeartbeat(deviceId.value)
   }
   else {
     runStore.clearRun()
@@ -257,6 +267,7 @@ onMounted(async () => {
   if (deviceId.value) {
     await refreshScreen({ initial: true })
     startRealtime()
+    deviceSessionStore.startHeartbeat(deviceId.value)
   }
   else {
     await loadDevices()
@@ -269,6 +280,7 @@ onBeforeUnmount(() => {
   if (pollTimer !== null) window.clearInterval(pollTimer)
   realtimeAbort?.abort()
   if (snapshotTimer !== null) window.clearTimeout(snapshotTimer)
+  deviceSessionStore.stopHeartbeat()
   playerStore.requestControl('stop')
   clearArtworkPresentation()
 })
@@ -279,8 +291,8 @@ onBeforeUnmount(() => {
     <header class="screen-header">
       <div class="brand"><span>🌼</span><strong>幼儿园数字人课堂</strong></div>
       <div class="screen-status">
-        <span class="status-dot"></span>
-        {{ deviceId ? `大屏设备 #${deviceId}` : '请选择大屏设备' }}
+        <span class="status-dot" :class="{ online: screenOnline }"></span>
+        {{ deviceId ? `大屏设备 #${deviceId} · ${screenOnline ? '在线' : screenError || '连接中'}` : '请选择大屏设备' }}
       </div>
     </header>
 
@@ -400,7 +412,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .classroom-screen { min-height: 100dvh; position: relative; overflow: hidden; color: #40372f; background: radial-gradient(circle at 85% 15%, #fff2c9 0, transparent 30%), linear-gradient(145deg, #fffaf0, #f7efe6); }
 .screen-header { height: 74px; display: flex; align-items: center; justify-content: space-between; padding: 0 34px; border-bottom: 1px solid rgb(126 93 65 / 12%); background: rgb(255 253 248 / 82%); backdrop-filter: blur(14px); }
-.brand,.screen-status { display: flex; align-items: center; gap: 10px; }.brand span { font-size: 30px; }.brand strong { font-size: 18px; }.screen-status { color: #806d5e; font-size: 13px; }.status-dot { width: 9px; height: 9px; border-radius: 50%; background: #55b88b; box-shadow: 0 0 0 5px rgb(85 184 139 / 13%); }
+.brand,.screen-status { display: flex; align-items: center; gap: 10px; }.brand span { font-size: 30px; }.brand strong { font-size: 18px; }.screen-status { color: #806d5e; font-size: 13px; }.status-dot { width: 9px; height: 9px; border-radius: 50%; background: #c9b9ab; box-shadow: 0 0 0 5px rgb(178 158 142 / 12%); }.status-dot.online { background: #55b88b; box-shadow: 0 0 0 5px rgb(85 184 139 / 13%); }
 .state-card { min-height: calc(100dvh - 74px); display: grid; place-content: center; justify-items: center; padding: 48px; text-align: center; }.state-icon { display: grid; width: 118px; height: 118px; place-items: center; border-radius: 38px; background: #fff; box-shadow: 0 22px 60px rgb(92 66 45 / 13%); font-size: 58px; }.eyebrow { margin-top: 24px; color: #df825f; font-weight: 800; letter-spacing: .12em; }.state-card h1 { margin: 10px 0; font-size: clamp(36px, 5vw, 66px); }.state-card p { max-width: 660px; margin: 5px 0 24px; color: #8c796a; font-size: 18px; line-height: 1.7; }
 .device-grid { display: grid; width: min(820px, 90vw); grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 14px; }.device-grid button { display: grid; justify-items: start; gap: 5px; padding: 20px; border: 1px solid #ead8c9; border-radius: 18px; background: #fff; color: inherit; cursor: pointer; box-shadow: 0 10px 30px rgb(91 64 43 / 7%); }.device-grid button:hover { transform: translateY(-2px); border-color: #e7a483; }.device-grid strong { font-size: 17px; }.device-grid small { color: #9b8879; }.empty-hint { padding: 13px 20px; border-radius: 12px; background: #fff3df; }
 .soft-button,.primary-button { min-height: 48px; padding: 0 24px; border: 0; border-radius: 14px; cursor: pointer; font-size: 16px; font-weight: 800; }.soft-button { background: #fff; color: #8e6e5d; box-shadow: 0 10px 30px rgb(88 60 42 / 10%); }.primary-button { background: linear-gradient(135deg,#ef9b72,#e77f5f); color: #fff; box-shadow: 0 12px 28px rgb(222 119 82 / 26%); }.primary-button:disabled { cursor: wait; opacity: .6; }

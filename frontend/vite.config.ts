@@ -136,6 +136,8 @@ export default defineConfig({
             : undefined,
       },
       // 平台管理与课堂运行接口：前端默认同源请求，开发环境统一转发到后端。
+      // Device Session：心跳路径 /device-session/*（含 /device-session/heartbeat）。
+      '/device-session': { target: backendProxyTarget, changeOrigin: true },
       '/guardian-consents': { target: backendProxyTarget, changeOrigin: true },
       '/device-bindings': { target: backendProxyTarget, changeOrigin: true },
       '/classroom-tickets': { target: backendProxyTarget, changeOrigin: true },

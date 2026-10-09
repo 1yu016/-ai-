@@ -46,7 +46,9 @@ import { ClassroomRecords2026100700021 } from './migrations/202610070021-Classro
 import { StudentArtworkRecords2026100700022 } from './migrations/202610070022-StudentArtworkRecords';
 import { ArtworkModule } from './artworks/artwork.module';
 import { ClassroomMobileModule } from './classroom-mobile/classroom-mobile.module';
+import { DeviceSessionModule } from './device-session/device-session.module';
 import { ClassroomMobileRealtime2026100700023 } from './migrations/202610070023-ClassroomMobileRealtime';
+import { DeviceSession2026100900024 } from './migrations/202610090024-DeviceSession';
 
 @Module({
   imports: [
@@ -114,6 +116,7 @@ import { ClassroomMobileRealtime2026100700023 } from './migrations/202610070023-
             ClassroomRecords2026100700021,
             StudentArtworkRecords2026100700022,
             ClassroomMobileRealtime2026100700023,
+            DeviceSession2026100900024,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',
@@ -132,6 +135,7 @@ import { ClassroomMobileRealtime2026100700023 } from './migrations/202610070023-
     ClassroomEngagementModule,
     ArtworkModule,
     ClassroomMobileModule,
+    DeviceSessionModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -271,8 +271,8 @@ describe('Task four classroom run state machine (e2e)', () => {
           schoolId: 'garden-run',
           name: '一号大屏',
           type: DeviceType.ClassroomScreen,
-          status: DeviceStatus.Offline,
-          lastOnlineAt: null,
+          status: DeviceStatus.Online,
+          lastOnlineAt: new Date(),
         }),
       )
     ).id;
@@ -283,8 +283,8 @@ describe('Task four classroom run state machine (e2e)', () => {
           schoolId: 'garden-run',
           name: '二号大屏',
           type: DeviceType.ClassroomScreen,
-          status: DeviceStatus.Offline,
-          lastOnlineAt: null,
+          status: DeviceStatus.Online,
+          lastOnlineAt: new Date(),
         }),
       )
     ).id;

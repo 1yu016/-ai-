@@ -1388,7 +1388,11 @@ export class ClassroomRunService {
     if (classroom.status !== RecordStatus.Active)
       throw new ConflictException('教室已停用');
     if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
-      throw new ConflictException('设备当前不可用于课堂');
+      throw new ConflictException(
+        device.status === DeviceStatus.Disabled ? '设备已停用，无法开始课堂' : '设备故障，无法开始课堂',
+      );
+    if (device.status !== DeviceStatus.Online)
+      throw new ConflictException('大屏设备当前离线，无法开始课堂');
   }
 
   private async requireApprovedResources(

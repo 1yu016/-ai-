@@ -1,4 +1,4 @@
-﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { ref } from 'vue'
 import DigitalHumanDevPanel from '@/components/digital-human/DigitalHumanDevPanel.vue'
 import ClassroomAvatar from '@/components/digital-human/ClassroomAvatar.vue'
