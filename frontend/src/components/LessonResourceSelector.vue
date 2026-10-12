@@ -15,7 +15,7 @@ const keyword = ref('')
 const resourceType = ref<CourseResourceMediaType | ''>('')
 const category = ref('')
 const ageGroup = ref('')
-async function search() { await store.refreshLibrary({ keyword: keyword.value || undefined, resourceType: resourceType.value || undefined, category: category.value as never || undefined, ageGroup: ageGroup.value as never || undefined }) }
+async function search() { await store.refreshLibrary({ keyword: keyword.value || undefined, resourceType: resourceType.value || undefined, category: category.value as never || undefined, ageGroup: ageGroup.value as never || undefined, reviewStatus: 'approved' }) }
 function choose(resource: CourseResource) { if (typeof resource.id !== 'number') return; emit('update:modelValue', resource.id); emit('selected', resource); open.value = false }
 function remove() { emit('update:modelValue', null); emit('selected', null); open.value = false }
 onMounted(search)

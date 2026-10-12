@@ -46,6 +46,9 @@ local_wav_recognize.ps1
 .docx-review-content.txt
 temp-two-person-docx-render*/
 temp_extract_docx.py
+.tmp-doc-read/
+start-project.cmd
+启动项目.cmd
 
 # Generated document review artifacts
 .docx-review-content.txt

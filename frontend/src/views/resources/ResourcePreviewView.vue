@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import ManagementLayout from '@/components/ManagementLayout.vue'
+import BackButton from '@/components/BackButton.vue'
 import ResourcePreview from '@/components/resources/ResourcePreview.vue'
 import { useCourseLibraryStore } from '@/stores/library'
+import { navigateBack } from '@/router/navigation'
+import { useUserStore } from '@/stores/user'
 
 const props = defineProps<{ id: string | number }>()
+const route = useRoute()
 const router = useRouter()
+const user = useUserStore()
 const store = useCourseLibraryStore()
 const resourceId = () => Number(props.id)
 
@@ -15,7 +20,7 @@ onMounted(() => {
 })
 
 function goBack(): void {
-  void router.push({ name: 'resource-detail', params: { id: resourceId() } })
+  void navigateBack(router, route, user)
 }
 </script>
 
@@ -24,7 +29,7 @@ function goBack(): void {
     <h1>资源预览</h1>
     <p class="muted">查看与下载资源文件</p>
     <div class="toolbar">
-      <button class="button" @click="goBack">返回详情</button>
+      <BackButton label="返回资源详情" />
     </div>
 
     <div class="panel">

@@ -9,26 +9,25 @@ import StudentsView from '@/views/StudentsView.vue'
 const studentsData = {
   data: {
     items: [
-      { id: 1, classId: 1, studentNo: 'XB-001', name: '朵朵', nickname: '朵朵宝', status: 'active', createdAt: '', updatedAt: '' },
-      { id: 2, classId: 1, studentNo: 'XB-002', name: '糖糖', nickname: null, status: 'inactive', createdAt: '', updatedAt: '' },
+      { id: 1, classId: 1, className: '小一班', studentNo: 'XB-001', name: '朵朵', nickname: '朵朵宝', status: 'active', authorizationStatus: 'authorized', permissions: { photo: true, voice: true, artwork: true }, createdAt: '', updatedAt: '' },
+      { id: 2, classId: 1, className: '小一班', studentNo: 'XB-002', name: '糖糖', nickname: null, status: 'disabled', authorizationStatus: 'pending', permissions: { photo: false, voice: false, artwork: false }, createdAt: '', updatedAt: '' },
     ],
     total: 2,
     page: 1,
     pageSize: 100,
   },
 }
-const classesData = {
-  data: { items: [{ id: 1, name: '小一班', grade: '小班', ageRange: '3-4', schoolYear: '', status: 'active' }], total: 1, page: 1, pageSize: 50 },
-}
+const classData = { data: { id: 1, name: '小一班', grade: '小班', ageRange: '3-4', schoolYear: '', status: 'active', teachers: [], studentCount: 2 } }
 
 async function mountView(routePath = '/classes/1/students') {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
-      { path: '/classes/:classId/students', name: 'students', component: StudentsView, meta: { requiresAuth: true } },
+      { path: '/classes/:classId/students', name: 'students', component: StudentsView, meta: { requiresAuth: true, backRoute: (route) => ({ name: 'class-detail', params: { classId: route.params.classId } }) } },
       { path: '/classes/:classId/rewards', name: 'class-rewards', component: { template: '<div>成长奖励</div>' } },
       { path: '/classes/:classId/questions', name: 'class-questions', component: { template: '<div>问题</div>' } },
-      { path: '/students/:studentId', name: 'student-profile', component: { template: '<div>资料</div>' } },
+      { path: '/classes/:classId/students/:studentId', name: 'student-profile', component: { template: '<div>资料</div>' } },
+      { path: '/classes/:classId', name: 'class-detail', component: { template: '<div>班级详情</div>' } },
       { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
       { path: '/lesson-plans', name: 'lesson-plans', component: { template: '<div>备课中心</div>' } },
     ],
@@ -45,7 +44,7 @@ describe('StudentsView 学生列表页（ClassWorkspaceLayout + 学生管理）'
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     localStorage.clear()
-    vi.spyOn(platformApi, 'listClasses').mockResolvedValue(classesData as never)
+    vi.spyOn(platformApi, 'classDetail').mockResolvedValue(classData as never)
     vi.spyOn(platformApi, 'students').mockResolvedValue(studentsData as never)
   })
 
@@ -55,17 +54,17 @@ describe('StudentsView 学生列表页（ClassWorkspaceLayout + 学生管理）'
     expect(wrapper.text()).toContain('小班 · 2 名幼儿')
   })
 
-  it('workspace 顶部有「开始上课」与「← 我的班级」', async () => {
+  it('workspace 顶部有「开始上课」与统一返回按钮', async () => {
     const { wrapper } = await mountView()
     expect(wrapper.find('[data-test="workspace-start"]').text()).toContain('开始上课')
-    expect(wrapper.find('[data-test="workspace-back"]').text()).toContain('我的班级')
+    expect(wrapper.find('[data-test="workspace-back"]').text()).toContain('班级详情')
   })
 
-  it('点击「← 我的班级」→ /my-classes', async () => {
+  it('直接打开学生列表后返回安全默认班级详情', async () => {
     const { wrapper, router } = await mountView()
     await wrapper.find('[data-test="workspace-back"]').trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.name).toBe('my-classes')
+    expect(router.currentRoute.value.name).toBe('class-detail')
   })
 
   it('「开始上课」带 classId → /lesson-plans?classId=1', async () => {
@@ -107,11 +106,13 @@ describe('StudentsView 学生列表页（ClassWorkspaceLayout + 学生管理）'
     expect(router.currentRoute.value.name).toBe('student-profile')
   })
 
-  it('状态中文化：active→在读，inactive→已停用', async () => {
+  it('状态中文化并展示统一授权状态', async () => {
     const { wrapper } = await mountView()
     const text = wrapper.text()
     expect(text).toContain('在读')
     expect(text).toContain('已停用')
+    expect(text).toContain('已授权')
+    expect(text).toContain('待确认')
     expect(text).not.toContain('>active<')
   })
 
@@ -126,7 +127,19 @@ describe('StudentsView 学生列表页（ClassWorkspaceLayout + 学生管理）'
   it('无学生 → 空态卡片 + 添加学生按钮', async () => {
     vi.spyOn(platformApi, 'students').mockResolvedValue({ data: { items: [], total: 0, page: 1, pageSize: 100 } } as never)
     const { wrapper } = await mountView()
-    expect(wrapper.text()).toContain('当前班级还没有学生')
+    expect(wrapper.text()).toContain('当前条件下没有学生')
     expect(wrapper.text()).toContain('添加学生')
+  })
+
+  it('按姓名或学号查询时把关键词交给后端', async () => {
+    const { wrapper } = await mountView()
+    const input = wrapper.find('input[placeholder="搜索姓名或学号"]')
+    await input.setValue('XB-001')
+    await input.trigger('keyup.enter')
+    await flushPromises()
+    expect(platformApi.students).toHaveBeenCalledWith(expect.objectContaining({
+      classId: 1,
+      keyword: 'XB-001',
+    }))
   })
 })

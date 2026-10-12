@@ -73,4 +73,13 @@ describe('user store', () => {
     expect(store.refreshToken).toBe('refresh-1')
     expect(localStorage.getItem(USER_STORAGE_KEYS.refreshToken)).toBe('refresh-1')
   })
+
+  it('refreshes persisted profile data without changing the current token', () => {
+    const store = useUserStore()
+    store.setLogin('token-1', { account: 'teacher', name: '旧名称' }, 'refresh-1')
+    store.updateProfile({ account: 'teacher', name: '新名称', role: 'teacher', userType: 'teacher' })
+    expect(store.accessToken).toBe('token-1')
+    expect(store.teacherInfo?.name).toBe('新名称')
+    expect(JSON.parse(localStorage.getItem(USER_STORAGE_KEYS.teacherInfo) ?? '{}')).toMatchObject({ name: '新名称' })
+  })
 })

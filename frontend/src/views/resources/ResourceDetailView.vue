@@ -1,36 +1,68 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
-import { resourceApi, type ResourceAgeGroup, type ResourceReviewStatus, type ResourceType } from '@/api/resources'
+import LoadingState from '@/components/LoadingState.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import ForbiddenState from '@/components/ForbiddenState.vue'
+import { resourceApi, type ResourceAgeGroup, type ResourceReferenceUsage, type ResourceReviewStatus, type ResourceType } from '@/api/resources'
 import { useCourseLibraryStore } from '@/stores/library'
 import { useUserStore } from '@/stores/user'
 import { apiErrorMessage } from '@/api/http'
+import BackButton from '@/components/BackButton.vue'
+import { withNavigationSource } from '@/router/navigation'
 
-const props = defineProps<{ id: number }>()
+const props = defineProps<{ id: string | number }>()
 const store = useCourseLibraryStore()
 const user = useUserStore()
+const route = useRoute()
 const router = useRouter()
 
 const TYPE_LABELS: Record<ResourceType, string> = {
   image: '图片', audio: '音频', video: '视频', pdf: 'PDF', ppt: 'PPT',
-  picture_book: '绘本', animation: '动画', question_bank: '题库',
-  experiment: '实验', model_3d: '3D模型', document: '文档',
+  picture_book: '绘本', nursery_rhyme: '儿歌', animation: '动画', question_bank: '题库',
+  experiment: '实验', model_3d: '3D模型', document: '文档', unknown: '未知类型',
 }
 const AGE_LABELS: Record<ResourceAgeGroup, string> = {
   small: '小班', middle: '中班', large: '大班', all: '全龄段',
 }
 const STATUS_LABELS: Record<ResourceReviewStatus, string> = {
-  draft: '草稿', pending: '待审核', approved: '已通过', rejected: '已驳回', disabled: '已停用',
+  draft: '草稿', pending_review: '待审核', approved: '已通过', rejected: '已驳回', archived: '已归档',
 }
 
 const isAdmin = computed(() => user.isAdmin)
 const detail = computed(() => store.detail)
+const currentUserId = computed(() =>
+  user.teacherInfo?.teacherId ?? user.teacherInfo?.userId ?? user.teacherInfo?.administratorId,
+)
+const canEdit = computed(() => {
+  if (!detail.value) return false
+  if (isAdmin.value) return true
+  return detail.value.ownerType === 'teacher' && detail.value.ownerId === String(currentUserId.value)
+})
+const editBlockedReason = computed(() => {
+  if (!detail.value) return ''
+  if (detail.value.reviewStatus === 'archived') return '该资源已归档，不能编辑元数据。'
+  if (!canEdit.value) return '该资源由其他教师或园所共享，当前账号只能查看和收藏。'
+  return ''
+})
+const canSubmitReview = computed(() =>
+  !isAdmin.value && canEdit.value &&
+  Boolean(detail.value && ['draft', 'rejected'].includes(detail.value.reviewStatus)),
+)
+const favoritePending = computed(() =>
+  detail.value ? store.favoritePendingIds.includes(detail.value.id) : false,
+)
+const references = ref<ResourceReferenceUsage[]>([])
+const referencesLoading = ref(false)
+const referencesError = ref('')
+const submittingReview = ref(false)
 
 function statusClass(s: ResourceReviewStatus): string {
   if (s === 'approved') return 'ok'
-  if (s === 'pending') return 'warn'
+  if (s === 'pending_review') return 'warn'
   return 'bad'
 }
 function typeLabel(): string {
@@ -45,7 +77,7 @@ function formatSize(bytes: number): string {
   return `${bytes} B`
 }
 async function onToggleFavorite(): Promise<void> {
-  if (!detail.value) return
+  if (!detail.value || favoritePending.value) return
   try {
     const next = await store.toggleFavorite(detail.value.id)
     ElMessage.success(next ? '已收藏' : '已取消收藏')
@@ -55,6 +87,18 @@ async function onToggleFavorite(): Promise<void> {
 }
 async function onDelete(): Promise<void> {
   if (!detail.value) return
+  await loadReferences()
+  if (referencesError.value) {
+    ElMessage.error('无法确认资源引用状态，已取消删除')
+    return
+  }
+  if (references.value.length) {
+    await ElMessageBox.alert(referenceMessage(references.value), '资源正在使用中', {
+      type: 'warning',
+      confirmButtonText: '知道了',
+    })
+    return
+  }
   try {
     await ElMessageBox.confirm(`确认删除「${detail.value.title}」？删除后不可恢复。`, '删除资源', {
       type: 'warning',
@@ -70,34 +114,94 @@ async function onDelete(): Promise<void> {
     ElMessage.success('删除成功')
     void router.push({ name: 'resources' })
   } catch (e) {
-    ElMessage.error(apiErrorMessage(e, '删除失败'))
+    const payload = (e as { response?: { data?: { references?: ResourceReferenceUsage[] } } })
+      ?.response?.data
+    if (payload?.references?.length) references.value = payload.references
+    ElMessage.error(
+      payload?.references?.length
+        ? referenceMessage(payload.references)
+        : apiErrorMessage(e, '删除失败'),
+    )
   }
 }
-function goBack(): void {
-  void router.push({ name: 'resources' })
+async function loadReferences(): Promise<void> {
+  if (!detail.value || !canEdit.value) return
+  referencesLoading.value = true
+  referencesError.value = ''
+  try {
+    references.value = (await resourceApi.listReferences(detail.value.id)).data
+  } catch (error) {
+    references.value = []
+    referencesError.value = apiErrorMessage(error, '引用关系加载失败')
+  } finally {
+    referencesLoading.value = false
+  }
+}
+function referenceMessage(items: ResourceReferenceUsage[]): string {
+  const details = items.slice(0, 3).map((reference) => {
+    const plan = reference.lessonPlanTitle || `引用 ${reference.referenceId}`
+    const steps = reference.steps.length
+      ? `（步骤：${reference.steps.map((step) => `${step.sortOrder}.${step.title}`).join('、')}）`
+      : ''
+    return `${plan}${steps}`
+  })
+  const more = items.length > 3 ? `，另有 ${items.length - 3} 处引用` : ''
+  return `该资源被 ${items.length} 个教案或业务记录引用：${details.join('；')}${more}。请先在对应业务中移除引用。`
+}
+async function onSubmitReview(): Promise<void> {
+  if (!detail.value || !canSubmitReview.value || submittingReview.value) return
+  submittingReview.value = true
+  try {
+    await resourceApi.submitReview(detail.value.id)
+    await store.getById(detail.value.id)
+    ElMessage.success('已提交审核')
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, '提交审核失败'))
+  } finally {
+    submittingReview.value = false
+  }
 }
 function openPreview(): void {
-  if (detail.value) void router.push({ name: 'resource-preview', params: { id: detail.value.id } })
+  if (detail.value) void router.push(withNavigationSource({ name: 'resource-preview', params: { id: detail.value.id } }, route))
 }
 function openEdit(): void {
-  if (detail.value) void router.push({ name: 'resource-edit', params: { id: detail.value.id } })
+  if (detail.value) void router.push(withNavigationSource({ name: 'resource-edit', params: { id: detail.value.id } }, route))
+}
+function openReview(): void {
+  if (detail.value) void router.push(withNavigationSource({ name: 'resource-review', params: { id: detail.value.id } }, route))
 }
 
+const resourceId = () => Number(props.id)
+
 onMounted(() => {
-  void store.getById(props.id).catch(() => {
+  void store.getById(resourceId()).then(() => loadReferences()).catch(() => {
     /* store.detailError 已记录，界面展示 */
   })
 })
 </script>
 <template>
   <ManagementLayout>
-    <button class="back" @click="goBack">← 返回资源库</button>
+    <BackButton label="返回资源库" />
 
-    <p v-if="store.detailLoading" class="muted">加载中…</p>
-    <p v-else-if="store.detailError" class="bad">
-      {{ store.detailError }}
-      <button class="retry" @click="store.getById(props.id)">重试</button>
-    </p>
+    <LoadingState v-if="store.detailLoading" title="正在加载资源" description="正在读取资源详情和访问权限。" />
+    <ForbiddenState
+      v-else-if="store.detailState === 'forbidden'"
+      description="当前账号没有权限查看该资源。"
+      action-label="返回资源库"
+      @action="router.push({ name: 'resources' })"
+    />
+    <EmptyState
+      v-else-if="store.detailState === 'not_found'"
+      title="资源不存在"
+      description="该资源可能已被删除或地址已经失效。"
+      action-label="返回资源库"
+      @action="router.push({ name: 'resources' })"
+    />
+    <ErrorState
+      v-else-if="store.detailError"
+      :description="store.detailError"
+      @retry="store.getById(resourceId())"
+    />
     <div v-else-if="detail" class="panel">
       <div class="title-row">
         <h1>{{ detail.title }}</h1>
@@ -138,22 +242,45 @@ onMounted(() => {
         <p v-else class="muted">暂无描述</p>
       </div>
 
+      <div v-if="canEdit" class="sec">
+        <h3>引用关系</h3>
+        <p v-if="referencesLoading" class="muted">正在查询教案和步骤引用…</p>
+        <p v-else-if="referencesError" class="reference-error">
+          {{ referencesError }}
+          <button class="link-button" @click="loadReferences">重试</button>
+        </p>
+        <p v-else-if="!references.length" class="muted">当前没有教案或步骤引用此资源。</p>
+        <ul v-else class="reference-list">
+          <li v-for="reference in references" :key="`${reference.referenceType}:${reference.referenceId}`">
+            <strong>{{ reference.lessonPlanTitle || `${reference.referenceType} #${reference.referenceId}` }}</strong>
+            <span v-if="reference.steps.length">
+              步骤：{{ reference.steps.map((step) => `${step.sortOrder}.${step.title}`).join('、') }}
+            </span>
+            <span v-else>引用详情不可见或暂无步骤信息</span>
+          </li>
+        </ul>
+      </div>
+
       <div class="actions">
-        <button class="button" @click="openPreview">预览</button>
-        <button class="ghost" :class="{ on: detail.isFavorite }" @click="onToggleFavorite">
-          {{ detail.isFavorite ? '★ 已收藏' : '☆ 收藏' }}
+        <button v-if="detail.resourceType !== 'unknown'" class="button" @click="openPreview">预览</button>
+        <button class="ghost" :class="{ on: detail.isFavorite }" :disabled="favoritePending" @click="onToggleFavorite">
+          {{ favoritePending ? '处理中…' : detail.isFavorite ? '★ 已收藏' : '☆ 收藏' }}
+        </button>
+        <button v-if="canEdit && detail.reviewStatus !== 'archived'" class="ghost" @click="openEdit">编辑</button>
+        <button v-if="canSubmitReview" class="ghost" :disabled="submittingReview" @click="onSubmitReview">
+          {{ submittingReview ? '提交中…' : detail.reviewStatus === 'rejected' ? '重新提交审核' : '提交审核' }}
         </button>
         <template v-if="isAdmin">
-          <button class="ghost" @click="openEdit">编辑</button>
-          <button class="danger" @click="onDelete">删除</button>
+          <button v-if="detail.reviewStatus === 'pending_review'" class="ghost" @click="openReview">审核</button>
         </template>
+        <button v-if="canEdit" class="danger" @click="onDelete">删除</button>
       </div>
+      <p v-if="editBlockedReason" class="edit-reason">{{ editBlockedReason }}</p>
     </div>
     <p v-else class="muted">未找到该资源</p>
   </ManagementLayout>
 </template>
 <style scoped>
-.back { border: 0; background: none; color: #d67b59; font-size: 14px; cursor: pointer; padding: 0 0 16px; }
 .muted { color: #9a7e6e; }
 .bad { background: #ffebeb; color: #c64e4e; padding: 14px 16px; border-radius: 10px; display: flex; align-items: center; gap: 12px; }
 .retry { border: 0; background: #c64e4e; color: #fff; border-radius: 7px; padding: 6px 12px; cursor: pointer; }
@@ -181,5 +308,12 @@ onMounted(() => {
 .button:hover { background: #d67b59; }
 .ghost { border: 1px solid #efd9c8; background: #fffdf9; color: #876b5d; border-radius: 12px; padding: 10px 16px; cursor: pointer; }
 .ghost.on { color: #b77d20; border-color: #f0c168; }
+.ghost:disabled { cursor: wait; opacity: 0.65; }
+.edit-reason { margin: 12px 0 0; color: #9a7e6e; font-size: 13px; }
+.reference-error { color: #c64e4e; }
+.link-button { border: 0; background: transparent; color: #b9684d; cursor: pointer; text-decoration: underline; }
+.reference-list { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.reference-list li { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid #f0ddce; border-radius: 10px; }
+.reference-list li span { color: #9a7e6e; font-size: 13px; }
 .danger { border: 1px solid #ffd7d7; background: #fff; color: #c64e4e; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
 </style>

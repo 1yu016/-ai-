@@ -768,7 +768,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(201);
   });
 
-  it('rejects empty plans, foreign classes, wrong bindings, and draft resources', async () => {
+  it('rejects empty plans, foreign classes, wrong bindings, and draft resource binding', async () => {
     const empty = await createPlan(false);
     await request(app.getHttpServer())
       .post('/classroom-runs/start')
@@ -786,11 +786,22 @@ describe('Task four classroom run state machine (e2e)', () => {
       .set(auth())
       .send(startBody(valid.id, { classroomId: classroom2Id }))
       .expect(409);
-    const draft = await createPlan(true, draftResourceId);
+    const draft = await createPlan(false);
     await request(app.getHttpServer())
-      .post('/classroom-runs/start')
+      .put(`/lesson-plans/${draft.id}/steps`)
       .set(auth())
-      .send(startBody(draft.id))
+      .send({
+        version: draft.version,
+        steps: [
+          {
+            title: '未审核资源',
+            stepType: 'resource',
+            content: '未审核资源不能绑定到正式教案',
+            durationSeconds: 60,
+            resourceId: draftResourceId,
+          },
+        ],
+      })
       .expect(409);
   });
 

@@ -38,6 +38,8 @@ const refreshClient = axios.create({
 
 // 单飞(single-flight)：并发多个 401 时共享同一次刷新请求。
 let refreshPromise: Promise<boolean> | null = null
+let authRedirectPromise: Promise<unknown> | null = null
+let forbiddenRedirectPromise: Promise<unknown> | null = null
 
 function refreshAccessToken(): Promise<boolean> {
   if (!refreshPromise) {
@@ -70,7 +72,42 @@ function refreshAccessToken(): Promise<boolean> {
 }
 
 function isAuthEndpoint(path: string): boolean {
-  return path === '/auth/login' || path === '/auth/refresh'
+  return path === '/auth/login' ||
+    path === '/auth/admin/login' ||
+    path === '/auth/refresh' ||
+    path === '/auth/logout'
+}
+
+function protectedRedirectTarget(): string | null {
+  const current = router.currentRoute.value
+  if (current.name !== 'login' && current.meta.requiresAuth) return current.fullPath
+  return null
+}
+
+function redirectExpiredSession(): void {
+  const target = protectedRedirectTarget()
+  useUserStore(pinia).logout()
+  if (router.currentRoute.value.name === 'login' || authRedirectPromise) return
+
+  authRedirectPromise = router
+    .replace({
+      name: 'login',
+      query: target ? { redirect: target, reason: 'expired' } : { reason: 'expired' },
+    })
+    .finally(() => {
+      authRedirectPromise = null
+    })
+  ElMessage.error('登录状态已失效，请重新登录')
+}
+
+function redirectForbidden(): void {
+  const current = router.currentRoute.value
+  if (current.name === 'forbidden' || current.name === 'login' || forbiddenRedirectPromise) return
+  forbiddenRedirectPromise = router
+    .replace({ name: 'forbidden', query: { from: current.fullPath } })
+    .finally(() => {
+      forbiddenRedirectPromise = null
+    })
 }
 
 http.interceptors.request.use((config) => {
@@ -112,9 +149,10 @@ http.interceptors.response.use(
     }
 
     if (error.response?.status === 401 && !isAuthEndpoint(path)) {
-      useUserStore(pinia).logout()
-      if (router.currentRoute.value.path !== '/chat') void router.push('/')
-      ElMessage.error('登录状态已失效，请重新登录')
+      redirectExpiredSession()
+    }
+    if (error.response?.status === 403 && !isAuthEndpoint(path)) {
+      redirectForbidden()
     }
     return Promise.reject(error)
   },
@@ -135,4 +173,8 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
     }
   }
   return fallback
+}
+
+export function apiErrorStatus(error: unknown): number | null {
+  return axios.isAxiosError(error) ? (error.response?.status ?? null) : null
 }

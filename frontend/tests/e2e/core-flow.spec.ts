@@ -9,7 +9,7 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.getByLabel('账号').fill('e2e_teacher')
     await page.getByLabel('密码').fill('E2eTeacher123!')
     await page.getByRole('button', { name: '登录', exact: true }).click()
-    await expect(page).toHaveURL(/\/chat$/)
+    await expect(page).toHaveURL(/\/my-classes$/)
 
     const token = await page.evaluate(() => localStorage.getItem('kindergarten-ai-access-token'))
     expect(token).toBeTruthy()
@@ -170,10 +170,12 @@ test.describe.serial('正式冻结核心流程', () => {
     await expect(page.getByText('备课中心')).toHaveCount(0)
     await page.locator('textarea[aria-label="输入聊天消息"]').fill('你好')
     await page.getByRole('button', { name: '发送' }).click()
-    await expect(page.getByText('你好呀，我们一起聊聊吧！')).toBeVisible()
+    await expect(page.locator('.avatar-caption p')).toHaveText(
+      '你好呀，我们一起聊聊吧！',
+    )
   })
 
-  test('管理员审核并停用异常资源', async ({ page, request }) => {
+  test('管理员审核并归档异常资源', async ({ page, request }) => {
     const teacherLogin = await request.post('/auth/login', {
       data: { account: 'e2e_teacher', password: 'E2eTeacher123!' },
     })
@@ -211,7 +213,7 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.getByLabel('账号').fill('e2e_admin')
     await page.getByLabel('密码').fill('E2eAdmin123!')
     await page.getByRole('button', { name: '登录', exact: true }).click()
-    await expect(page).toHaveURL(/\/chat$/)
+    await expect(page).toHaveURL(/\/admin$/)
 
     await page.goto(`/resources/${resource.id}/review`)
     await expect(page.getByRole('heading', { name: '资源审核' })).toBeVisible()
@@ -219,9 +221,9 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.getByRole('button', { name: '通过', exact: true }).click()
     await expect(page.locator('.info dd').filter({ hasText: '已通过' })).toBeVisible()
 
-    await page.getByRole('button', { name: '停用异常资源' }).click()
-    await page.getByRole('button', { name: '确认停用' }).click()
-    await expect(page.locator('.info dd').filter({ hasText: '已停用' })).toBeVisible()
+    await page.getByRole('button', { name: '归档异常资源' }).click()
+    await page.getByRole('button', { name: '确认归档' }).click()
+    await expect(page.locator('.info dd').filter({ hasText: '已归档' })).toBeVisible()
   })
 
   test('普通教师访问管理员页面被拒绝', async ({ page }) => {
@@ -229,10 +231,10 @@ test.describe.serial('正式冻结核心流程', () => {
     await page.getByLabel('账号').fill('e2e_teacher')
     await page.getByLabel('密码').fill('E2eTeacher123!')
     await page.getByRole('button', { name: '登录', exact: true }).click()
-    await expect(page).toHaveURL(/\/chat$/)
+    await expect(page).toHaveURL(/\/my-classes$/)
 
     await page.goto('/admin')
-    await expect(page).toHaveURL(/\/forbidden$/)
+    await expect(page).toHaveURL(/\/forbidden(?:\?.*)?$/)
     await expect(page.getByRole('heading', { name: '暂无访问权限' })).toBeVisible()
   })
 })

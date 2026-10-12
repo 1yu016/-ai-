@@ -15,6 +15,7 @@ export enum ResourceType {
   Pdf = 'pdf',
   Ppt = 'ppt',
   PictureBook = 'picture_book',
+  NurseryRhyme = 'nursery_rhyme',
   Animation = 'animation',
   QuestionBank = 'question_bank',
   Experiment = 'experiment',

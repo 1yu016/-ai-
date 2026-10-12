@@ -11,9 +11,14 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import type { AuthenticatedRequest } from '../auth/auth.types';
 import {
@@ -22,6 +27,7 @@ import {
   BindTeacherDto,
   ClassQueryDto,
   ClassRewardQueryDto,
+  ConfirmStudentImportDto,
   ConsentQueryDto,
   ConsumeTicketDto,
   CreateClassDto,
@@ -45,11 +51,16 @@ import {
   UpsertConsentDto,
 } from './dto/platform.dto';
 import { PlatformService } from './platform.service';
+import { studentImportMulterOptions } from './student-import-file';
+import { StudentImportService } from './student-import.service';
 
 @Controller()
 @UseGuards(AuthGuard)
 export class PlatformController {
-  constructor(private readonly platform: PlatformService) {}
+  constructor(
+    private readonly platform: PlatformService,
+    private readonly studentImport: StudentImportService,
+  ) {}
 
   @Post('classes') createClass(
     @Req() req: AuthenticatedRequest,
@@ -75,6 +86,14 @@ export class PlatformController {
     @Body() dto: UpdateClassDto,
   ) {
     return this.platform.updateClass(req.user, id, dto);
+  }
+
+  @Get('classes/:classId/classroom-runs') listClassRuns(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+    @Query() query: PageQueryDto,
+  ) {
+    return this.platform.listClassRuns(req.user, classId, query);
   }
 
   @Post('classes/:classId/teachers') bindTeacher(
@@ -152,12 +171,48 @@ export class PlatformController {
   ) {
     return this.platform.listStudents(req.user, query);
   }
-  @Patch('students/:id') updateStudent(
+  @Get('classes/:classId/students/import/template')
+  async studentImportTemplate(
     @Req() req: AuthenticatedRequest,
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateStudentDto,
+    @Param('classId', ParseIntPipe) classId: number,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.studentImport.template(req.user, classId).then((file) => {
+      response.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      response.attachment(`student-import-${classId}.xlsx`);
+      response.end(file);
+    });
+  }
+  @Post('classes/:classId/students/import/preview')
+  @UseInterceptors(FileInterceptor('file', studentImportMulterOptions))
+  studentImportPreview(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+    @UploadedFile() file?: Express.Multer.File,
   ) {
-    return this.platform.updateStudent(req.user, id, dto);
+    return this.studentImport.preview(req.user, classId, file);
+  }
+  @Post('classes/:classId/students/import/:sessionId/confirm')
+  studentImportConfirm(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+    @Param('sessionId') sessionId: string,
+    @Body() dto: ConfirmStudentImportDto,
+  ) {
+    return this.studentImport.confirm(req.user, classId, sessionId, dto.requestId);
+  }
+  @Get('classes/:classId/students/import/:sessionId/errors')
+  async studentImportErrors(
+    @Req() req: AuthenticatedRequest,
+    @Param('classId', ParseIntPipe) classId: number,
+    @Param('sessionId') sessionId: string,
+    @Res() response: Response,
+  ): Promise<void> {
+    return this.studentImport.errorsCsv(req.user, classId, sessionId).then((file) => {
+      response.type('text/csv; charset=utf-8');
+      response.attachment(`student-import-errors-${classId}.csv`);
+      response.end(file);
+    });
   }
   @Post('students/sync') syncStudents(
     @Req() req: AuthenticatedRequest,
@@ -165,7 +220,19 @@ export class PlatformController {
   ) {
     return this.platform.syncStudents(req.user, dto);
   }
-
+  @Get('students/:id') studentDetail(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.platform.studentDetail(req.user, id);
+  }
+  @Patch('students/:id') updateStudent(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateStudentDto,
+  ) {
+    return this.platform.updateStudent(req.user, id, dto);
+  }
   @Post('classrooms') createClassroom(
     @Req() req: AuthenticatedRequest,
     @Body() dto: CreateClassroomDto,
@@ -174,6 +241,12 @@ export class PlatformController {
   }
   @Get('classrooms') listClassrooms(@Req() req: AuthenticatedRequest) {
     return this.platform.listClassrooms(req.user);
+  }
+  @Get('classrooms/:id') classroomDetail(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.platform.classroomDetail(req.user, id);
   }
   @Patch('classrooms/:id') updateClassroom(
     @Req() req: AuthenticatedRequest,
@@ -191,6 +264,12 @@ export class PlatformController {
   }
   @Get('devices') listDevices(@Req() req: AuthenticatedRequest) {
     return this.platform.listDevices(req.user);
+  }
+  @Get('devices/:id') deviceDetail(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.platform.deviceDetail(req.user, id);
   }
   @Patch('devices/:id') updateDevice(
     @Req() req: AuthenticatedRequest,

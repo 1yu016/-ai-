@@ -8,6 +8,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -56,6 +57,11 @@ export class DeviceCodeParamDto {
 }
 
 export class ClassQueryDto extends PageQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  keyword?: string;
+
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
 }
 
@@ -82,6 +88,12 @@ export class BindTeacherDto {
 
 export class StudentQueryDto extends PageQueryDto {
   @Type(() => Number) @IsInt() @Min(1) classId: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  keyword?: string;
+
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
 }
 
@@ -118,6 +130,10 @@ export class SyncStudentsDto {
   @ValidateNested({ each: true })
   @Type(() => SyncStudentItemDto)
   students: SyncStudentItemDto[];
+}
+
+export class ConfirmStudentImportDto {
+  @IsUUID() requestId: string;
 }
 
 export class CreateClassroomDto {

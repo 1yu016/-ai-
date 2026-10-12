@@ -16,10 +16,10 @@ const user = useUserStore()
 
 const STATUS_LABELS: Record<ResourceReviewStatus, string> = {
   draft: '草稿',
-  pending: '待审核',
+  pending_review: '待审核',
   approved: '已通过',
   rejected: '已驳回',
-  disabled: '已停用',
+  archived: '已归档',
 }
 
 const rejectComment = ref('')
@@ -28,11 +28,7 @@ const pendingList = ref<ResourceResponse[]>([])
 const pendingLoading = ref(false)
 const resourceId = computed(() => Number(props.id))
 
-const canSubmitReview = computed(() => {
-  const status = store.detail?.reviewStatus
-  return status === 'draft' || status === 'rejected'
-})
-const canReview = computed(() => store.detail?.reviewStatus === 'pending')
+const canReview = computed(() => store.detail?.reviewStatus === 'pending_review')
 
 async function loadDetail(): Promise<void> {
   if (!user.isAdmin) return
@@ -56,7 +52,7 @@ watch(resourceId, () => {
 async function loadPending(): Promise<void> {
   pendingLoading.value = true
   try {
-    const { data } = await resourceApi.list({ reviewStatus: 'pending', pageSize: 20 })
+    const { data } = await resourceApi.list({ reviewStatus: 'pending_review', pageSize: 20 })
     pendingList.value = data.items
   } catch {
     pendingList.value = []
@@ -65,25 +61,13 @@ async function loadPending(): Promise<void> {
   }
 }
 
-async function submitForReview(): Promise<void> {
-  acting.value = true
-  try {
-    await resourceApi.submitReview(resourceId.value)
-    ElMessage.success('已提交审核')
-    await store.getById(resourceId.value)
-  } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '提交审核失败'))
-  } finally {
-    acting.value = false
-  }
-}
-
 async function approve(): Promise<void> {
+  if (acting.value) return
   acting.value = true
   try {
     await resourceApi.review(resourceId.value, { status: 'approved' })
     ElMessage.success('已通过审核')
-    await store.getById(resourceId.value)
+    await Promise.all([store.getById(resourceId.value), loadPending()])
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '审核操作失败'))
   } finally {
@@ -96,11 +80,12 @@ async function reject(): Promise<void> {
     ElMessage.warning('请填写驳回意见')
     return
   }
+  if (acting.value) return
   acting.value = true
   try {
     await resourceApi.review(resourceId.value, { status: 'rejected', comment: rejectComment.value.trim() })
     ElMessage.success('已驳回')
-    await store.getById(resourceId.value)
+    await Promise.all([store.getById(resourceId.value), loadPending()])
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '审核操作失败'))
   } finally {
@@ -111,9 +96,9 @@ async function reject(): Promise<void> {
 async function disableResource(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '停用后该资源不能进入正式课堂，确定继续吗？',
-      '停用异常资源',
-      { confirmButtonText: '确认停用', cancelButtonText: '取消', type: 'warning' },
+      '归档后该资源不能进入正式课堂，确定继续吗？',
+      '归档异常资源',
+      { confirmButtonText: '确认归档', cancelButtonText: '取消', type: 'warning' },
     )
   } catch {
     return
@@ -121,10 +106,10 @@ async function disableResource(): Promise<void> {
   acting.value = true
   try {
     await resourceApi.review(resourceId.value, {
-      status: 'disabled',
-      comment: rejectComment.value.trim() || '管理员停用异常资源',
+      status: 'archived',
+      comment: rejectComment.value.trim() || '管理员归档异常资源',
     })
-    ElMessage.success('资源已停用，正式课堂将无法使用')
+    ElMessage.success('资源已归档，正式课堂将无法使用')
     await Promise.all([store.getById(resourceId.value), loadPending()])
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '资源停用失败'))
@@ -167,22 +152,19 @@ function openReview(id: number): void {
           </dl>
 
           <div class="review-actions">
-            <ElButton v-if="canSubmitReview" type="primary" :loading="acting" @click="submitForReview">
-              提交审核
-            </ElButton>
             <template v-if="canReview">
               <ElButton type="success" :loading="acting" @click="approve">通过</ElButton>
               <ElButton type="danger" :loading="acting" @click="reject">驳回</ElButton>
             </template>
             <ElButton
-              v-if="store.detail.reviewStatus !== 'disabled'"
+              v-if="store.detail.reviewStatus !== 'archived'"
               type="danger"
               plain
               :loading="acting"
               @click="disableResource"
-            >停用异常资源</ElButton>
+            >归档异常资源</ElButton>
             <span v-if="store.detail.reviewStatus === 'approved'" class="ok-badge">已通过</span>
-            <span v-if="store.detail.reviewStatus === 'pending'" class="warn-badge">等待审核</span>
+            <span v-if="store.detail.reviewStatus === 'pending_review'" class="warn-badge">等待审核</span>
           </div>
 
           <div v-if="canReview" class="reject-box">

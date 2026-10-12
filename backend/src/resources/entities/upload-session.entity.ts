@@ -36,9 +36,16 @@ export class UploadSession {
   declaredMime: string;
   @Column({ name: 'resource_type', type: 'simple-enum', enum: ResourceType })
   resourceType: ResourceType;
+  @Column({ type: 'text', default: '[]' }) aliases: string;
+  @Column({ type: 'text', nullable: true }) description: string | null;
   @Column({ type: 'varchar', length: 100 }) category: string;
+  @Column({ name: 'category_id', type: 'integer', nullable: true })
+  categoryId: number | null;
   @Column({ name: 'age_group', type: 'simple-enum', enum: ResourceAgeGroup })
   ageGroup: ResourceAgeGroup;
+  @Column({ type: 'varchar', length: 100, nullable: true }) domain: string | null;
+  @Column({ type: 'text', default: '[]' }) tags: string;
+  @Column({ type: 'real', nullable: true }) duration: number | null;
   @Column({ name: 'total_size', type: 'integer' }) totalSize: number;
   @Column({ name: 'chunk_size', type: 'integer' }) chunkSize: number;
   @Column({ name: 'total_chunks', type: 'integer' }) totalChunks: number;

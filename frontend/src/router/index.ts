@@ -1,10 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { pinia } from '@/stores'
 import { useUserStore } from '@/stores/user'
+import { enhanceRoutes } from '@/router/routeDefinitions'
+import { resolveAuthNavigation } from '@/router/authNavigation'
 
-const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
-  routes: [
+const routes = enhanceRoutes([
     {
       path: '/',
       redirect: '/chat',
@@ -28,8 +28,11 @@ const router = createRouter({
     { path: '/classes/:classId/students', name: 'students', meta: { requiresAuth: true }, component: () => import('../views/StudentsView.vue') },
     { path: '/classes/:classId/rewards', name: 'class-rewards', meta: { requiresAuth: true }, component: () => import('../views/ClassRewardHistoryView.vue') },
     { path: '/classes/:classId/questions', name: 'class-questions', meta: { requiresAuth: true }, component: () => import('../views/ClassQuestionHistoryView.vue') },
-    { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/StudentProfileView.vue') },
-    { path: '/devices', name: 'devices', meta: { requiresAuth: true, adminOnly: true }, component: () => import('../views/DevicesView.vue') },
+    { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true }, component: () => import('../views/StudentProfileView.vue') },
+    { path: '/classrooms', name: 'classrooms', meta: { requiresAuth: true }, component: () => import('../views/ClassroomsView.vue') },
+    { path: '/classrooms/:classroomId', name: 'classroom-detail', meta: { requiresAuth: true }, component: () => import('../views/ClassroomDetailView.vue') },
+    { path: '/devices', name: 'devices', meta: { requiresAuth: true }, component: () => import('../views/DevicesView.vue') },
+    { path: '/devices/:deviceId', name: 'device-detail', meta: { requiresAuth: true }, component: () => import('../views/DeviceDetailView.vue') },
     { path: '/avatars', name: 'avatars', meta: { requiresAuth: true }, component: () => import('../views/AvatarLibraryView.vue') },
     { path: '/classroom/scan', name: 'classroom-scan', meta: { requiresAuth: true }, component: () => import('../views/ClassroomScanView.vue') },
     { path: '/classroom/join', name: 'classroom-join', meta: { requiresAuth: true }, component: () => import('../views/ClassroomJoinView.vue') },
@@ -87,7 +90,11 @@ const router = createRouter({
     { path: '/resources/:id/edit', name: 'resource-edit', meta: { requiresAuth: true }, props: true, component: () => import('../views/resources/ResourceEditView.vue') },
     { path: '/resources/:id/review', name: 'resource-review', meta: { requiresAuth: true, adminOnly: true }, props: true, component: () => import('../views/resources/ResourceReviewView.vue') },
     { path: '/resources/:id', name: 'resource-detail', meta: { requiresAuth: true }, props: true, component: () => import('../views/resources/ResourceDetailView.vue') },
-  ],
+  ])
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes,
 })
 
 const CHUNK_RELOAD_STORAGE_KEY = 'kindergarten-ai:chunk-reload-target'
@@ -109,24 +116,18 @@ router.afterEach((to) => {
   if (sessionStorage.getItem(CHUNK_RELOAD_STORAGE_KEY) === to.fullPath) {
     sessionStorage.removeItem(CHUNK_RELOAD_STORAGE_KEY)
   }
+  document.title = to.meta.title ? `${to.meta.title} · 幼儿园数字人课堂` : '幼儿园数字人课堂'
 })
 
 router.beforeEach((to) => {
   const userStore = useUserStore(pinia)
   userStore.initialize()
-  if (to.name === 'login') {
-    if (userStore.isLogin) {
-      return { name: 'chat' }
-    }
-    return true
-  }
-  if (to.meta.requiresAuth && !userStore.isLogin) {
-    return { name: 'login', query: { redirect: to.fullPath } }
-  }
-  if (to.meta.adminOnly && !userStore.isAdmin) {
-    return { name: 'forbidden' }
-  }
-  return true
+  return resolveAuthNavigation(to, {
+    isLogin: userStore.isLogin,
+    isAdmin: userStore.isAdmin,
+    teacherInfo: userStore.teacherInfo,
+  })
 })
 
+export { routes }
 export default router

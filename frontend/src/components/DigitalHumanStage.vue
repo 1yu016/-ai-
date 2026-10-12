@@ -3,11 +3,13 @@ import { computed, defineAsyncComponent, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import { useLessonRunStore } from '@/stores/lessonRun'
+import { useUserStore } from '@/stores/user'
 
 // 仅在 WebGL 可用、且模型加载未失败时挂载 3D 组件；three 走独立 chunk
 const ThreeAvatarStage = defineAsyncComponent(() => import('./avatar/ThreeAvatarStage.vue'))
 
 const store = useDigitalHumanStore()
+const userStore = useUserStore()
 const { action, visible, compact, fallback, roleName, roleId, roles, error, webglSupported, modelState } = storeToRefs(store)
 
 const actionText: Record<string, string> = { idle: '准备好一起学习啦', listen: '我在认真听哦', think: '让我想一想', talk: '我来和你说一说', happy: '太棒啦', question: '你发现了吗', encourage: '再试一次，你可以的', wave: '我们开始吧', goodbye: '下次再见' }
@@ -37,7 +39,9 @@ function detectWebGL(): boolean {
 }
 store.setWebglSupported(detectWebGL())
 onMounted(async () => {
-  void store.loadRoles()
+  // 游客聊天使用内置安全角色，不请求受保护的角色库接口，避免 401
+  // 把公开聊天错误地重定向到登录页。
+  if (userStore.isLogin) void store.loadRoles()
   // 课堂运行时：resolve 当前课堂应使用的角色与模型，失败时保持内置占位形象，不阻塞课堂。
   const run = useLessonRunStore().run
   if (run) await store.loadRuntime({ lessonPlanId: run.lessonPlanId, classroomRunId: run.id, deviceId: run.deviceId })

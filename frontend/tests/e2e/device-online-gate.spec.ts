@@ -13,14 +13,14 @@ test.describe.serial('P0 Device Online Final Gate', () => {
   }) => {
     // ---------- 种子：教师/管理员登录 ----------
     const loginTeacher = await request.post('/auth/login', {
-      data: { account: 'gate_teacher', password: 'GateTeacher123!' },
+      data: { account: 'e2e_teacher', password: 'E2eTeacher123!' },
     })
     expect(loginTeacher.ok()).toBeTruthy()
     const teacherToken = ((await loginTeacher.json()) as { access_token: string }).access_token
     const teacherAuth = { Authorization: `Bearer ${teacherToken}` }
 
     const loginAdmin = await request.post('/auth/admin/login', {
-      data: { account: 'gate_admin', password: 'GateAdmin123!' },
+      data: { account: 'e2e_admin', password: 'E2eAdmin123!' },
     })
     expect(loginAdmin.ok()).toBeTruthy()
     const adminToken = ((await loginAdmin.json()) as { access_token: string }).access_token
@@ -106,10 +106,10 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     const pageB = await context.newPage() // 教师 Preflight
     // 两页共享同一 context（localStorage/凭证），仅需在 pageA 登录一次，pageB 继承 token。
     await pageA.goto('/login')
-    await pageA.getByLabel('账号').fill('gate_teacher')
-    await pageA.getByLabel('密码').fill('GateTeacher123!')
+    await pageA.getByLabel('账号').fill('e2e_teacher')
+    await pageA.getByLabel('密码').fill('E2eTeacher123!')
     await pageA.getByRole('button', { name: '登录', exact: true }).click()
-    await expect(pageA).toHaveURL(/\/chat$/)
+    await expect(pageA).toHaveURL(/\/my-classes$/)
     // pageB 同样准备好教师会话（直接刷新建立 SPA 状态）。
     await pageB.goto('/chat')
     await expect(pageB.getByText('备课中心')).toBeVisible()

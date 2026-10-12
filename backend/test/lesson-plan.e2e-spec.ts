@@ -46,6 +46,7 @@ describe('Lesson plans and runs (e2e)', () => {
   let versions: Repository<LessonPlanVersion>;
   let steps: Repository<LessonStep>;
   let drafts: Repository<LessonAiDraft>;
+  let resources: Repository<TeachingResource>;
 
   beforeAll(async () => {
     const fixture = await Test.createTestingModule({
@@ -114,7 +115,7 @@ describe('Lesson plans and runs (e2e)', () => {
     token = login.body.access_token as string;
     teacherId = login.body.teacherId as number;
     otherToken = otherLogin.body.access_token as string;
-    const resources = app.get<Repository<TeachingResource>>(
+    resources = app.get<Repository<TeachingResource>>(
       getRepositoryToken(TeachingResource),
     );
     const saved = await resources.save(
@@ -132,7 +133,7 @@ describe('Lesson plans and runs (e2e)', () => {
         mimeType: 'image/jpeg',
         fileSize: 100,
         duration: null,
-        reviewStatus: ResourceReviewStatus.Pending,
+        reviewStatus: ResourceReviewStatus.Approved,
         ownerType: OwnerType.Teacher,
         ownerId: String(teacherId),
         type: null,
@@ -301,7 +302,88 @@ describe('Lesson plans and runs (e2e)', () => {
           },
         ],
       })
-      .expect(404);
+      .expect(403);
+  });
+
+  it('only binds approved resources and reports the referencing lesson steps', async () => {
+    const pending = await resources.save(
+      resources.create({
+        title: '尚未审核的图片',
+        aliases: '[]',
+        description: null,
+        resourceType: ResourceType.Image,
+        category: '图片卡片',
+        ageGroup: ResourceAgeGroup.Middle,
+        tags: '[]',
+        fileUrl: '/uploads/resources/pending.jpg',
+        coverUrl: null,
+        fileName: 'pending.jpg',
+        mimeType: 'image/jpeg',
+        fileSize: 100,
+        duration: null,
+        reviewStatus: ResourceReviewStatus.Pending,
+        ownerType: OwnerType.Teacher,
+        ownerId: String(teacherId),
+        type: null,
+        url: null,
+      }),
+    );
+    const created = await request(app.getHttpServer())
+      .post('/lesson-plans')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        title: '资源审核闭环教案',
+        theme: '资源审核',
+        ageGroup: '4-5',
+        objectives: '验证正式资源绑定',
+        estimatedMinutes: 20,
+      })
+      .expect(201);
+    const stepPayload = (id: number) => ({
+      version: created.body.version,
+      steps: [
+        {
+          title: '观察图片',
+          stepType: 'resource',
+          instruction: '观察并描述图片。',
+          resourceId: id,
+          durationSeconds: 60,
+        },
+      ],
+    });
+    await request(app.getHttpServer())
+      .put(`/lesson-plans/${created.body.id}/steps`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(stepPayload(pending.id))
+      .expect(409)
+      .expect(({ body }) =>
+        expect(body.message).toContain('资源尚未审核通过'),
+      );
+    await request(app.getHttpServer())
+      .put(`/lesson-plans/${created.body.id}/steps`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(stepPayload(resourceId))
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`/resources/${resourceId}/references`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              lessonPlanId: created.body.id,
+              lessonPlanTitle: '资源审核闭环教案',
+              steps: [
+                expect.objectContaining({
+                  sortOrder: 1,
+                  title: '观察图片',
+                }),
+              ],
+            }),
+          ]),
+        );
+      });
   });
 
   it('keeps AI output as an unconfirmed draft and creates a plan only after teacher confirmation', async () => {
@@ -391,7 +473,7 @@ describe('Lesson plans and runs (e2e)', () => {
         teachingObjectives: '观察颜色',
         resourceIds: [resourceId],
       })
-      .expect(404);
+      .expect(403);
     expect(generate).not.toHaveBeenCalled();
     generate.mockRestore();
   });

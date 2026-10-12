@@ -49,6 +49,7 @@ import { ClassroomMobileModule } from './classroom-mobile/classroom-mobile.modul
 import { DeviceSessionModule } from './device-session/device-session.module';
 import { ClassroomMobileRealtime2026100700023 } from './migrations/202610070023-ClassroomMobileRealtime';
 import { DeviceSession2026100900024 } from './migrations/202610090024-DeviceSession';
+import { ResourceUploadSessionMetadata2026101100025 } from './migrations/202610110025-ResourceUploadSessionMetadata';
 
 @Module({
   imports: [
@@ -117,6 +118,7 @@ import { DeviceSession2026100900024 } from './migrations/202610090024-DeviceSess
             StudentArtworkRecords2026100700022,
             ClassroomMobileRealtime2026100700023,
             DeviceSession2026100900024,
+            ResourceUploadSessionMetadata2026101100025,
           ],
           migrationsRun:
             configService.get<string>('DB_MIGRATIONS_RUN') !== 'false',

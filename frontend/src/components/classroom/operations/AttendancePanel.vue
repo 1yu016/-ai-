@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import type { Student } from '@/api/platform'
 import type { Attendance } from '@/services/classroomCheckpoint'
+import { studentDisplayName } from '@/utils/student'
 
 export type VoiceAttendanceCandidate = {
   studentId: number
@@ -124,7 +125,7 @@ function confirmVoice() {
         <input type="checkbox" :checked="selectedSet.has(student.id)" aria-label="选择幼儿" @change="toggleStudent(student.id)">
         <span class="avatar">🧒</span>
         <div>
-          <strong>{{ student.name }}</strong>
+          <strong>{{ studentDisplayName(student) }}</strong>
           <span v-if="student.nickname && student.nickname !== student.name" class="nickname">（{{ student.nickname }}）</span>
           <small>{{ student.studentNo }}</small>
         </div>

@@ -42,6 +42,20 @@ describe('管理员后台', () => {
     expect(wrapper.text()).not.toContain('幼儿姓名')
   })
 
+  it('统计接口尚未部署时明确显示暂无统计接口且不伪造数字', async () => {
+    vi.spyOn(platformApi, 'adminDashboard').mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 404, data: { message: 'Not Found' } },
+    })
+    const wrapper = mount(AdminDashboardView, {
+      global: { stubs: { ManagementLayout: managementStub } },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('暂无统计接口')
+    expect(wrapper.find('.cards').exists()).toBe(false)
+  })
+
   it('展示只读脱敏审计日志，并可切换AI调用日志', async () => {
     vi.spyOn(platformApi, 'auditLogs').mockResolvedValue({
       data: {

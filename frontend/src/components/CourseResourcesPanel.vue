@@ -28,7 +28,7 @@ const AGE_LABELS: Record<ResourceAgeGroup, string> = {
 }
 const TYPE_LABELS: Record<CourseResourceMediaType, string> = {
   image: '图片', audio: '音频', video: '视频', pdf: 'PDF', ppt: 'PPT课件',
-  picture_book: '绘本', animation: '动画', question_bank: '题库',
+  picture_book: '绘本', nursery_rhyme: '儿歌', animation: '动画', question_bank: '题库',
   experiment: '实验素材', model_3d: '3D模型', document: '文档/课件',
 }
 const MIME_LIMITS: Record<string, number> = {
@@ -299,7 +299,7 @@ async function enterClassroomMode() {
 function mediaIcon(resource: CourseResource): string {
   return {
     image: '🖼️', audio: '🎵', video: '🎬', pdf: '📕', ppt: '📊',
-    picture_book: '📚', animation: '🎞️', question_bank: '📝',
+    picture_book: '📚', nursery_rhyme: '🎵', animation: '🎞️', question_bank: '📝',
     experiment: '🧪', model_3d: '🧊', document: '📄',
   }[resource.mediaType]
 }

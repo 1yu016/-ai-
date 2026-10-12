@@ -20,7 +20,7 @@ export const COURSE_RESOURCE_CATEGORIES = [
 export const RESOURCE_AGE_GROUPS = ['small', 'middle', 'large', 'all'] as const
 export const RESOURCE_TYPES = [
   'image', 'audio', 'video', 'pdf', 'ppt', 'picture_book', 'animation',
-  'question_bank', 'experiment', 'model_3d', 'document',
+  'nursery_rhyme', 'question_bank', 'experiment', 'model_3d', 'document',
 ] as const
 
 export type CourseResourceCategory = (typeof COURSE_RESOURCE_CATEGORIES)[number]
@@ -56,6 +56,7 @@ export type ResourceFilters = {
   resourceType?: CourseResourceMediaType
   ageGroup?: ResourceAgeGroup
   keyword?: string
+  reviewStatus?: 'approved'
 }
 
 export type ResourceForm = {
@@ -156,7 +157,7 @@ export function normalizeServerResource(value: ServerResource): CourseResource |
     category: value.category,
     mediaType: value.resourceType,
     playerMediaType:
-      value.resourceType === 'audio'
+      value.resourceType === 'audio' || value.resourceType === 'nursery_rhyme'
         ? 'audio'
         : value.resourceType === 'video' || value.resourceType === 'animation'
           ? 'video'

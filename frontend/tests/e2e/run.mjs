@@ -114,11 +114,15 @@ try {
     waitFor(`http://127.0.0.1:${frontendPort}`, frontendProcess),
   ])
   const playwrightCli = resolve(projectRoot, 'node_modules', '@playwright', 'test', 'cli.js')
-  const result = spawnSync(process.execPath, [playwrightCli, 'test'], {
+  const result = spawnSync(
+    process.execPath,
+    [playwrightCli, 'test', ...process.argv.slice(2)],
+    {
     cwd: projectRoot,
     env: testEnv,
     stdio: 'inherit',
-  })
+    },
+  )
   status = result.status ?? 1
   if (result.error) throw result.error
 } finally {

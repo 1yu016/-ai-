@@ -432,7 +432,7 @@ export class LessonPlanService {
     dto: AiLessonPlanDraftRequestDto,
   ) {
     await Promise.all(
-      dto.resourceIds.map((id) => this.resources.getOne(actor, id)),
+      dto.resourceIds.map((id) => this.resources.getUsable(actor, id)),
     );
     try {
       const generated = await this.lessonAi.generate(actor, dto);
@@ -506,7 +506,7 @@ export class LessonPlanService {
       ]),
     );
     await Promise.all(
-      resourceIds.map((resourceId) => this.resources.getOne(actor, resourceId)),
+      resourceIds.map((resourceId) => this.resources.getUsable(actor, resourceId)),
     );
     const lessonPlanId = await this.dataSource.transaction(async (manager) => {
       const draftRepo = manager.getRepository(LessonAiDraft);
@@ -599,7 +599,7 @@ export class LessonPlanService {
     const snapshots: LessonStepSnapshot[] = [];
     for (const step of plan.steps) {
       const resource = step.resourceId
-        ? await this.resources.getOne(actor, step.resourceId)
+        ? await this.resources.getUsable(actor, step.resourceId)
         : null;
       snapshots.push({
         id: step.id,
@@ -750,7 +750,7 @@ export class LessonPlanService {
           .filter((id): id is number => id != null),
       ),
     );
-    await Promise.all(ids.map((id) => this.resources.getOne(actor, id)));
+    await Promise.all(ids.map((id) => this.resources.getUsable(actor, id)));
   }
 
   private async saveStepConfiguration(

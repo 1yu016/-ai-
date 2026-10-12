@@ -215,6 +215,18 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
       data: { deviceId: deviceBody.id, classroomId: classroomBody.id, classId: classBody.id },
     })
 
+    // 课堂启动要求权威设备状态在线。通过正式 device-session 签发和心跳接口
+    // 建立在线状态，避免测试绕过与真实大屏相同的安全门禁。
+    const sessionResponse = await request.post(`/devices/${deviceBody.id}/device-session`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    expect(sessionResponse.ok()).toBeTruthy()
+    const deviceSession = (await sessionResponse.json()) as { token: string }
+    const heartbeatResponse = await request.post('/device-session/heartbeat', {
+      headers: { 'x-device-session': deviceSession.token },
+    })
+    expect(heartbeatResponse.ok()).toBeTruthy()
+
     // 教师：建教案 + 步骤 → 启动课堂
     const planBody = (await teacherRequest(request, '/lesson-plans', {
       data: {

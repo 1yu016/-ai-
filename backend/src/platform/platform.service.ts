@@ -29,6 +29,7 @@ import {
   CreateStudentDto,
   CreateTeacherDto,
   CreateTicketDto,
+  PageQueryDto,
   StudentQueryDto,
   SyncStudentsDto,
   TeacherQueryDto,
@@ -56,6 +57,7 @@ import { PlatformAccessService } from './platform-access.service';
 import {
   BindingStatus,
   ConsentStatus,
+  ConsentType,
   DeviceStatus,
   DeviceType,
   RecordStatus,
@@ -120,7 +122,7 @@ export class PlatformService {
       targetType: 'class',
       targetId: saved.id,
     });
-    return saved;
+    return (await this.enrichClasses([saved]))[0];
   }
 
   async updateClass(actor: JwtTeacherPayload, id: number, dto: UpdateClassDto) {
@@ -132,11 +134,12 @@ export class PlatformService {
       targetType: 'class',
       targetId: id,
     });
-    return saved;
+    return (await this.enrichClasses([saved]))[0];
   }
 
   async classDetail(actor: JwtTeacherPayload, id: number) {
-    return this.access.requireClassAccess(actor, id);
+    const schoolClass = await this.access.requireClassAccess(actor, id);
+    return (await this.enrichClasses([schoolClass]))[0];
   }
 
   async listClasses(actor: JwtTeacherPayload, query: ClassQueryDto) {
@@ -153,12 +156,106 @@ export class PlatformService {
     }
     if (query.status)
       builder.andWhere('c.status = :status', { status: query.status });
+    const keyword = query.keyword?.trim();
+    if (keyword) {
+      builder.andWhere(
+        '(c.name LIKE :keyword OR c.grade LIKE :keyword OR c.age_range LIKE :keyword OR c.school_year LIKE :keyword)',
+        { keyword: `%${keyword}%` },
+      );
+    }
     const [items, total] = await builder
       .orderBy('c.id', 'DESC')
       .skip((query.page - 1) * query.pageSize)
       .take(query.pageSize)
       .getManyAndCount();
-    return { items, total, page: query.page, pageSize: query.pageSize };
+    return {
+      items: await this.enrichClasses(items),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
+  }
+
+  private async enrichClasses(items: SchoolClass[]) {
+    if (items.length === 0) return [];
+    const classIds = items.map((item) => item.id);
+    const [teacherRows, studentRows] = await Promise.all([
+      this.teacherClasses
+        .createQueryBuilder('tc')
+        .innerJoin(Teacher, 't', 't.id = tc.teacher_id')
+        .select('tc.class_id', 'classId')
+        .addSelect('tc.role', 'role')
+        .addSelect('t.id', 'teacherId')
+        .addSelect('t.name', 'name')
+        .where('tc.class_id IN (:...classIds)', { classIds })
+        .orderBy('tc.id', 'ASC')
+        .getRawMany<{
+          classId: number | string;
+          role: string;
+          teacherId: number | string;
+          name: string;
+        }>(),
+      this.students
+        .createQueryBuilder('student')
+        .select('student.class_id', 'classId')
+        .addSelect('COUNT(student.id)', 'studentCount')
+        .where('student.class_id IN (:...classIds)', { classIds })
+        .andWhere('student.status = :status', { status: RecordStatus.Active })
+        .groupBy('student.class_id')
+        .getRawMany<{
+          classId: number | string;
+          studentCount: number | string;
+        }>(),
+    ]);
+    const teacherMap = new Map<
+      number,
+      Array<{ teacherId: number; name: string; role: string }>
+    >();
+    for (const row of teacherRows) {
+      const classId = Number(row.classId);
+      const teachers = teacherMap.get(classId) ?? [];
+      teachers.push({
+        teacherId: Number(row.teacherId),
+        name: row.name,
+        role: row.role,
+      });
+      teacherMap.set(classId, teachers);
+    }
+    const studentCountMap = new Map(
+      studentRows.map((row) => [Number(row.classId), Number(row.studentCount)]),
+    );
+    return items.map((item) => ({
+      ...item,
+      teachers: teacherMap.get(item.id) ?? [],
+      studentCount: studentCountMap.get(item.id) ?? 0,
+    }));
+  }
+
+  async listClassRuns(
+    actor: JwtTeacherPayload,
+    classId: number,
+    query: PageQueryDto,
+  ) {
+    await this.access.requireClassAccess(actor, classId);
+    const [runs, total] = await this.runs.findAndCount({
+      where: { classId },
+      order: { createdAt: 'DESC', id: 'DESC' },
+      skip: (query.page - 1) * query.pageSize,
+      take: query.pageSize,
+    });
+    return {
+      items: runs.map((run) => ({
+        id: run.id,
+        title: run.title,
+        status: run.status,
+        startedAt: run.startedAt,
+        endedAt: run.endedAt,
+        createdAt: run.createdAt,
+      })),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
   }
 
   async bindTeacher(
@@ -455,7 +552,11 @@ export class PlatformService {
   }
 
   async createStudent(actor: JwtTeacherPayload, dto: CreateStudentDto) {
-    await this.access.requireClassAccess(actor, dto.classId);
+    const schoolClass = await this.access.requireClassAccess(actor, dto.classId);
+    const duplicate = await this.students.findOne({
+      where: { classId: dto.classId, studentNo: dto.studentNo },
+    });
+    if (duplicate) throw new ConflictException('该班级已存在相同学号');
     const saved = await this.students.save(
       this.students.create({
         ...dto,
@@ -469,7 +570,7 @@ export class PlatformService {
       targetType: 'student',
       targetId: saved.id,
     });
-    return this.studentSummary(saved);
+    return this.studentResponse(saved, schoolClass.name, []);
   }
 
   async updateStudent(
@@ -478,32 +579,59 @@ export class PlatformService {
     dto: UpdateStudentDto,
   ) {
     const entity = await this.access.requireStudentAccess(actor, id);
+    const schoolClass = await this.access.requireClassAccess(actor, entity.classId);
     const saved = await this.students.save(this.students.merge(entity, dto));
     await this.audit.write(actor, {
       action: 'student.update',
       targetType: 'student',
       targetId: id,
     });
-    return this.studentSummary(saved);
+    const consents = await this.consents.find({ where: { studentId: id } });
+    return this.studentResponse(saved, schoolClass.name, consents);
   }
 
   async listStudents(actor: JwtTeacherPayload, query: StudentQueryDto) {
-    await this.access.requireClassAccess(actor, query.classId);
-    const where = {
-      classId: query.classId,
-      ...(query.status ? { status: query.status } : {}),
-    };
-    const [items, total] = await this.students.findAndCount({
-      where,
-      order: { id: 'ASC' },
-      skip: (query.page - 1) * query.pageSize,
-      take: query.pageSize,
-    });
+    const schoolClass = await this.access.requireClassAccess(actor, query.classId);
+    const builder = this.students
+      .createQueryBuilder('student')
+      .where('student.class_id = :classId', { classId: query.classId });
+    if (query.status)
+      builder.andWhere('student.status = :status', { status: query.status });
+    const keyword = query.keyword?.trim();
+    if (keyword) {
+      builder.andWhere(
+        '(student.name LIKE :keyword OR student.student_no LIKE :keyword)',
+        { keyword: `%${keyword}%` },
+      );
+    }
+    const [items, total] = await builder
+      .orderBy('student.id', 'ASC')
+      .skip((query.page - 1) * query.pageSize)
+      .take(query.pageSize)
+      .getManyAndCount();
+    const consentMap = await this.studentConsentMap(items.map((item) => item.id));
     return {
-      items: items.map((item) => this.studentSummary(item)),
+      items: items.map((item) =>
+        this.studentResponse(item, schoolClass.name, consentMap.get(item.id) ?? []),
+      ),
       total,
       page: query.page,
       pageSize: query.pageSize,
+    };
+  }
+
+  async studentDetail(actor: JwtTeacherPayload, id: number) {
+    const student = await this.access.requireStudentAccess(actor, id);
+    const schoolClass = await this.access.requireClassAccess(actor, student.classId);
+    const consents = await this.consents.find({
+      where: { studentId: id },
+      order: { consentType: 'ASC' },
+    });
+    return {
+      ...this.studentResponse(student, schoolClass.name, consents),
+      gender: student.gender,
+      birthday: student.birthday,
+      consents,
     };
   }
 
@@ -593,12 +721,14 @@ export class PlatformService {
   }
 
   async listClassrooms(actor: JwtTeacherPayload) {
-    if (this.access.isAdministrator(actor))
-      return this.classrooms.find({
+    if (this.access.isAdministrator(actor)) {
+      const classrooms = await this.classrooms.find({
         where: actor.schoolId ? { schoolId: actor.schoolId } : {},
         order: { id: 'DESC' },
       });
-    return this.classrooms
+      return this.classroomSummaries(actor, classrooms);
+    }
+    const classrooms = await this.classrooms
       .createQueryBuilder('room')
       .innerJoin(
         DeviceBinding,
@@ -614,6 +744,17 @@ export class PlatformService {
       )
       .distinct(true)
       .getMany();
+    return this.classroomSummaries(actor, classrooms);
+  }
+
+  async classroomDetail(actor: JwtTeacherPayload, id: number) {
+    const classroom = await this.classrooms.findOne({ where: { id } });
+    if (!classroom) throw new NotFoundException('教室不存在');
+    this.requireSameSchool(actor, classroom.schoolId);
+    const [summary] = await this.classroomSummaries(actor, [classroom]);
+    if (!this.access.isAdministrator(actor) && !summary?.bindings.length)
+      throw new ForbiddenException('无权访问该教室');
+    return summary;
   }
 
   async createDevice(actor: JwtTeacherPayload, dto: CreateDeviceDto) {
@@ -677,6 +818,19 @@ export class PlatformService {
     return this.deviceSummaries(devices);
   }
 
+  async deviceDetail(actor: JwtTeacherPayload, id: number) {
+    const device = await this.devices.findOne({ where: { id } });
+    if (!device) throw new NotFoundException('设备不存在');
+    this.requireSameSchool(actor, device.schoolId);
+    const [summary] = await this.deviceSummaries([device]);
+    if (!summary) throw new NotFoundException('设备不存在');
+    if (!this.access.isAdministrator(actor)) {
+      if (!summary.binding) throw new ForbiddenException('无权访问该设备');
+      await this.access.requireClassAccess(actor, summary.binding.classId);
+    }
+    return summary;
+  }
+
   async heartbeat(
     actor: JwtTeacherPayload,
     deviceId: number,
@@ -737,6 +891,12 @@ export class PlatformService {
     ].filter((schoolId): schoolId is string => Boolean(schoolId));
     if (new Set(schoolIds).size > 1)
       throw new ConflictException('设备、教室与班级不属于同一园所');
+    if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+      throw new ConflictException('停用或故障设备不能绑定到班级');
+    if (classroom.status !== RecordStatus.Active)
+      throw new ConflictException('停用教室不能绑定设备');
+    if (schoolClass.status !== RecordStatus.Active)
+      throw new ConflictException('停用班级不能绑定设备');
     const active = await this.bindings.findOne({
       where: { deviceId: dto.deviceId, status: BindingStatus.Active },
     });
@@ -1373,6 +1533,86 @@ export class PlatformService {
     });
   }
 
+  private async classroomSummaries(
+    actor: JwtTeacherPayload,
+    classrooms: Classroom[],
+  ) {
+    if (!classrooms.length) return [];
+    const bindings = await this.bindings.find({
+      where: {
+        classroomId: In(classrooms.map((classroom) => classroom.id)),
+        status: BindingStatus.Active,
+      },
+    });
+    let visibleBindings = bindings;
+    if (!this.access.isAdministrator(actor)) {
+      const teacherClasses = await this.teacherClasses.find({
+        where: { teacherId: actor.sub },
+      });
+      const allowedClassIds = new Set(
+        teacherClasses.map((relation) => relation.classId),
+      );
+      visibleBindings = bindings.filter((binding) =>
+        allowedClassIds.has(binding.classId),
+      );
+    }
+    const [devices, classes] = await Promise.all([
+      visibleBindings.length
+        ? this.devices.find({
+            where: {
+              id: In(visibleBindings.map((binding) => binding.deviceId)),
+            },
+          })
+        : Promise.resolve([]),
+      visibleBindings.length
+        ? this.classes.find({
+            where: { id: In(visibleBindings.map((binding) => binding.classId)) },
+          })
+        : Promise.resolve([]),
+    ]);
+    const deviceById = new Map(devices.map((device) => [device.id, device]));
+    const classById = new Map(classes.map((schoolClass) => [schoolClass.id, schoolClass]));
+    const bindingsByClassroom = new Map<number, typeof visibleBindings>();
+    for (const binding of visibleBindings) {
+      const rows = bindingsByClassroom.get(binding.classroomId) ?? [];
+      rows.push(binding);
+      bindingsByClassroom.set(binding.classroomId, rows);
+    }
+    return classrooms.map((classroom) => {
+      const rows = bindingsByClassroom.get(classroom.id) ?? [];
+      const enrichedBindings = rows.map((binding) => {
+        const device = deviceById.get(binding.deviceId);
+        const deviceSummary = device ? this.deviceStatusSummary(device) : null;
+        return {
+          id: binding.id,
+          classId: binding.classId,
+          className: classById.get(binding.classId)?.name ?? null,
+          deviceId: binding.deviceId,
+          device: deviceSummary
+            ? {
+                id: deviceSummary.id,
+                deviceCode: deviceSummary.deviceCode,
+                name: deviceSummary.name,
+                type: deviceSummary.type,
+                status: deviceSummary.status,
+                online: deviceSummary.online,
+                lastOnlineAt: deviceSummary.lastOnlineAt,
+              }
+            : null,
+          boundAt: binding.boundAt,
+        };
+      });
+      return {
+        ...classroom,
+        bindingCount: enrichedBindings.length,
+        onlineDeviceCount: enrichedBindings.filter(
+          (binding) => binding.device?.online,
+        ).length,
+        bindings: enrichedBindings,
+      };
+    });
+  }
+
   private deviceStatusSummary(device: Device) {
     const heartbeatFresh =
       device.lastOnlineAt != null &&
@@ -1387,14 +1627,64 @@ export class PlatformService {
     return { ...device, status, online: status === DeviceStatus.Online };
   }
 
-  private studentSummary(student: Student) {
+  private async studentConsentMap(studentIds: number[]) {
+    const map = new Map<number, GuardianConsent[]>();
+    if (!studentIds.length) return map;
+    const rows = await this.consents.find({
+      where: { studentId: In(studentIds) },
+      order: { consentType: 'ASC' },
+    });
+    for (const row of rows) {
+      const list = map.get(row.studentId) ?? [];
+      list.push(row);
+      map.set(row.studentId, list);
+    }
+    return map;
+  }
+
+  private authorizationSummary(consents: GuardianConsent[]) {
+    const statuses = new Map(consents.map((item) => [item.consentType, item.status]));
+    const granted = (type: ConsentType) =>
+      statuses.get(type) === ConsentStatus.Granted;
+    const grantedCount = [
+      granted(ConsentType.Photo),
+      granted(ConsentType.Voice),
+      granted(ConsentType.Artwork),
+    ].filter(Boolean).length;
+    const hasRevoked = consents.some((item) => item.status === ConsentStatus.Revoked);
+    const status = grantedCount === 3
+      ? 'authorized'
+      : grantedCount > 0
+        ? 'partial'
+        : hasRevoked
+          ? 'unauthorized'
+          : 'pending';
+    return {
+      status,
+      permissions: {
+        photo: granted(ConsentType.Photo),
+        voice: granted(ConsentType.Voice),
+        artwork: granted(ConsentType.Artwork),
+      },
+    };
+  }
+
+  private studentResponse(
+    student: Student,
+    className: string,
+    consents: GuardianConsent[],
+  ) {
+    const authorization = this.authorizationSummary(consents);
     return {
       id: student.id,
       classId: student.classId,
+      className,
       studentNo: student.studentNo,
       name: student.name,
       nickname: student.nickname,
       status: student.status,
+      authorizationStatus: authorization.status,
+      permissions: authorization.permissions,
       createdAt: student.createdAt,
       updatedAt: student.updatedAt,
     };

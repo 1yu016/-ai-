@@ -8,6 +8,12 @@ const backendProxyTarget = process.env.VITE_BACKEND_PROXY_TARGET || 'http://loca
 
 // https://vite.dev/config/
 export default defineConfig({
+  optimizeDeps: {
+    include: [
+      'three/examples/jsm/controls/OrbitControls.js',
+      'three/examples/jsm/loaders/GLTFLoader.js',
+    ],
+  },
   plugins: [
     vue({
       // 仅识别第三方 Web Component <agent-robot-avatar>（Agent Robot Avatar），

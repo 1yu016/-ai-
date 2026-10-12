@@ -26,6 +26,7 @@ export const RESOURCE_SIZE_LIMITS: Readonly<Record<ResourceType, number>> = {
   [ResourceType.Pdf]: 80 * MB,
   [ResourceType.Ppt]: 150 * MB,
   [ResourceType.PictureBook]: 80 * MB,
+  [ResourceType.NurseryRhyme]: 100 * MB,
   [ResourceType.Animation]: 300 * MB,
   [ResourceType.QuestionBank]: 20 * MB,
   [ResourceType.Experiment]: 80 * MB,
@@ -57,12 +58,12 @@ const RULES: Readonly<Record<string, FileRule>> = {
   '.mp3': {
     mime: 'audio/mpeg',
     defaultType: ResourceType.Audio,
-    allowedTypes: [ResourceType.Audio],
+    allowedTypes: [ResourceType.Audio, ResourceType.NurseryRhyme],
   },
   '.wav': {
     mime: 'audio/wav',
     defaultType: ResourceType.Audio,
-    allowedTypes: [ResourceType.Audio],
+    allowedTypes: [ResourceType.Audio, ResourceType.NurseryRhyme],
   },
   '.mp4': {
     mime: 'video/mp4',
@@ -122,8 +123,17 @@ export const RESOURCE_CHUNK_DIRECTORY = resolve(
   process.env.RESOURCE_CHUNK_PATH ||
     resolve(process.cwd(), 'uploads', '.chunks'),
 );
+/**
+ * 服务端转换产物目录。PPT 源文件绝不直接交给浏览器预览；转换服务只需将
+ * preview.pdf 或 page-001.png/page-002.jpg 等文件写入 <resourceId>/ 即可。
+ */
+export const RESOURCE_PREVIEW_DIRECTORY = resolve(
+  process.env.RESOURCE_PREVIEW_PATH ||
+    resolve(process.cwd(), 'uploads', 'resource-previews'),
+);
 mkdirSync(RESOURCE_UPLOAD_DIRECTORY, { recursive: true });
 mkdirSync(RESOURCE_CHUNK_DIRECTORY, { recursive: true });
+mkdirSync(RESOURCE_PREVIEW_DIRECTORY, { recursive: true });
 
 export const resourceMulterOptions = {
   storage: diskStorage({

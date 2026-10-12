@@ -3,6 +3,7 @@ import { ElMessage } from 'element-plus'
 import { apiErrorMessage } from '@/api/http'
 import type { Student } from '@/api/platform'
 import type { LessonRun } from '@/stores/lessonRun'
+import { studentDisplayName } from '@/utils/student'
 import {
   postReward,
   QUICK_REWARD_REASONS,
@@ -46,7 +47,7 @@ export function useClassroomInteraction(
   const message = ref('')
   const errorMsg = ref('')
 
-  const nameOf = (s: Student) => s.nickname || s.name
+  const nameOf = (student: Student) => studentDisplayName(student)
 
   const interactionLocked = computed(
     () => props.disabled || !props.run || props.busy,

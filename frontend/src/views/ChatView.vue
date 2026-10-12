@@ -13,6 +13,7 @@ import {
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { apiErrorMessage, http } from '@/api/http'
+import { logoutAuthenticatedSession } from '@/services/authSession'
 import ClassroomAssistantPanel from '@/components/ClassroomAssistantPanel.vue'
 import CourseResourcesPanel from '@/components/CourseResourcesPanel.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
@@ -544,6 +545,7 @@ function commandResourceTypeLabel(resource: CourseResource): string {
     pdf: 'PDF',
     ppt: 'PPT课件',
     picture_book: '绘本',
+    nursery_rhyme: '儿歌',
     animation: '动画',
     question_bank: '题库',
     experiment: '实验素材',
@@ -1163,11 +1165,11 @@ function closeAccountMenuOnOutsideClick(event: MouseEvent) {
   }
 }
 
-function logout() {
+async function logout() {
   accountMenuOpen.value = false
-  userStore.logout()
+  await logoutAuthenticatedSession()
   errorText.value = ''
-  void router.push('/login')
+  await router.replace('/login')
   ElMessage.success('已退出登录')
 }
 

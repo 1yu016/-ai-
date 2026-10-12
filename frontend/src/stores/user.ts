@@ -118,6 +118,12 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  function updateProfile(info: TeacherInfo) {
+    teacherInfo.value = info
+    isLogin.value = Boolean(accessToken.value)
+    localStorage.setItem(STORAGE_KEYS.teacherInfo, JSON.stringify(info))
+  }
+
   function logout() {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('classroom-mobile-logout'))
@@ -141,6 +147,7 @@ export const useUserStore = defineStore('user', () => {
     initialize,
     setLogin,
     updateTokens,
+    updateProfile,
     logout,
   }
 })

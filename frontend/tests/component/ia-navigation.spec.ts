@@ -119,7 +119,7 @@ const studentsData = {
 }
 
 async function mountWorkspace(initial = '/classes/1/students') {
-  vi.spyOn(platformApi, 'listClasses').mockResolvedValue(classesData as never)
+  vi.spyOn(platformApi, 'classDetail').mockResolvedValue({ data: classesData.data.items[0] } as never)
   vi.spyOn(platformApi, 'students').mockResolvedValue(studentsData as never)
   const router = createRouter({
     history: createMemoryHistory(),
@@ -127,6 +127,7 @@ async function mountWorkspace(initial = '/classes/1/students') {
       { path: '/classes/:classId/students', name: 'students', component: { template: '<div>学生内容</div>' } },
       { path: '/classes/:classId/rewards', name: 'class-rewards', component: { template: '<div>奖励内容</div>' } },
       { path: '/classes/:classId/questions', name: 'class-questions', component: { template: '<div>问题内容</div>' } },
+      { path: '/classes/:classId', name: 'class-detail', component: { template: '<div>班级详情</div>' } },
       { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
       { path: '/lesson-plans', name: 'lesson-plans', component: { template: '<div>备课中心</div>' } },
     ],
@@ -148,9 +149,9 @@ describe('ClassWorkspaceLayout 班级工作区', () => {
     localStorage.clear()
   })
 
-  it('#6 顶部「← 我的班级」与「开始上课」同时存在', async () => {
+  it('#6 顶部统一返回按钮与「开始上课」同时存在', async () => {
     const { wrapper } = await mountWorkspace()
-    expect(wrapper.find('[data-test="workspace-back"]').text()).toContain('我的班级')
+    expect(wrapper.find('[data-test="workspace-back"]').text()).toContain('班级详情')
     expect(wrapper.find('[data-test="workspace-start"]').text()).toContain('开始上课')
   })
 
@@ -223,6 +224,7 @@ describe('MyClassesView 我的班级（教师工作台核心入口）', () => {
       history: createMemoryHistory(),
       routes: [
         { path: '/my-classes', name: 'my-classes', component: MyClassesView },
+        { path: '/classes/:classId', name: 'class-detail', component: { template: '<div>班级详情</div>' } },
         { path: '/classes/:classId/students', name: 'students', component: { template: '<div>班级</div>' } },
         { path: '/lesson-plans', name: 'lesson-plans', component: { template: '<div>备课中心</div>' } },
       ],
@@ -235,11 +237,11 @@ describe('MyClassesView 我的班级（教师工作台核心入口）', () => {
     const buttons = wrapper.findAll('button').map((b) => b.text())
     expect(buttons.join(' ')).toContain('进入班级')
     expect(buttons.join(' ')).toContain('开始上课')
-    // 进入班级 → 班级 workspace students
+    // 进入班级 → 班级详情，再由详情进入学生、奖励和问题。
     const enter = [...wrapper.findAll('button')].find((b) => b.text() === '进入班级')!
     await enter.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.name).toBe('students')
+    expect(router.currentRoute.value.name).toBe('class-detail')
     expect(router.currentRoute.value.params.classId).toBe('1')
   })
 

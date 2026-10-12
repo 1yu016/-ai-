@@ -60,7 +60,7 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     localStorage.clear()
     vi.spyOn(platformApi, 'students').mockResolvedValue(studentsData as never)
     vi.spyOn(questionsService, 'getQuestionMap').mockResolvedValue(mapData as never)
-    vi.spyOn(platformApi, 'listClasses').mockResolvedValue(classesData as never)
+    vi.spyOn(platformApi, 'classDetail').mockResolvedValue({ data: classesData.data.items[0] } as never)
   })
 
   it('加载真实接口并展示问题列表', async () => {

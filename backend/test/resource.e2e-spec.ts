@@ -6,7 +6,7 @@ import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'node:crypto';
-import { access, readdir, unlink } from 'node:fs/promises';
+import { access, mkdir, readdir, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import request from 'supertest';
 import { Repository } from 'typeorm';
@@ -14,8 +14,13 @@ import { AuthModule } from '../src/auth/auth.module';
 import { Administrator } from '../src/auth/entities/administrator.entity';
 import { RefreshTokenSession } from '../src/auth/entities/refresh-token-session.entity';
 import { Teacher, TeacherRole } from '../src/auth/entities/teacher.entity';
-import { TeachingResource } from '../src/data/entities/teaching-resource.entity';
+import {
+  ResourceReviewStatus,
+  TeachingResource,
+} from '../src/data/entities/teaching-resource.entity';
 import { PLATFORM_ENTITIES } from '../src/platform/platform.module';
+import { LessonPlan } from '../src/lesson-plans/entities/lesson-plan.entity';
+import { LessonStep } from '../src/lesson-plans/entities/lesson-step.entity';
 import { ResourceVersion } from '../src/resources/entities/resource-version.entity';
 import {
   UploadChunk,
@@ -24,6 +29,7 @@ import {
 } from '../src/resources/entities/upload-session.entity';
 import {
   RESOURCE_CHUNK_DIRECTORY,
+  RESOURCE_PREVIEW_DIRECTORY,
   RESOURCE_UPLOAD_DIRECTORY,
 } from '../src/resources/resource-file.validation';
 import { ResourceAiService } from '../src/resources/resource-ai.service';
@@ -40,6 +46,7 @@ type UploadedResource = {
   resourceType: string;
   reviewStatus: string;
   sha256: string;
+  ownerId: string;
 };
 const SHA = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 const FILES: Record<string, Buffer> = {
@@ -82,9 +89,13 @@ describe('Stage two resource library (e2e)', () => {
   let uploadSessions: Repository<UploadSession>;
   let uploadChunks: Repository<UploadChunk>;
   let initialFiles: Set<string>;
+  let initialPreviewDirectories: Set<string>;
 
   beforeAll(async () => {
     initialFiles = new Set(await readdir(RESOURCE_UPLOAD_DIRECTORY));
+    initialPreviewDirectories = new Set(
+      await readdir(RESOURCE_PREVIEW_DIRECTORY),
+    );
     const fixture = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({
@@ -111,6 +122,8 @@ describe('Stage two resource library (e2e)', () => {
             Administrator,
             RefreshTokenSession,
             TeachingResource,
+            LessonPlan,
+            LessonStep,
             ...RESOURCE_ENTITIES,
             ...PLATFORM_ENTITIES,
           ],
@@ -187,6 +200,12 @@ describe('Stage two resource library (e2e)', () => {
         await unlink(join(RESOURCE_UPLOAD_DIRECTORY, name)).catch(
           () => undefined,
         );
+    for (const name of await readdir(RESOURCE_PREVIEW_DIRECTORY))
+      if (!initialPreviewDirectories.has(name))
+        await rm(join(RESOURCE_PREVIEW_DIRECTORY, name), {
+          recursive: true,
+          force: true,
+        });
     await app.close();
   });
 
@@ -280,6 +299,10 @@ describe('Stage two resource library (e2e)', () => {
       resourceType: 'audio',
       category: '歌曲音乐',
     });
+    const nurseryRhyme = await upload('nursery-rhyme.mp3', {
+      resourceType: 'nursery_rhyme',
+      category: '歌曲音乐',
+    });
     const wav = await upload('recording.wav', {
       resourceType: 'audio',
       category: '课堂录音',
@@ -291,6 +314,7 @@ describe('Stage two resource library (e2e)', () => {
     expect([
       image.resourceType,
       audio.resourceType,
+      nurseryRhyme.resourceType,
       wav.resourceType,
       video.resourceType,
       pdf.resourceType,
@@ -299,6 +323,7 @@ describe('Stage two resource library (e2e)', () => {
     ]).toEqual([
       'image',
       'audio',
+      'nursery_rhyme',
       'audio',
       'video',
       'picture_book',
@@ -312,7 +337,7 @@ describe('Stage two resource library (e2e)', () => {
     await request(app.getHttpServer())
       .get(`/resources/${image.id}/download`)
       .set('Authorization', `Bearer ${otherToken}`)
-      .expect(404);
+      .expect(403);
     await request(app.getHttpServer())
       .get(`/resources/${image.id}/download`)
       .set('Authorization', `Bearer ${token}`)
@@ -333,17 +358,42 @@ describe('Stage two resource library (e2e)', () => {
     await request(app.getHttpServer())
       .post(`/resources/${title.id}/favorite`)
       .set('Authorization', `Bearer ${token}`)
-      .expect(204);
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body).toEqual({ resourceId: title.id, isFavorite: true }),
+      );
     await request(app.getHttpServer())
       .post(`/resources/${title.id}/favorite`)
       .set('Authorization', `Bearer ${token}`)
-      .expect(204);
+      .expect(200)
+      .expect(({ body }) => expect(body.isFavorite).toBe(true));
     const list = await request(app.getHttpServer())
       .get('/resources')
       .set('Authorization', `Bearer ${token}`)
       .query({ keyword: '苹果', domain: '科学', page: 1, pageSize: 10 })
       .expect(200);
     expect(list.body.items[0].isFavorite).toBe(true);
+    const favoriteList = await request(app.getHttpServer())
+      .get('/resources')
+      .set('Authorization', `Bearer ${token}`)
+      .query({
+        isFavorite: true,
+        ownerId: title.ownerId,
+        domain: '科学',
+        tag: '水果',
+      })
+      .expect(200);
+    expect(favoriteList.body.items.map((item: { id: number }) => item.id)).toContain(
+      title.id,
+    );
+    const notFavoriteList = await request(app.getHttpServer())
+      .get('/resources')
+      .set('Authorization', `Bearer ${token}`)
+      .query({ isFavorite: false, ownerId: title.ownerId })
+      .expect(200);
+    expect(
+      notFavoriteList.body.items.map((item: { id: number }) => item.id),
+    ).not.toContain(title.id);
     const search = await request(app.getHttpServer())
       .get('/resources/search')
       .set('Authorization', `Bearer ${token}`)
@@ -352,9 +402,62 @@ describe('Stage two resource library (e2e)', () => {
     expect(search.body[0].title).toBe('苹果');
     await request(app.getHttpServer())
       .patch(`/resources/${title.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        title: '红苹果',
+        description: '',
+        category: '图片卡片',
+        ageGroup: 'middle',
+        domain: '语言',
+        aliases: ['苹果卡片'],
+        tags: ['水果', '红色'],
+      })
+      .expect(200);
+    const edited = await request(app.getHttpServer())
+      .get(`/resources/${title.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(edited.body).toMatchObject({
+      title: '红苹果',
+      description: null,
+      category: '图片卡片',
+      ageGroup: 'middle',
+      domain: '语言',
+      aliases: ['苹果卡片'],
+      tags: ['水果', '红色'],
+      fileName: 'apple.png',
+    });
+    await request(app.getHttpServer())
+      .patch(`/resources/${title.id}`)
       .set('Authorization', `Bearer ${otherToken}`)
       .send({ title: '越权' })
-      .expect(404);
+      .expect(403);
+    await request(app.getHttpServer())
+      .delete(`/resources/${title.id}/favorite`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body).toEqual({ resourceId: title.id, isFavorite: false }),
+      );
+    const afterUnfavorite = await request(app.getHttpServer())
+      .get('/resources')
+      .set('Authorization', `Bearer ${token}`)
+      .query({ isFavorite: true })
+      .expect(200);
+    expect(
+      afterUnfavorite.body.items.map((item: { id: number }) => item.id),
+    ).not.toContain(title.id);
+    await resources.update(title.id, {
+      reviewStatus: ResourceReviewStatus.Disabled,
+    });
+    await request(app.getHttpServer())
+      .patch(`/resources/${title.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: '停用后修改' })
+      .expect(409)
+      .expect(({ body }) =>
+        expect(body.message).toContain('已停用资源不可编辑'),
+      );
   });
 
   it('enforces submission and administrator review before sharing', async () => {
@@ -372,11 +475,31 @@ describe('Stage two resource library (e2e)', () => {
       .post(`/resources/${resource.id}/submit-review`)
       .set('Authorization', `Bearer ${token}`)
       .expect(201)
-      .expect(({ body }) => expect(body.reviewStatus).toBe('pending'));
+      .expect(({ body }) => expect(body.reviewStatus).toBe('pending_review'));
+    await request(app.getHttpServer())
+      .get('/resources')
+      .query({ reviewStatus: 'pending_review' })
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.items.map((item: { id: number }) => item.id)).toContain(
+          resource.id,
+        ),
+      );
+    await request(app.getHttpServer())
+      .get('/resources')
+      .query({ reviewStatus: 'pending' })
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.items.map((item: { id: number }) => item.id)).toContain(
+          resource.id,
+        ),
+      );
     await request(app.getHttpServer())
       .get(`/resources/${resource.id}`)
       .set('Authorization', `Bearer ${otherToken}`)
-      .expect(404);
+      .expect(403);
     await request(app.getHttpServer())
       .post(`/resources/${resource.id}/review`)
       .set('Authorization', `Bearer ${adminToken}`)
@@ -386,6 +509,31 @@ describe('Stage two resource library (e2e)', () => {
       .get(`/resources/${resource.id}`)
       .set('Authorization', `Bearer ${otherToken}`)
       .expect(200);
+
+    const rejected = await upload('rejected.pdf', {
+      title: '需要修改的资源',
+      resourceType: 'pdf',
+    });
+    await request(app.getHttpServer())
+      .post(`/resources/${rejected.id}/submit-review`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/resources/${rejected.id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'rejected' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post(`/resources/${rejected.id}/review`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ status: 'rejected', comment: '请补充适用年龄说明' })
+      .expect(201)
+      .expect(({ body }) => expect(body.reviewStatus).toBe('rejected'));
+    await request(app.getHttpServer())
+      .post(`/resources/${rejected.id}/submit-review`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(201)
+      .expect(({ body }) => expect(body.reviewStatus).toBe('pending_review'));
     await request(app.getHttpServer())
       .post(`/resources/${resource.id}/versions`)
       .set('Authorization', `Bearer ${token}`)
@@ -415,6 +563,17 @@ describe('Stage two resource library (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ referenceType: 'lesson_plan', referenceId: 'plan-1' })
       .expect(201);
+    await request(app.getHttpServer())
+      .get(`/resources/${protectedResource.id}/references`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toHaveLength(1);
+        expect(body[0]).toMatchObject({
+          referenceType: 'lesson_plan',
+          referenceId: 'plan-1',
+        });
+      });
     await request(app.getHttpServer())
       .delete(`/resources/${protectedResource.id}`)
       .set('Authorization', `Bearer ${token}`)
@@ -464,8 +623,13 @@ describe('Stage two resource library (e2e)', () => {
         .send({
           title: '分片PDF',
           resourceType: 'pdf',
+          aliases: ['数字课件'],
+          description: '支持断点续传的真实资源',
           category: '教案课件',
           ageGroup: 'all',
+          domain: '科学',
+          tags: ['分片', '测试'],
+          duration: 12,
           originalName: 'chunked.pdf',
           declaredMime: 'application/pdf',
           totalSize: payload.length,
@@ -513,11 +677,75 @@ describe('Stage two resource library (e2e)', () => {
       .field('sha256', SHA(second))
       .attach('file', second, 'chunk.part')
       .expect(201);
-    await request(app.getHttpServer())
+    const completed = await request(app.getHttpServer())
       .post(`/resources/upload-sessions/${session.id}/complete`)
       .set('Authorization', `Bearer ${token}`)
+      .send({
+        title: '分片 PDF 正式标题',
+        aliases: ['数字课件', '正式资源'],
+        description: '上传完成后由教师确认的元数据',
+        category: '正式课件',
+        ageGroup: 'large',
+        domain: '数学',
+        tags: ['完成', '测试'],
+        duration: 18,
+      })
       .expect(201)
       .expect(({ body }) => expect(body.sha256).toBe(SHA(payload)));
+    expect(completed.body).toMatchObject({
+      title: '分片 PDF 正式标题',
+      aliases: ['数字课件', '正式资源'],
+      description: '上传完成后由教师确认的元数据',
+      category: '正式课件',
+      ageGroup: 'large',
+      domain: '数学',
+      tags: ['完成', '测试'],
+      duration: 18,
+      reviewStatus: 'draft',
+    });
+  });
+
+  it('cancels an active upload session and removes uploaded chunks', async () => {
+    const resourceCountBefore = await resources.count();
+    const payload = Buffer.concat([
+      Buffer.from('%PDF-1.7\n'),
+      Buffer.alloc(64 * 1024 - 9, 6),
+    ]);
+    const session = (
+      await request(app.getHttpServer())
+        .post('/resources/upload-sessions')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          title: '待取消上传',
+          resourceType: 'pdf',
+          category: '课件',
+          ageGroup: 'all',
+          originalName: 'cancelled.pdf',
+          declaredMime: 'application/pdf',
+          totalSize: payload.length,
+          chunkSize: 64 * 1024,
+        })
+        .expect(201)
+    ).body;
+    await request(app.getHttpServer())
+      .post(`/resources/upload-sessions/${session.id}/chunks/0`)
+      .set('Authorization', `Bearer ${token}`)
+      .field('sha256', SHA(payload))
+      .attach('file', payload, 'chunk.part')
+      .expect(201);
+    await request(app.getHttpServer())
+      .delete(`/resources/upload-sessions/${session.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(204);
+    const stored = await uploadSessions.findOneByOrFail({ id: session.id });
+    expect(stored.status).toBe(UploadSessionStatus.Aborted);
+    await expect(resources.count()).resolves.toBe(resourceCountBefore);
+    await expect(
+      uploadChunks.count({ where: { sessionId: session.id } }),
+    ).resolves.toBe(0);
+    await expect(
+      access(join(RESOURCE_CHUNK_DIRECTORY, session.id)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('cleans chunk files when merged content hash verification fails', async () => {
@@ -640,5 +868,74 @@ describe('Stage two resource library (e2e)', () => {
     expect(stored.aiTeachingGoals).toBeNull();
     expect(stored.aiActivitySuggestions).toBeNull();
     spy.mockRestore();
+  });
+
+  it('serves protected PPT page previews without exposing the source file', async () => {
+    const presentation = await upload('preview.pptx', {
+      title: '服务端转换课件',
+      resourceType: 'ppt',
+      category: '教案课件',
+    });
+    const unavailable = await request(app.getHttpServer())
+      .get(`/resources/${presentation.id}/preview-manifest`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(unavailable.body).toMatchObject({
+      status: 'unavailable',
+      mode: 'unsupported',
+      assets: [],
+    });
+    await request(app.getHttpServer())
+      .get(`/resources/${presentation.id}/preview-manifest`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .expect(403);
+
+    const directory = join(
+      RESOURCE_PREVIEW_DIRECTORY,
+      String(presentation.id),
+    );
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'page-10.png'), FILES.png);
+    await writeFile(join(directory, 'page-2.png'), FILES.png);
+    const ready = await request(app.getHttpServer())
+      .get(`/resources/${presentation.id}/preview-manifest`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(ready.body).toEqual({
+      status: 'ready',
+      mode: 'images',
+      assets: [
+        { name: 'page-2.png', mimeType: 'image/png', pageNumber: 2 },
+        { name: 'page-10.png', mimeType: 'image/png', pageNumber: 10 },
+      ],
+      message: null,
+    });
+    await request(app.getHttpServer())
+      .get(`/resources/${presentation.id}/preview-assets/page-2.png`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect('Content-Type', /image\/png/)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`/resources/${presentation.id}/preview-assets/page-2.png`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .expect(403);
+  });
+
+  it('uses the protected source for a PDF picture book when no page conversion exists', async () => {
+    const pictureBook = await upload('picture-book.pdf', {
+      title: 'PDF 绘本',
+      resourceType: 'picture_book',
+      category: '故事绘本',
+    });
+    const response = await request(app.getHttpServer())
+      .get(`/resources/${pictureBook.id}/preview-manifest`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(response.body).toEqual({
+      status: 'ready',
+      mode: 'source',
+      assets: [],
+      message: null,
+    });
   });
 });

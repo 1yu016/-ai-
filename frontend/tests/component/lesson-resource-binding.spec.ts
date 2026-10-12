@@ -76,6 +76,9 @@ describe('备课资源绑定 · Stage 6.6', () => {
       },
     })
     await flushPromises()
+    expect(http.get).toHaveBeenCalledWith('/resources', {
+      params: expect.objectContaining({ reviewStatus: 'approved' }),
+    })
     const choose = wrapper
       .findAll('button')
       .find((button) => button.text().trim() === '选择')

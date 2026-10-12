@@ -25,6 +25,8 @@ function routerFor(path: string, routes?: RouteRecordRaw[]) {
   const router = createRouter({ history: createMemoryHistory(), routes: routes ?? [
     { path: '/login', component: LoginView },
     { path: '/chat', component: { template: '<div>聊天页</div>' } },
+    { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
+    { path: '/admin', name: 'admin-dashboard', component: { template: '<div>管理看板</div>' } },
     { path: '/lesson-plans', component: { template: '<div>教案列表</div>' } },
     { path: '/lesson-plans/new', component: LessonPlanEditorView },
     { path: '/classroom/lesson/:runId', component: LessonClassroomView },
@@ -49,7 +51,35 @@ describe('login and role visibility', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(useUserStore().isLogin).toBe(true)
-    expect(router.currentRoute.value.path).toBe('/chat')
+    expect(router.currentRoute.value.path).toBe('/my-classes')
+  })
+
+  it('登录失败后保留账号并显示后端错误', async () => {
+    const router = await routerFor('/login')
+    vi.spyOn(http, 'post').mockRejectedValue(new Error('账号或密码错误'))
+    const wrapper = mount(LoginView, { global: { plugins: [router, ElementPlus] } })
+    const account = wrapper.get('input[autocomplete="username"]')
+    await account.setValue('teacher-a')
+    await wrapper.get('input[autocomplete="current-password"]').setValue('wrong-password')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect((account.element as HTMLInputElement).value).toBe('teacher-a')
+    expect(wrapper.text()).toContain('账号或密码错误')
+    expect(useUserStore().isLogin).toBe(false)
+  })
+
+  it('登录成功后恢复包含查询参数的完整 redirect', async () => {
+    const router = await routerFor('/login?redirect=%2Flesson-plans%3Fstatus%3Ddraft')
+    vi.spyOn(http, 'post').mockImplementation(async (url) => url === '/auth/login'
+      ? { data: { access_token: 'token', refresh_token: 'refresh-token', teacherId: 1 } }
+      : { data: { success: true } })
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { teacherId: 1, account: 'teacher', name: '王老师', role: 'teacher', userType: 'teacher' } })
+    const wrapper = mount(LoginView, { global: { plugins: [router, ElementPlus] } })
+    await wrapper.get('input[autocomplete="username"]').setValue('teacher')
+    await wrapper.get('input[autocomplete="current-password"]').setValue('Teacher123!')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/lesson-plans?status=draft')
   })
 
   it('hides teacher-only preparation navigation from visitors', async () => {

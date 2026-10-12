@@ -22,13 +22,14 @@ const emit = defineEmits<{
 const TYPE_LABELS: Record<ResourceType, string> = {
   image: '图片', audio: '音频', video: '视频', pdf: 'PDF', ppt: 'PPT',
   picture_book: '绘本', animation: '动画', question_bank: '题库',
-  experiment: '实验', model_3d: '3D模型', document: '文档',
+  nursery_rhyme: '儿歌', experiment: '实验', model_3d: '3D模型', document: '文档',
+  unknown: '未知类型',
 }
 const AGE_LABELS: Record<ResourceAgeGroup, string> = {
   small: '小班', middle: '中班', large: '大班', all: '全龄段',
 }
 const STATUS_LABELS: Record<ResourceReviewStatus, string> = {
-  draft: '草稿', pending: '待审核', approved: '已通过', rejected: '已驳回', disabled: '已停用',
+  draft: '草稿', pending_review: '待审核', approved: '已通过', rejected: '已驳回', archived: '已归档',
 }
 
 const form = reactive<ListResourcesParams>({ ...props.modelValue })
@@ -38,6 +39,7 @@ const categories = ref<ResourceCategory[]>([])
 watch(
   () => props.modelValue,
   (value) => {
+    for (const key in form) delete (form as Record<string, unknown>)[key]
     for (const key in value) {
       ;(form as Record<string, unknown>)[key] = (value as Record<string, unknown>)[key]
     }
@@ -107,6 +109,10 @@ function doReset(): void {
       <input v-model="form.domain" type="text" placeholder="如 语言 / 科学" @blur="commit" />
     </label>
     <label class="field">
+      <span>标签</span>
+      <input v-model="form.tag" type="text" placeholder="如 春天 / 动物" @blur="commit" />
+    </label>
+    <label class="field">
       <span>审核状态</span>
       <select
         :value="form.reviewStatus"
@@ -125,6 +131,21 @@ function doReset(): void {
         <option value="">全部分类</option>
         <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
+    </label>
+    <label class="field">
+      <span>收藏状态</span>
+      <select
+        :value="form.isFavorite === undefined ? '' : String(form.isFavorite)"
+        @change="change('isFavorite', ($event.target as HTMLSelectElement).value === '' ? undefined : ($event.target as HTMLSelectElement).value === 'true')"
+      >
+        <option value="">全部</option>
+        <option value="true">已收藏</option>
+        <option value="false">未收藏</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>创建人</span>
+      <input v-model="form.ownerId" type="text" placeholder="创建人 ID" @blur="commit" />
     </label>
     <div class="buttons">
       <button class="button" @click="doSearch">搜索</button>

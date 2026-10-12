@@ -46,7 +46,7 @@ describe('ClassRewardHistoryView 班级成长奖励页', () => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
     localStorage.clear()
-    vi.spyOn(platformApi, 'listClasses').mockResolvedValue(classesData as never)
+    vi.spyOn(platformApi, 'classDetail').mockResolvedValue({ data: classesData.data.items[0] } as never)
     vi.spyOn(platformApi, 'rewardLeaderboard').mockResolvedValue({ data: { items: [] } } as never)
   })
 
