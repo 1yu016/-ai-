@@ -32,7 +32,7 @@ async function search(reset = true) {
 }
 function choose(resource: CourseResource) { if (loading.value || resource.reviewStatus !== 'approved' || typeof resource.id !== 'number') return; emit('update:modelValue', resource.id); emit('selected', resource); open.value = false }
 function remove() { emit('update:modelValue', null); emit('selected', null); open.value = false }
-watch(open, (value) => { if (value) void search(); else { sequence++; loading.value = false } })
+watch(open, (value) => { if (value) void search(); else { sequence++; loading.value = false } }, { immediate: true })
 </script>
 
 <template>
