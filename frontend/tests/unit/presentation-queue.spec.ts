@@ -1,7 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 const state = vi.hoisted(() => ({ command: vi.fn() }))
-let store: ReturnType<typeof reactive<Record<string, any>>>
+let store: {
+  run: {
+    id: number
+    deviceId: number
+    currentStepIndex: number
+    interactionState: { presentationQueues?: Record<string, import('@/composables/usePresentationQueue').PresentationItem[]> }
+    playerRecoverySuggestion?: { presentationItemId: string }
+  }
+  currentStep: { resourceId: number }
+  currentResource: { title: string }
+  command: typeof state.command
+}
 vi.mock('@/stores/lessonRun', () => ({ useLessonRunStore: () => store }))
 import { usePresentationQueue } from '@/composables/usePresentationQueue'
 
