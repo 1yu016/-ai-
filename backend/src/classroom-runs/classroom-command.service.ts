@@ -332,11 +332,78 @@ export class ClassroomCommandService {
         return this.rewardStudent(actor, run, dto, parameters);
       case ClassroomCommandOperation.RevokeReward:
         return this.revokeReward(actor, run, dto, parameters);
+      case ClassroomCommandOperation.UpdatePresentationQueue:
+        return this.updatePresentationQueue(actor, run, dto, parameters);
+      case ClassroomCommandOperation.SetPresentation:
+        return this.setPresentation(actor, run, dto, parameters);
       default:
         if (MEDIA_CLASSROOM_COMMANDS.has(dto.operation))
           return this.mediaCommand(actor, run, dto, parameters);
         throw new BadRequestException('不支持的课堂操作');
     }
+  }
+
+  private async updatePresentationQueue(
+    actor: JwtTeacherPayload, run: CommandRunState,
+    dto: ExecuteClassroomCommandDto, parameters: JsonMap,
+  ) {
+    const stepIndex = this.int(parameters, 'stepIndex', 0);
+    if (!run.steps?.some((step) => step.stepIndex === stepIndex))
+      throw new BadRequestException('课堂环节不存在');
+    if (!Array.isArray(parameters.items) || parameters.items.length > 100)
+      throw new BadRequestException('课堂队列最多包含100项');
+    const ids = new Set<string>();
+    const items: JsonMap[] = [];
+    for (const raw of parameters.items) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        throw new BadRequestException('课堂队列格式无效');
+      const input = raw as JsonMap;
+      const id = this.string(input, 'id');
+      if (!/^[A-Za-z0-9._:-]{1,100}$/.test(id) || ids.has(id))
+        throw new BadRequestException('队列项编号无效或重复');
+      ids.add(id);
+      if (input.enabled !== undefined && typeof input.enabled !== 'boolean')
+        throw new BadRequestException('队列显示状态无效');
+      if (input.kind === 'avatar') {
+        items.push({ id, kind: 'avatar', title: '数字人互动', enabled: input.enabled !== false });
+      } else if (input.kind === 'resource') {
+        const resourceId = this.int(input, 'resourceId', 1);
+        const resource = await this.resources.getOne(actor, resourceId);
+        if (resource.reviewStatus !== ResourceReviewStatus.Approved)
+          throw new ConflictException('资源未审核通过，不能加入课堂队列');
+        items.push({ id, kind: 'resource', resourceId, title: resource.title, enabled: input.enabled !== false });
+      } else throw new BadRequestException('不支持的课堂队列内容');
+    }
+    const latest = await this.snapshots.loadLatestValid(run.id);
+    const previous = latest?.interactionState ?? {};
+    const queues = previous.presentationQueues && typeof previous.presentationQueues === 'object'
+      ? previous.presentationQueues as JsonMap : {};
+    await this.runs.checkpoint(actor, run.id, {
+      requestId: dto.requestId, version: dto.expectedVersion, deviceId: run.deviceId,
+      checkpointType: ClassroomCheckpointType.Command,
+      interactionState: { ...previous, presentationQueues: { ...queues, [String(stepIndex)]: items } },
+    });
+    // Editing the queue deliberately does not patch playerState or LessonPlan.
+    return { stepIndex, items };
+  }
+
+  private async setPresentation(
+    actor: JwtTeacherPayload, run: CommandRunState,
+    dto: ExecuteClassroomCommandDto, parameters: JsonMap,
+  ) {
+    const mode = this.string(parameters, 'mode');
+    if (mode !== 'avatar')
+      throw new BadRequestException('不支持的课堂展示模式');
+    const latest = await this.snapshots.loadLatestValid(run.id);
+    const playerState = { ...latest?.playerState, presentationMode: mode,
+      status: 'stopped', operation: dto.operation, presentationCommandId: dto.requestId,
+      presentationItemId: this.optionalString(parameters, 'presentationItemId', 100) ?? null, updatedAt: new Date().toISOString() };
+    // Keep the last resource and page as a return point; mode selects what is shown.
+    await this.runs.checkpoint(actor, run.id, {
+      requestId: dto.requestId, version: dto.expectedVersion, deviceId: run.deviceId,
+      checkpointType: ClassroomCheckpointType.Command, playerState,
+    });
+    return { delivery: 'accepted', playerState };
   }
 
   private async updateAttendance(
@@ -558,6 +625,9 @@ export class ClassroomCommandService {
   ) {
     const latest = await this.snapshots.loadLatestValid(run.id);
     const playerState = Object.assign({}, latest?.playerState);
+    playerState.presentationCommandId = dto.requestId;
+    if (dto.operation === ClassroomCommandOperation.OpenResource || dto.operation === ClassroomCommandOperation.PlayResource)
+      playerState.presentationItemId = this.optionalString(parameters, 'presentationItemId', 100) ?? null;
     const resourceOperation = [
       ClassroomCommandOperation.OpenResource,
       ClassroomCommandOperation.PlayResource,
@@ -571,6 +641,13 @@ export class ClassroomCommandService {
         throw new ConflictException('资源未审核通过，不能在正式课堂播放');
       playerState.resourceId = resourceId;
       playerState.resourceTitle = resource.title;
+      if (resourceOperation) {
+        playerState.presentationMode = 'resource';
+        playerState.pageIndex = 1;
+        playerState.currentTime = 0;
+        playerState.status = dto.operation === ClassroomCommandOperation.PlayResource ? 'playing' : 'paused';
+        playerState.autoPlay = dto.operation === ClassroomCommandOperation.PlayResource;
+      }
       delete playerState.artworkId;
       delete playerState.artworkFileUrl;
       delete playerState.artworkComment;
@@ -602,6 +679,8 @@ export class ClassroomCommandService {
       delete playerState.ttsText;
       playerState.status = 'stopped';
     }
+    if (dto.operation === ClassroomCommandOperation.PauseMedia) playerState.status = 'paused';
+    if (dto.operation === ClassroomCommandOperation.ResumeMedia) playerState.status = 'playing';
     if (dto.operation === ClassroomCommandOperation.DisplayArtwork) {
       const artworkId = this.int(parameters, 'artworkId', 1);
       const artwork = await this.artworks.findOne({ where: { id: artworkId } });

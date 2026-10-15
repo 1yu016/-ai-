@@ -24,6 +24,7 @@ import {
   ListLessonPlansQueryDto,
   ReorderLessonStepsDto,
   SaveLessonStepsDto,
+  SaveLessonAuthoringDto,
   UpdateLessonPlanDto,
   UpdateLessonRunProgressDto,
   UpdateLessonStepDto,
@@ -72,6 +73,7 @@ type HydratedStep = LessonStep & {
 
 @Injectable()
 export class LessonPlanService {
+  private authoringTail: Promise<void> = Promise.resolve();
   constructor(
     @InjectRepository(LessonPlan)
     private readonly plans: Repository<LessonPlan>,
@@ -179,6 +181,13 @@ export class LessonPlanService {
   async get(actor: JwtTeacherPayload, id: number) {
     const plan = await this.ownedPlan(actor, id);
     plan.steps = (await this.loadSteps(id)) as LessonStep[];
+    const version = plan.currentVersionId ? await this.versions.findOneBy({ id: plan.currentVersionId }) : null;
+    const reviewed = version ? JSON.parse(version.snapshotJson).contentBoundary === 1 : false;
+    for (const step of plan.steps) Object.assign(step, {
+      teacherInstruction: step.instruction,
+      studentContent: reviewed ? step.content : null,
+      contentReviewRequired: !reviewed,
+    });
     return plan;
   }
 
@@ -216,6 +225,7 @@ export class LessonPlanService {
         plan,
         actor,
         dto.changeSummary?.trim() || '更新教案信息',
+        await this.hasReviewedContent(manager, plan.currentVersionId),
       );
       plan.currentVersionId = version.id;
       return repo.save(plan);
@@ -238,7 +248,7 @@ export class LessonPlanService {
 
   async copy(actor: JwtTeacherPayload, id: number) {
     const source = await this.get(actor, id);
-    const copied = await this.create(actor, {
+    return this.saveAuthoring(actor, {
       title: `${source.title}（副本）`,
       theme: source.theme,
       lessonType: source.lessonType,
@@ -247,25 +257,122 @@ export class LessonPlanService {
       objectives: source.objectives,
       estimatedMinutes: source.estimatedMinutes,
       status: LessonPlanStatus.Draft,
+      requestId: `copy-${id}-${crypto.randomUUID()}`,
+      changeSummary: '复制教案（学生内容需重新复核）',
+      steps: source.steps.map((step) => ({ ...this.stepToDto(step as HydratedStep),
+        teacherInstruction: step.instruction, studentContent: step.content ?? '' })),
+    }, undefined, false);
+  }
+
+  async saveAuthoring(actor: JwtTeacherPayload, dto: SaveLessonAuthoringDto, id?: number, reviewed = true) {
+    const previous = this.authoringTail;
+    let release!: () => void;
+    this.authoringTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try { return await this.writeAuthoring(actor, dto, id, reviewed); }
+    finally { release(); }
+  }
+
+  private async writeAuthoring(actor: JwtTeacherPayload, dto: SaveLessonAuthoringDto, id?: number, reviewed = true) {
+    if (id !== undefined) {
+      await this.ownedPlan(actor, id);
+      if (!dto.version) throw new BadRequestException('更新教案必须提供当前版本');
+    }
+    const isolatedSteps = dto.steps.map((step) => ({ ...step,
+      instruction: step.teacherInstruction ?? '', content: step.studentContent ?? '' }));
+    this.validateStepDefinitions(isolatedSteps);
+    await this.validateStepResources(actor, dto.steps);
+    return this.dataSource.transaction(async (manager) => {
+      // Durable retry receipt lives in the existing immutable version JSON.
+      const versionRepo = manager.getRepository(LessonPlanVersion);
+      if (dto.requestId) {
+        const receipts = await versionRepo.find({ where: { createdBy: actor.sub, createdByType: actor.userType } });
+        for (const receipt of receipts) {
+          const snapshot = JSON.parse(receipt.snapshotJson);
+          if (snapshot.authoring?.requestId !== dto.requestId) continue;
+          if (snapshot.authoring.targetId !== (id ?? null) ||
+              snapshot.authoring.payload !== JSON.stringify(dto))
+            throw new ConflictException('requestId 已用于其他备课保存');
+          return snapshot.authoring.response;
+        }
+      }
+      const repo = manager.getRepository(LessonPlan);
+      const provenance = [] as Record<string, unknown>[];
+      const localIds = dto.steps.map(s => s.localStepId).filter(Boolean);
+      if (new Set(localIds).size !== localIds.length) throw new BadRequestException('步骤本地标识重复');
+      const sourceFields = { teacherInstruction: 'teacherInstructionSuggestion', studentContent: 'studentContentCandidate',
+        durationSeconds: 'durationSecondsSuggestion', resourceId: 'resourceId', title: 'title' };
+      for (const entry of dto.aiProvenance ?? []) {
+        const draft = await manager.getRepository(LessonAiDraft).findOneBy({ id: entry.draftId, teacherId: actor.sub });
+        if (!draft || draft.status !== LessonAiDraftStatus.Generated || !draft.outputJson)
+          throw new ForbiddenException('AI建议来源不可用');
+        const output = JSON.parse(draft.outputJson);
+        if (output.schemaVersion !== 2 || output.baseLessonPlanId !== (id ?? null) || output.baseVersion !== (dto.version ?? null))
+          throw new ConflictException('AI建议基础教案版本不匹配');
+        const candidate = output.candidates.find((c: { candidateId: string }) => c.candidateId === entry.candidateId);
+        const step = dto.steps.find(s => s.localStepId === entry.targetLocalStepId);
+        if (!candidate || !step || (output.targetStepId && output.targetStepId !== step.sourceStepId))
+          throw new BadRequestException('AI候选或目标步骤不匹配');
+        if (step.sourceStepId && id) {
+          const previous = await manager.getRepository(LessonPlanVersion).findOneBy({ lessonPlanId: id, versionNo: dto.version });
+          if (!previous || !JSON.parse(previous.snapshotJson).steps.some((s: { id: number }) => s.id === step.sourceStepId))
+            throw new BadRequestException('目标步骤不属于基础版本');
+        }
+        const suggestedValue = candidate[sourceFields[entry.field]];
+        if (suggestedValue === undefined) throw new BadRequestException('候选未提供该字段');
+        provenance.push({ ...entry, baseLessonPlanId: output.baseLessonPlanId, baseVersion: output.baseVersion,
+          sourceStepId: step.sourceStepId ?? null, suggestedValue, finalValue: step[entry.field] ?? null,
+          matchesSuggestion: entry.decision !== 'rejected' && step[entry.field] === suggestedValue });
+      }
+      const metadata = {
+        title: dto.title.trim(), theme: dto.theme.trim(),
+        ageGroup: dto.ageGroup, objectives: dto.objectives.trim(),
+        domain: dto.domain?.trim() || null, estimatedMinutes: dto.estimatedMinutes,
+        lessonType: dto.lessonType ?? LessonPlanType.Normal,
+        status: dto.status ?? LessonPlanStatus.Draft,
+      };
+      let plan: LessonPlan;
+      if (id !== undefined) {
+        const result = await repo.update({ id, version: dto.version, deletedAt: IsNull() }, metadata);
+        if (result.affected !== 1) throw this.versionConflict();
+        plan = await repo.findOneByOrFail({ id });
+      } else {
+        // saveSteps increments to v1 and creates the only version in this transaction.
+        plan = await repo.save(repo.create({ ...metadata, teacherId: actor.sub,
+          schoolId: actor.schoolId ?? null, version: 0, currentVersionId: null,
+          outlineJson: null, deletedAt: null }));
+      }
+      await this.saveSteps(actor, plan.id, { version: plan.version, steps: isolatedSteps,
+        changeSummary: dto.changeSummary?.trim() || (id ? '完整更新教案' : '创建完整教案') }, manager);
+      const saved = await repo.findOneByOrFail({ id: plan.id });
+      saved.steps = (await this.loadSteps(plan.id, manager)) as LessonStep[];
+      if (dto.requestId) {
+        const receipt = await versionRepo.findOneByOrFail({ id: saved.currentVersionId! });
+        const snapshot = JSON.parse(receipt.snapshotJson);
+        snapshot.contentBoundary = reviewed ? 1 : 0;
+        if (provenance.length) snapshot.aiProvenance = provenance.map(entry => ({ ...entry,
+          savedStepId: saved.steps[dto.steps.findIndex(s => s.localStepId === entry.targetLocalStepId)]?.id }));
+        for (const step of saved.steps) Object.assign(step, { teacherInstruction: step.instruction,
+          studentContent: reviewed ? step.content : null, contentReviewRequired: !reviewed });
+        snapshot.authoring = { requestId: dto.requestId, targetId: id ?? null,
+          payload: JSON.stringify(dto), response: saved };
+        receipt.snapshotJson = JSON.stringify(snapshot);
+        await versionRepo.save(receipt);
+      }
+      return saved;
     });
-    if (source.steps.length)
-      await this.saveSteps(actor, copied.id, {
-        version: copied.version,
-        changeSummary: '复制教案步骤',
-        steps: source.steps.map((step) => this.stepToDto(step as HydratedStep)),
-      });
-    return this.get(actor, copied.id);
   }
 
   async saveSteps(
     actor: JwtTeacherPayload,
     id: number,
     dto: SaveLessonStepsDto,
+    transactionManager?: EntityManager,
   ) {
-    await this.ownedPlan(actor, id);
+    if (!transactionManager) await this.ownedPlan(actor, id);
     this.validateStepDefinitions(dto.steps);
     await this.validateStepResources(actor, dto.steps);
-    return this.dataSource.transaction(async (manager) => {
+    const write = async (manager: EntityManager) => {
       const planRepo = manager.getRepository(LessonPlan);
       const current = await planRepo.findOneBy({
         id,
@@ -293,7 +400,7 @@ export class LessonPlanService {
       const savedSteps: LessonStep[] = [];
       for (let index = 0; index < dto.steps.length; index += 1) {
         const input = dto.steps[index];
-        const content = (input.content ?? input.instruction ?? '').trim();
+        const content = (input.studentContent ?? input.content ?? '').trim();
         const step = await manager.getRepository(LessonStep).save(
           manager.getRepository(LessonStep).create({
             lessonPlanId: id,
@@ -301,7 +408,7 @@ export class LessonPlanService {
             title: input.title.trim(),
             stepType: input.stepType,
             content,
-            instruction: content,
+            instruction: (input.teacherInstruction ?? input.instruction ?? '').trim(),
             expectedResponse: input.expectedResponse?.trim() || null,
             teacherTip: input.teacherTip?.trim() || null,
             resourceId: input.resourceId ?? null,
@@ -319,6 +426,7 @@ export class LessonPlanService {
         current,
         actor,
         dto.changeSummary?.trim() || '批量保存步骤',
+        dto.steps.every(step => step.studentContent !== undefined),
       );
       current.currentVersionId = version.id;
       await planRepo.save(current);
@@ -326,7 +434,8 @@ export class LessonPlanService {
         version: current.version,
         steps: await this.loadSteps(id, manager),
       };
-    });
+    };
+    return transactionManager ? write(transactionManager) : this.dataSource.transaction(write);
   }
 
   async addStep(actor: JwtTeacherPayload, id: number, dto: AddLessonStepDto) {
@@ -352,7 +461,14 @@ export class LessonPlanService {
     const index = plan.steps.findIndex((step) => step.id === stepId);
     if (index < 0) throw new NotFoundException('教案步骤不存在');
     const current = this.stepToDto(plan.steps[index] as HydratedStep);
-    const { version, ...updates } = dto;
+    const { version, ...submitted } = dto;
+    // Class transformation may materialize omitted optional fields as undefined.
+    // A partial PATCH must not erase existing step metadata.
+    const updates = Object.fromEntries(Object.entries(submitted).filter(([, value]) => value !== undefined));
+    if (dto.content !== undefined && dto.studentContent === undefined) {
+      // Legacy content edits must be re-reviewed; do not let a stale alias mask the edit.
+      delete current.studentContent;
+    }
     const steps = plan.steps.map((step, position) =>
       position === index
         ? ({ ...current, ...updates } as LessonStepDto)
@@ -431,6 +547,9 @@ export class LessonPlanService {
     actor: JwtTeacherPayload,
     dto: AiLessonPlanDraftRequestDto,
   ) {
+    if (dto.schemaVersion === 2) return this.lessonAi.generateCandidateDraft(actor, dto);
+    if (dto.taskType || dto.baseLessonPlanId || dto.baseVersion || dto.targetStepId)
+      throw new BadRequestException('候选备课请求必须使用schemaVersion=2');
     await Promise.all(
       dto.resourceIds.map((id) => this.resources.getUsable(actor, id)),
     );
@@ -484,7 +603,8 @@ export class LessonPlanService {
     const draft = await this.ownedAiDraft(actor, id);
     return {
       ...draft,
-      output: draft.outputJson ? this.parseAiOutput(draft.outputJson) : null,
+      output: draft.outputJson ? (JSON.parse(draft.inputJson).schemaVersion === 2
+        ? JSON.parse(draft.outputJson) : this.parseAiOutput(draft.outputJson)) : null,
     };
   }
 
@@ -494,6 +614,8 @@ export class LessonPlanService {
     dto: ConfirmAiLessonDraftDto,
   ) {
     const draft = await this.ownedAiDraft(actor, id);
+    if (JSON.parse(draft.inputJson).schemaVersion === 2)
+      throw new ConflictException('候选草稿不能通过旧确认接口保存，需教师审阅后使用authoring');
     if (draft.status !== LessonAiDraftStatus.Generated || !draft.outputJson)
       throw new ConflictException('AI草稿不可确认或已经确认');
     const output = this.parseAiOutput(draft.outputJson);
@@ -546,7 +668,7 @@ export class LessonPlanService {
               sortOrder: index + 1,
               title: step.title,
               stepType: step.stepType,
-              content: step.content,
+              content: '', // Legacy AI output is a teacher planning suggestion, not approved student text.
               instruction: step.content,
               expectedResponse: null,
               teacherTip: null,
@@ -715,7 +837,7 @@ export class LessonPlanService {
 
   private validateStepDefinitions(steps: LessonStepDto[]) {
     for (const step of steps) {
-      if (!(step.content ?? step.instruction)?.trim())
+      if (!(step.teacherInstruction || step.instruction || step.content)?.trim())
         throw new BadRequestException('步骤内容不能为空');
       if (step.stepType === LessonStepType.Resource && !step.resourceId)
         throw new BadRequestException('资源步骤必须选择有效资源');
@@ -816,9 +938,11 @@ export class LessonPlanService {
     plan: LessonPlan,
     actor: JwtTeacherPayload,
     changeSummary: string,
+    reviewed = false,
   ) {
     const steps = await this.loadSteps(plan.id, manager);
     const snapshot = {
+      contentBoundary: reviewed ? 1 : 0,
       id: plan.id,
       teacherId: plan.teacherId,
       title: plan.title,
@@ -843,6 +967,12 @@ export class LessonPlanService {
         changeSummary,
       }),
     );
+  }
+
+  private async hasReviewedContent(manager: EntityManager, versionId: number | null) {
+    if (!versionId) return false;
+    const version = await manager.getRepository(LessonPlanVersion).findOneBy({ id: versionId });
+    return !!version && JSON.parse(version.snapshotJson).contentBoundary === 1;
   }
 
   private async loadSteps(
@@ -876,10 +1006,13 @@ export class LessonPlanService {
   }
 
   private stepToDto(step: HydratedStep): LessonStepDto {
+    const boundary = step as HydratedStep & { studentContent?: string | null; contentReviewRequired?: boolean };
     return {
       title: step.title,
       stepType: step.stepType,
-      content: step.content ?? step.instruction,
+      content: step.content ?? undefined,
+      instruction: step.instruction,
+      ...(boundary.contentReviewRequired === false ? { studentContent: boundary.studentContent ?? '' } : {}),
       expectedResponse: step.expectedResponse ?? undefined,
       teacherTip: step.teacherTip ?? undefined,
       resourceId: step.resourceId ?? undefined,

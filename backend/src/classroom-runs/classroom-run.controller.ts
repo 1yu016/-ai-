@@ -67,7 +67,7 @@ export class ClassroomRunController {
     @Query() query: ClassroomScreenStateQueryDto,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.service.screenState(request.user, query.deviceId);
+    return this.service.screenState(request.user, query.deviceId, query.handoffId);
   }
 
   @Get(':id/restore')

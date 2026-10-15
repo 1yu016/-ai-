@@ -1,18 +1,23 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { CLASSROOM_EXIT_MESSAGE, requiresClassroomExitConfirmation } from '@/router/classroomExitPolicy'
 import { storeToRefs } from 'pinia'
-import { ElButton, ElMessage, ElMessageBox, ElTag } from 'element-plus'
+import { ElButton, ElDrawer, ElMessage, ElMessageBox, ElTag } from 'element-plus'
+import LivePresentationPreview from '@/components/classroom/LivePresentationPreview.vue'
+import PresentationQueuePanel from '@/components/classroom/PresentationQueuePanel.vue'
 import { apiErrorMessage, http } from '@/api/http'
 import { platformApi, type Student, type RewardLeaderboardItem } from '@/api/platform'
 import ResourcePlayer from '@/components/ResourcePlayer.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 import InteractionFullscreenView from '@/components/classroom/operations/InteractionFullscreenView.vue'
 import OpeningSequenceOverlay from '@/components/classroom/OpeningSequenceOverlay.vue'
+import { screenOpeningApi } from '@/api/screenOpening'
+import type { ScreenLifecycle } from '@/stores/lessonRun'
 import FullscreenLeaderboard from '@/components/classroom/FullscreenLeaderboard.vue'
 import ClassroomHeader from '@/components/classroom/ClassroomHeader.vue'
 import ClassroomStepSidebar from '@/components/classroom/ClassroomStepSidebar.vue'
-import ClassroomControlBar from '@/components/classroom/ClassroomControlBar.vue'
+import ClassroomQuickActions from '@/components/classroom/ClassroomQuickActions.vue'
 import ClassroomAssistantPanel from '@/components/classroom/ClassroomAssistantPanel.vue'
 import ClassroomDirectorPanel from '@/components/classroom/ClassroomDirectorPanel.vue'
 import ClassroomVoiceControl from '@/components/classroom/ClassroomVoiceControl.vue'
@@ -54,6 +59,12 @@ import {
 
 const route = useRoute(); const router = useRouter(); const store = useLessonRunStore(); const assistant = useClassroomAssistantStore(); const resources = useCourseResourceStore()
 const user = useUserStore()
+const presentationDrawerOpen = ref(false)
+const lessonDetailsOpen = ref(false)
+const assistantDrawerOpen = ref(false)
+const voiceDrawerOpen = ref(false)
+const moreDrawerOpen = ref(false)
+const allowDebugPanel = computed(() => import.meta.env.DEV && route.query.debug === '1')
 const digitalHuman = useDigitalHumanStore()
 const classroomCommand = useClassroomCommandStore()
 const resourcePlayer = useResourcePlayerStore()
@@ -170,6 +181,10 @@ const dhActionLabel: Record<string, string> = { idle:'待机', listen:'倾听', 
 const dhActionText = computed(() => dhActionLabel[digitalHuman.action] ?? '待机')
 const micReady = computed(() => isRecordingSupported())
 const assistantOnline = computed(() => assistant.active)
+const copilotStatus = computed(() => assistantSpeaking.value ? '正在讲解' : assistantLoading.value ? '正在思考' : voiceRecState.value === 'recording' ? '正在听' : '待命')
+const compactVoiceStatus = computed(() => voiceRecState.value === 'recording' ? '正在听…' : voiceRecState.value === 'recognizing' ? '正在识别…' : commandBusy.value ? '正在执行课堂口令…' : commandFeedback.value || voiceFeedback.value || (micReady.value ? '麦克风已就绪' : '麦克风不可用'))
+const nextTeachingStep = computed(() => run.value?.steps.find(step => step.stepIndex > (run.value?.currentStepIndex ?? -1)))
+watch(resourceCommandResult, result => { if (result) voiceDrawerOpen.value = true })
 async function safe(task: () => Promise<void>) { try { await task() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作失败，请检查网络后重试') } }
 async function goToStep(index: number) { if (!run.value || index === run.value.currentStepIndex) return; await safe(() => store.move(index)) }
 // ─── 全屏板块 + 开场/教学阶段（frontend only，不改 ClassroomRun）──────────────
@@ -177,7 +192,9 @@ async function goToStep(index: number) { if (!run.value || index === run.value.c
 // 仅用 Vue Teleport + Transition 做 overlay，不走路由跳转，避免重载 ClassroomRun。
 const activeFullscreenPanel = ref<'interaction' | 'leaderboard' | 'avatar' | null>(null)
 // 前端 UI 阶段：opening=开场、teaching=正式教学。纯粹 UI 状态，不影响 backend。
-const classroomPhase = ref<'opening' | 'teaching'>('teaching')
+const openingLifecycle = computed(() => run.value?.interactionState?.screenLifecycle as ScreenLifecycle | undefined)
+const classroomPhase = computed<'opening' | 'teaching'>(() => openingLifecycle.value?.phase === 'opening' ? 'opening' : 'teaching')
+const openingBusy = ref(false)
 
 // 数字人职责划分（2D / 3D 各司其职，不强行合并）：
 //   Opening → DigitalHumanStage(3D)；Teaching → ClassroomAvatar(2D)；Fullscreen → DigitalHumanStage(3D far)。
@@ -206,9 +223,15 @@ const fullscreenMeta = computed(() => {
   return parts.join(' · ')
 })
 // 开场「进入课堂 / 跳过开场」：两按钮同一出口，TTS 失败也不会把教师卡在开场。
-function enterClassroomFromOpening() {
-  classroomPhase.value = 'teaching'
-  closeFullscreen()
+async function enterClassroomFromOpening(operation: 'complete' | 'skip' = 'complete') {
+  if (!run.value || !openingLifecycle.value || openingBusy.value) return
+  openingBusy.value = true
+  try {
+    await screenOpeningApi.finish(run.value.id, openingLifecycle.value, operation)
+    await store.load(run.value.id)
+    closeFullscreen()
+  } catch (error) { ElMessage.error(apiErrorMessage(error, '开场结束失败，请重试。')) }
+  finally { openingBusy.value = false }
 }
 async function finish(kind: 'complete' | 'cancel') { const text = kind === 'complete' ? '确定本节课已经完成吗？结束后将进入课堂总结，本节课堂将不能继续教学操作。' : '确认中止本次课堂吗？教案不会被删除。'; try { await ElMessageBox.confirm(text, kind === 'complete' ? '结束课堂' : '中止课堂', { type:'warning', confirmButtonText: kind === 'complete' ? '确认结束' : '确认', cancelButtonText:'继续上课' }) } catch { return } digitalHuman.transition({ type: 'lesson_end' }); const runId = run.value?.id; if (kind === 'complete') { if (runId == null) return; try { await store.complete(); store.clear(); await router.push({ name: 'lesson-classroom-summary', params: { runId } }) } catch (e) { ElMessage.error(e instanceof Error ? e.message : '结束课堂失败，请重试。') } } else { await safe(async () => { await store.cancel(); store.clear(); await router.push('/lesson-plans') }) } }
 async function runCommand() {
@@ -457,7 +480,7 @@ async function playAssistantDraft() { const text = draftReply.value.trim(); if (
 function acceptDraftAsText() { draftAccepted.value = true; digitalHuman.transition({ type: 'ai_response', emotion: 'encourage' }); ElMessage.success('已由教师确认，可自行讲述给孩子听') }
 function discardAssistantDraft() { stopAssistantSpeech(); digitalHuman.transition({ type: 'settle' }); draftAccepted.value = false; assistant.endInteraction() }
 function beforeUnload(event: BeforeUnloadEvent) { if (!isActive.value) return; event.preventDefault(); event.returnValue = '' }
-onBeforeRouteLeave(() => !isActive.value || window.confirm('课堂仍在进行中，确定离开吗？进度已由后端保存。'))
+onBeforeRouteLeave(() => !requiresClassroomExitConfirmation(run.value?.status) || window.confirm(CLASSROOM_EXIT_MESSAGE))
 watch(currentStep, (step, previous) => {
   if (!run.value || !step) return
   if (previous && previous.stepIndex !== step.stepIndex) { assistant.endInteraction(); cancelChildRecording(); childReply.value = ''; digitalHuman.transition({ type: 'step_change' }) }
@@ -484,11 +507,12 @@ function handleKeydown(event: KeyboardEvent) {
 }
 async function mountClassroom() {
   window.addEventListener('beforeunload', beforeUnload)
+  // The voice panel is now lazy-mounted in a drawer; keep its existing preferences ready for the status-bar entry.
+  void voicePreferences.load().catch(() => undefined)
   await store.load(Number(route.params.runId)).catch(() => undefined)
   // 仅在「刚创建并通过 start 进入」的一次性标记下播放开场；
   // 刷新后 store 重建、标记归零，不会重复开场。
   if (store.newlyStarted && isActive.value) {
-    classroomPhase.value = 'opening'
     store.newlyStarted = false
   }
   store.startPolling()
@@ -499,7 +523,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
 </script>
 
 <template>
-  <main class="classroom">
+  <main class="classroom" :class="{ 'classroom-debug': allowDebugPanel }">
     <div v-if="loading" class="center">正在恢复课堂…</div>
     <div v-else-if="error" class="center error">{{ error }}<ElButton @click="router.push('/lesson-plans')">返回教案列表</ElButton></div>
     <!-- Stage 7.4：课间休息。isBreakActive 为 true 时隐藏推进教学的 workspace/ControlBar，仅展示倒计时与提前结束 -->
@@ -516,7 +540,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
     </div>
     <template v-else-if="run && currentStep && isActive">
       <ClassroomHeader
-        :lesson-title="run.lessonTitle"
+        :lesson-title="`${leaderboardClassName !== '班级成长榜' ? leaderboardClassName.replace(/成长榜$/, '') + ' · ' : ''}${run.lessonTitle}`"
         :step-title="currentStep.title"
         :paused="paused"
         :current-step-index="run.currentStepIndex"
@@ -524,8 +548,16 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
         :elapsed-seconds="elapsedSeconds"
         :step-minutes="Math.ceil(currentStep.durationSeconds / 60)"
         :progress="progress"
-      />
-      <div class="workspace">
+      >
+        <template #navigation><ElButton text @click="router.push({ name: 'my-classes' })">← 工作台</ElButton></template>
+        <template #actions>
+          <ElButton text @click="assistantDrawerOpen = true">AI{{ copilotStatus }}</ElButton>
+          <ElButton :disabled="busy" @click="safe(paused ? store.resume : store.pause)">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
+          <ElButton :disabled="busy" @click="finish('complete')">结束课堂</ElButton>
+          <ElButton text @click="moreDrawerOpen = true">更多</ElButton>
+        </template>
+      </ClassroomHeader>
+      <div class="workspace" :class="{ 'flow-collapsed': stepSidebarCollapsed }">
         <ClassroomStepSidebar
           :steps="run.steps"
           :current-step-index="run.currentStepIndex"
@@ -534,9 +566,15 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
           :collapsed="stepSidebarCollapsed"
           @go-step="goToStep"
           @toggle-collapse="stepSidebarCollapsed = !stepSidebarCollapsed"
-        />
+        >
+          <div class="next-teaching-step"><small>下一环节</small><strong>{{ nextTeachingStep?.title || '课堂总结' }}</strong><ElButton text :disabled="paused || busy || !nextTeachingStep" @click="safe(store.next)">进入下一环节</ElButton></div>
+        </ClassroomStepSidebar>
         <section class="center-panel">
           <div class="center-scroll">
+            <LivePresentationPreview>
+              <ElButton type="primary" @click="presentationDrawerOpen = true">调整课堂内容</ElButton>
+            </LivePresentationPreview>
+            <ElDrawer v-model="lessonDetailsOpen" title="课堂教案 · 仅教师可见" size="min(640px, 95vw)">
             <section class="step-card">
               <ElTag effect="light" class="step-type-tag">{{ typeText[currentStep.type] ?? currentStep.type }}</ElTag>
               <h2 class="step-heading">{{ currentStep.title }}</h2>
@@ -567,6 +605,12 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
                 <ElButton type="primary" size="large" :disabled="!currentResource || resourceResolveState.status === 'loading'" @click="store.openResource()">打开资源</ElButton>
               </div>
             </section>
+            <details v-for="step in run.steps.filter(item => item.stepIndex !== currentStep?.stepIndex)" :key="step.stepIndex" class="lesson-detail-step"><summary>第 {{ step.stepIndex + 1 }} 环节 · {{ step.title }}</summary><p>{{ step.content }}</p><p v-if="step.teacherTip">教师提示：{{ step.teacherTip }}</p><p v-if="step.expectedResponse">预期回答：{{ step.expectedResponse }}</p></details>
+            </ElDrawer>
+            <ElDrawer v-model="presentationDrawerOpen" title="本节课堂展示内容" size="min(760px, 95vw)">
+              <PresentationQueuePanel />
+            </ElDrawer>
+            <ElDrawer v-model="assistantDrawerOpen" title="AI教学伙伴" size="min(660px, 95vw)">
             <ClassroomAssistantPanel
               v-model:teacher-prompt="teacherPrompt"
               v-model:child-reply="childReply"
@@ -592,6 +636,8 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
               @discard-draft="discardAssistantDraft"
             />
             <ClassroomDirectorPanel />
+            </ElDrawer>
+            <ElDrawer v-model="voiceDrawerOpen" title="课堂语音与口令" size="min(640px, 95vw)">
             <ClassroomVoiceControl
               v-model:command-input="commandInput"
               :command-feedback="commandFeedback"
@@ -612,11 +658,15 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
               @confirm="confirmResourceCommand"
               @cancel="cancelResourceCommand"
             />
+            </ElDrawer>
           </div>
         </section>
         <div class="assist-col">
+          <ClassroomQuickActions :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" />
           <!-- 1. AI 教学伙伴：常驻主卡（数字人常驻 + 状态 + 进入大屏），约占右栏 55~65% -->
           <ClassroomPartnerPanel
+            compact
+            :debug-mode="allowDebugPanel"
             :action-text="dhActionText"
             :mic-ready="micReady"
             :assistant-online="assistantOnline"
@@ -624,51 +674,22 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
             @enter-avatar="openFullscreen('avatar')"
           />
           <!-- 2/3. 课堂互动 / 本节榜单：compact launcher（完整点名+奖励、Top5 榜单都在对应全屏） -->
-          <div class="launcher-row">
-            <button class="launcher" type="button" data-test="open-interaction" @click="openFullscreen('interaction')">
-              <span class="l-emoji">🎯</span>
-              <span class="l-body">
-                <span class="l-title">课堂互动</span>
-                <span class="l-sub">点名 · 快速奖励</span>
-              </span>
-              <span class="l-side">
-                <em class="l-stars">🌟 本节 {{ runRewardTotal }}</em>
-                <b class="l-arrow">›</b>
-              </span>
-            </button>
-            <button class="launcher" type="button" data-test="open-leaderboard" @click="openFullscreen('leaderboard')">
-              <span class="l-emoji">🏆</span>
-              <span class="l-body">
-                <span class="l-title">本节榜单</span>
-                <span class="l-sub">查看课堂表现</span>
-              </span>
-              <span class="l-side"><b class="l-arrow">›</b></span>
-            </button>
-          </div>
         </div>
       </div>
-      <ClassroomControlBar
-        :paused="paused"
-        :busy="busy"
-        :current-step-index="run.currentStepIndex"
-        :total-steps="run.steps.length"
-        @previous="safe(store.previous)"
-        @next="safe(store.next)"
-        @repeat="store.repeat"
-        @pause="safe(store.pause)"
-        @resume="safe(store.resume)"
-        @finish-complete="finish('complete')"
-        @finish-cancel="finish('cancel')"
-      >
-        <template #extra>
-          <div class="control-group reward">
-            <span class="group-label">奖励</span>
-            <ElButton size="large" :disabled="rewardsLoading" @click="openRewardDrawer">
-              🌟 本节课奖励（{{ runRewardTotal }}）
-            </ElButton>
-          </div>
-        </template>
-      </ClassroomControlBar>
+      <footer class="teacher-hint-bar">
+        <div class="teacher-hint"><strong>教师提示</strong><span>{{ currentStep.teacherTip || teacherTip || '给小朋友一点观察和表达的时间。' }}</span></div>
+        <ElButton text @click="lessonDetailsOpen = true">查看完整教案</ElButton>
+        <button class="voice-status" type="button" :disabled="commandBusy || voiceRecState === 'recognizing' || busy" @click="toggleVoiceRecording">{{ voiceRecState === 'recording' ? '结束录音' : '语音控制' }}</button>
+        <button class="voice-detail" type="button" @click="voiceDrawerOpen = true">{{ compactVoiceStatus }}</button>
+      </footer>
+      <ElDrawer v-model="moreDrawerOpen" title="更多课堂操作" size="min(480px, 95vw)">
+        <div class="more-actions">
+          <ElButton :disabled="paused || busy" @click="store.repeat">重复本环节</ElButton>
+          <ElButton :disabled="rewardsLoading" @click="openRewardDrawer">本节奖励记录（{{ runRewardTotal }}）</ElButton>
+          <hr /><p>中止后无法继续当前课堂，请确认后操作。</p>
+          <ElButton type="danger" plain :disabled="busy" @click="finish('cancel')">中止课堂</ElButton>
+        </div>
+      </ElDrawer>
       <ClassRewardDrawer
         v-model="rewardDrawerOpen"
         :rewards="rewards"
@@ -679,10 +700,19 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
       <OpeningSequenceOverlay
         v-if="classroomPhase === 'opening' && isActive"
         :lesson-title="run.lessonTitle"
-        :subtitle="run.lessonObjectives || '今天我们一起认识有趣的新知识，进入课堂开始吧！'"
+        subtitle="小朋友们好，我们一起探索今天的新知识吧！"
+        :busy="openingBusy"
         :teacher-name="user.teacherInfo?.name ?? ''"
         @enter="enterClassroomFromOpening"
-      />
+        @skip="enterClassroomFromOpening('skip')"
+      >
+        <template #controls>
+          <div class="opening-teacher-controls">
+            <ElButton :disabled="busy || openingBusy" @click="safe(paused ? store.resume : store.pause)">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
+            <ElButton :disabled="busy || openingBusy" @click="finish('complete')">结束课堂</ElButton>
+          </div>
+        </template>
+      </OpeningSequenceOverlay>
     </template>
     <div v-else-if="run" class="center ended">
       <h1>{{ run.status === 'completed' ? '本节课堂已完成' : run.status === 'failed' ? '课堂运行异常' : '本节课堂已中止' }}</h1>
@@ -769,6 +799,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
 </template>
 
 <style scoped>
+.classroom-exit{display:flex;align-items:center;gap:14px;color:#8d7568;font-size:13px;margin-bottom:12px;flex-wrap:wrap}
 .classroom {
   position: relative;
   height: 100vh;
@@ -1030,4 +1061,21 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
   .fs-back { justify-self: center; }
   .fs-top-right { justify-self: end; }
 }
+</style>
+<style scoped>
+.classroom{height:100dvh;padding:16px;gap:10px;background:var(--app-bg);color:var(--app-text)}
+.workspace{grid-template-columns:160px minmax(0,1fr) 188px;gap:12px;margin:0;min-height:0;flex:1}
+.workspace.flow-collapsed{grid-template-columns:68px minmax(0,1fr) 188px}
+.workspace :deep(.step-sidebar){width:160px;padding:10px 8px;background:transparent;box-shadow:none;border:0;border-right:1px solid var(--app-border);border-radius:0}
+.workspace :deep(.step-sidebar.collapsed){width:68px}.workspace :deep(.step-item){padding:10px 7px;gap:7px}.workspace :deep(.step-flag){display:none}.workspace :deep(.step-no){width:24px;height:24px;min-width:24px}
+.center-panel,.center-scroll{min-height:0;height:100%;overflow:hidden;padding:0;gap:0}.assist-col{gap:14px;overflow:auto;padding:2px}
+.next-teaching-step{display:flex;flex-direction:column;gap:8px;margin-top:auto;padding:14px 8px 4px;border-top:1px solid var(--app-border)}.next-teaching-step small{color:var(--app-muted)}.next-teaching-step strong{font-size:14px}
+.teacher-hint-bar{display:flex;align-items:center;gap:12px;flex:none;min-height:54px;padding:8px 12px;background:var(--app-surface);border:1px solid var(--app-border);border-radius:14px}
+.teacher-hint{display:flex;gap:10px;align-items:center;min-width:0;flex:1;font-size:13px}.teacher-hint strong{white-space:nowrap;color:var(--app-primary-dark)}.teacher-hint span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--app-muted)}
+.voice-status,.voice-detail{border:0;background:transparent;font:inherit;font-size:12px;color:var(--app-text);cursor:pointer}.voice-status{background:var(--app-primary-soft);border-radius:10px;padding:9px 12px;white-space:nowrap}.voice-status:disabled{opacity:.5;cursor:not-allowed}.voice-detail{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;color:var(--app-muted)}
+.more-actions{display:flex;flex-direction:column;gap:16px}.more-actions :deep(.el-button){margin:0}.more-actions p{font-size:13px;color:var(--app-muted)}.more-actions hr{border:0;border-top:1px solid var(--app-border);width:100%}
+.lesson-detail-step{margin-top:16px;padding:16px;border:1px solid var(--app-border);border-radius:12px}.lesson-detail-step summary{cursor:pointer;font-weight:700}.lesson-detail-step p{color:var(--app-muted);line-height:1.7}
+:global(body:has(.classroom:not(.classroom-debug)) #__vue-devtools-container__){display:none!important}
+@media(max-width:1100px){.workspace{grid-template-columns:140px minmax(0,1fr) 180px}.workspace :deep(.step-sidebar){width:140px}.workspace.flow-collapsed{grid-template-columns:68px minmax(0,1fr) 180px}.voice-detail{max-width:120px}}
+@media(max-width:760px){.classroom{height:auto;min-height:100dvh;overflow:visible}.workspace{grid-template-columns:68px minmax(0,1fr);min-height:520px}.workspace :deep(.step-sidebar){width:68px}.assist-col{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr}.teacher-hint-bar{flex-wrap:wrap}.teacher-hint{flex-basis:70%}.center-panel{min-height:450px}}
 </style>

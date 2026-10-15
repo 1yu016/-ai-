@@ -23,6 +23,7 @@ const props = withDefaults(
     opening?: boolean
     controls?: boolean
     far?: boolean
+    framing?: 'default' | 'screen'
     mode?: 'default' | 'immersive'
   }>(),
   { opening: false, controls: true, far: false, mode: 'default' },
@@ -56,7 +57,7 @@ function listen() { store.transition({ type: 'teacher_command', command: 'listen
     <!-- 普通课堂：说话气泡贴在人物附近 -->
     <div v-if="!props.opening" class="speech"><span>{{ actionText[action] }}</span><small v-if="error">{{ error }}</small></div>
 
-    <ThreeAvatarStage v-if="show3d" :opening="props.opening" :far="props.far" @pointerdown="listen" />
+    <ThreeAvatarStage v-if="show3d" :opening="props.opening" :far="props.far" :framing="props.framing" @pointerdown="listen" />
     <div v-else-if="fallback" class="avatar" :class="`action-${action}`" role="img" :aria-label="props.opening ? 'AI 教学伙伴' : roleName">
       <div class="hair">✦</div><div class="face"><span class="eye left">•</span><span class="eye right">•</span><span class="mouth">{{ face }}</span></div><div class="body">{{ face }}</div>
     </div>

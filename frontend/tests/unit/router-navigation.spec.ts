@@ -94,4 +94,18 @@ describe('统一返回规则', () => {
     await navigateBack(router, route, { isLogin: true, teacherInfo: administrator })
     expect(push).toHaveBeenCalledWith({ name: 'classes' })
   })
+
+  it('业务返回目标优先于无关的浏览器历史', async () => {
+    const resolver = createRouter({ history: createMemoryHistory(), routes })
+    await resolver.push('/chat')
+    await resolver.push('/resources/12')
+    const push = vi.fn().mockResolvedValue(undefined)
+    const back = vi.fn()
+    const router = { resolve: resolver.resolve.bind(resolver), push, back } as unknown as typeof resolver
+
+    await navigateBack(router, resolver.currentRoute.value, { isLogin: true, teacherInfo: teacher })
+
+    expect(push).toHaveBeenCalledWith({ name: 'resources' })
+    expect(back).not.toHaveBeenCalled()
+  })
 })

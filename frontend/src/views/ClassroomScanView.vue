@@ -17,7 +17,6 @@ const qrNetworkHint = ref('')
 const loading = ref(false)
 const error = ref('')
 const now = ref(Date.now())
-let heartbeatTimer: number | undefined
 let clockTimer: number | undefined
 
 const selectedBinding = computed(() =>
@@ -49,7 +48,6 @@ async function loadBindings(value: number) {
   classroomId.value = 0
   deviceId.value = 0
   clearTicket()
-  stopHeartbeat()
   if (!value) return
   try {
     const response = await platformApi.classDeviceBindings(value)
@@ -59,12 +57,23 @@ async function loadBindings(value: number) {
   }
 }
 
+async function refreshDeviceList() {
+  await loadClasses()
+  const selectedClass = classId.value
+  if (!selectedClass) return
+  try {
+    const response = await platformApi.classDeviceBindings(selectedClass)
+    if (selectedClass === classId.value) bindings.value = response.data.filter(item => item.device?.type === 'classroom_screen')
+  } catch (cause) {
+    error.value = apiErrorMessage(cause, '设备状态刷新失败，请重试。')
+  }
+}
+
 async function create() {
   if (!canCreate.value || !selectedBinding.value || loading.value) return
   loading.value = true
   error.value = ''
   try {
-    await sendHeartbeat()
     const result = await platformApi.createTicket({
       classId: classId.value,
       classroomId: classroomId.value,
@@ -87,7 +96,6 @@ async function create() {
       width: 320,
       color: { dark: '#3f544c', light: '#ffffff' },
     })
-    startHeartbeat()
   } catch (cause) {
     clearTicket()
     error.value = apiErrorMessage(cause, '二维码生成失败，请检查设备绑定及状态。')
@@ -96,29 +104,6 @@ async function create() {
   }
 }
 
-async function sendHeartbeat() {
-  const device = selectedBinding.value?.device
-  if (!device) return
-  await platformApi.heartbeat(device.id, device.deviceCode)
-  device.status = 'online'
-  device.online = true
-  device.lastOnlineAt = new Date().toISOString()
-}
-
-function startHeartbeat() {
-  stopHeartbeat()
-  heartbeatTimer = window.setInterval(() => {
-    void sendHeartbeat().catch((cause) => {
-      console.error('设备心跳上报失败：', cause)
-      error.value = '大屏心跳上报失败，请检查网络后刷新二维码。'
-    })
-  }, 30_000)
-}
-
-function stopHeartbeat() {
-  if (heartbeatTimer !== undefined) window.clearInterval(heartbeatTimer)
-  heartbeatTimer = undefined
-}
 
 function clearTicket() {
   ticket.value = ''
@@ -131,19 +116,9 @@ watch(classId, (value) => void loadBindings(value))
 watch(classroomId, () => {
   deviceId.value = 0
   clearTicket()
-  stopHeartbeat()
 })
-watch(deviceId, (value) => {
+watch(deviceId, () => {
   clearTicket()
-  stopHeartbeat()
-  if (value) {
-    void sendHeartbeat()
-      .then(startHeartbeat)
-      .catch((cause) => {
-        console.error('设备心跳上报失败：', cause)
-        error.value = apiErrorMessage(cause, '大屏心跳上报失败，当前设备不能参与课堂。')
-      })
-  }
 })
 watch(secondsLeft, (value) => {
   if (ticket.value && value === 0) {
@@ -158,7 +133,6 @@ onMounted(() => {
   }, 1000)
 })
 onBeforeUnmount(() => {
-  stopHeartbeat()
   if (clockTimer !== undefined) window.clearInterval(clockTimer)
 })
 </script>
@@ -172,7 +146,7 @@ onBeforeUnmount(() => {
           <h1>课堂设备准备</h1>
           <p class="muted">选择已绑定的大屏，生成两分钟内有效的一次性二维码。</p>
         </div>
-        <button class="button secondary" type="button" @click="loadClasses">刷新设备</button>
+        <button class="button secondary" type="button" @click="refreshDeviceList">刷新设备</button>
       </header>
 
       <section class="panel scan-form">
@@ -210,6 +184,9 @@ onBeforeUnmount(() => {
           {{ loading ? '生成中…' : ticket ? '刷新二维码' : '生成扫码二维码' }}
         </button>
         <p v-if="error" class="bad">{{ error }}</p>
+        <p v-if="deviceId" class="device-hint">本页只生成配对二维码，不维持设备在线。请在教室大屏打开
+          <a :href="`/classroom/screen/${deviceId}`" target="_blank" rel="noopener">正式课堂大屏页面</a>，由设备会话心跳证明在线。
+        </p>
 
         <div v-if="qrDataUrl" class="ticket" aria-live="polite">
           <div class="qr-shell"><img :src="qrDataUrl" alt="教师扫码进入课堂二维码" /></div>
@@ -230,4 +207,5 @@ onBeforeUnmount(() => {
 <style scoped>
 .scan-page{max-width:980px;margin:auto;color:#60483e}.scan-page header{display:flex;justify-content:space-between;align-items:end;gap:20px}.eyebrow{margin:0;color:#d17859;font-weight:800}.scan-page h1{margin:6px 0 8px;font-size:40px}.muted{margin:0;color:#927b6e}.panel{margin-top:22px;padding:24px;border:1px solid #efddcf;border-radius:20px;background:#fffdf9;box-shadow:0 12px 30px #a46e4d16}.scan-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.scan-form label{display:grid;gap:7px;font-weight:700}.scan-form select{height:44px;border:1px solid #efd9c8;background:#fff;border-radius:11px;padding:0 11px}.button{min-height:44px;border:0;border-radius:12px;padding:0 20px;background:#e99168;color:#fff;font:inherit;font-weight:700;cursor:pointer}.button:disabled{cursor:not-allowed;opacity:.5}.secondary{background:#fff1e7;color:#a9644b}.scan-form>.button,.bad,.ticket{grid-column:1/-1}.bad{margin:0;color:#bd4747}.ticket{display:grid;grid-template-columns:minmax(220px,340px) 1fr;gap:28px;align-items:center;margin-top:8px;padding:24px;border-radius:18px;background:#edf9f4;color:#347b69}.qr-shell{display:grid;place-items:center;padding:14px;border-radius:16px;background:#fff}.qr-shell img{display:block;width:min(100%,320px);height:auto}.ticket-copy{display:grid;gap:12px}.ticket-copy strong{font-size:24px}.ticket-copy p{margin:0;line-height:1.7}.ticket-copy small{font-size:16px;font-weight:800}.secure{color:#658277;font-size:13px}.ticket-copy .button{justify-self:start}@media(max-width:720px){.scan-page header{align-items:flex-start;flex-direction:column}.scan-form{grid-template-columns:1fr}.ticket{grid-template-columns:1fr}.scan-page h1{font-size:32px}}
 .network-hint{padding:10px 12px;border-radius:10px;background:#fff3da;color:#9a642a;font-size:13px;line-height:1.5}
+.device-hint{grid-column:1/-1;color:var(--app-muted);line-height:1.6}.device-hint a{color:var(--app-primary-dark)}
 </style>

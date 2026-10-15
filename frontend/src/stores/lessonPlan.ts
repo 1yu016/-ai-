@@ -10,11 +10,17 @@ export type LessonPlanStatus = (typeof LESSON_STATUSES)[number]
 export type LessonStepType = (typeof LESSON_STEP_TYPES)[number]
 
 export type LessonStep = {
+  localStepId?: string
   id?: number
   sortOrder: number
   title: string
   stepType: LessonStepType
   instruction: string
+  teacherInstruction?: string
+  studentContent?: string
+  contentReviewRequired?: boolean
+  actions?: Array<{ actionType: string; actionName: string; content?: string | null; targetStudentId?: number | null }>
+  recoveryPoint?: { name: string; trigger: string; recoveryStepOrder: number; prompt?: string | null; enabled?: boolean } | null
   content?: string | null
   expectedResponse?: string | null
   teacherTip?: string | null
@@ -46,6 +52,12 @@ function emptyDraft(): LessonDraft {
   return { title: '', theme: '', lessonType: 'normal', domain: '', ageGroup: '4-5', objectives: '', estimatedMinutes: 25, status: 'draft', version: 1, steps: [] }
 }
 
+function editableStep(step: LessonStep): LessonStep {
+  return { ...step, localStepId: crypto.randomUUID(), teacherInstruction: step.teacherInstruction ?? step.instruction ?? '',
+    studentContent: step.contentReviewRequired === false ? step.studentContent ?? '' : '',
+    contentReviewRequired: step.contentReviewRequired !== false }
+}
+
 export const useLessonPlanStore = defineStore('lessonPlan', () => {
   const items = ref<LessonPlan[]>([])
   const total = ref(0)
@@ -60,6 +72,12 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
   const current = ref<LessonPlan | null>(null)
   const draft = ref<LessonDraft>(emptyDraft())
   const dirty = ref(false)
+  const editRevision = ref(0)
+  const aiProvenance = ref<Array<{ draftId: number; candidateId: string; targetLocalStepId: string;
+    field: 'teacherInstruction' | 'studentContent' | 'durationSeconds' | 'resourceId' | 'title'; decision: 'accepted' | 'modified' | 'rejected' }>>([])
+  const changeSummary = ref('')
+  const versions = ref<Array<{ id: number; versionNo: number; changeSummary: string; createdAt: string; snapshotJson: string }>>([])
+  let pendingSave: { fingerprint: string; requestId: string } | null = null
   const aiDraftId = ref<number | null>(null)
   const steps = computed(() => draft.value.steps ?? [])
 
@@ -72,17 +90,18 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
     finally { loading.value = false }
   }
 
-  function newDraft() { current.value = null; aiDraftId.value = null; draft.value = emptyDraft(); dirty.value = false }
+  function newDraft() { aiProvenance.value = []; editRevision.value++; current.value = null; aiDraftId.value = null; draft.value = emptyDraft(); dirty.value = false; changeSummary.value = ''; versions.value = []; pendingSave = null }
   async function load(id: number) {
+    aiProvenance.value = []; editRevision.value++;
     loading.value = true; error.value = ''
-    try { const { data } = await http.get<LessonPlan>(`/lesson-plans/${id}`); current.value = data; aiDraftId.value = null; draft.value = { title: data.title, theme: data.theme, lessonType: data.lessonType ?? 'normal', domain: data.domain ?? '', ageGroup: data.ageGroup, objectives: data.objectives, estimatedMinutes: data.estimatedMinutes, status: data.status, version: data.version, steps: (data.steps ?? []).map((step) => ({ ...step, instruction: step.instruction || step.content || '' })) }; dirty.value = false }
+    try { const { data } = await http.get<LessonPlan>(`/lesson-plans/${id}`); current.value = data; aiDraftId.value = null; draft.value = { title: data.title, theme: data.theme, lessonType: data.lessonType ?? 'normal', domain: data.domain ?? '', ageGroup: data.ageGroup, objectives: data.objectives, estimatedMinutes: data.estimatedMinutes, status: data.status, version: data.version, steps: (data.steps ?? []).map(editableStep) }; dirty.value = false; changeSummary.value = ''; pendingSave = null; versions.value = [] }
     catch (cause) { error.value = apiErrorMessage(cause, '教案加载失败，请稍后重试。'); throw cause }
     finally { loading.value = false }
   }
-  function markDirty() { dirty.value = true }
-  function addStep(step?: Partial<LessonStep>) { steps.value.push({ sortOrder: steps.value.length + 1, title: step?.title ?? '', stepType: step?.stepType ?? 'teacher_talk', instruction: step?.instruction ?? '', expectedResponse: step?.expectedResponse ?? '', teacherTip: step?.teacherTip ?? '', resourceId: step?.resourceId ?? null, durationSeconds: step?.durationSeconds ?? 120 }); normalizeOrder(); markDirty() }
+  function markDirty() { dirty.value = true; editRevision.value++ }
+  function addStep(step?: Partial<LessonStep>) { steps.value.push({ localStepId: crypto.randomUUID(), sortOrder: steps.value.length + 1, title: step?.title ?? '', stepType: step?.stepType ?? 'teacher_talk', instruction: step?.instruction ?? '', expectedResponse: step?.expectedResponse ?? '', teacherTip: step?.teacherTip ?? '', resourceId: step?.resourceId ?? null, durationSeconds: step?.durationSeconds ?? 120 }); normalizeOrder(); markDirty() }
   function removeStep(index: number) { steps.value.splice(index, 1); normalizeOrder(); markDirty() }
-  function copyStep(index: number) { const source = steps.value[index]; if (!source) return; steps.value.splice(index + 1, 0, { ...source, id: undefined }); normalizeOrder(); markDirty() }
+  function copyStep(index: number) { const source = steps.value[index]; if (!source) return; steps.value.splice(index + 1, 0, { ...JSON.parse(JSON.stringify(source)), id: undefined, localStepId: crypto.randomUUID() }); normalizeOrder(); markDirty() }
   function moveStep(index: number, offset: -1 | 1) { const target = index + offset; if (target < 0 || target >= steps.value.length) return; const [step] = steps.value.splice(index, 1); if (step) steps.value.splice(target, 0, step); normalizeOrder(); markDirty() }
   function normalizeOrder() { steps.value.forEach((step, index) => { step.sortOrder = index + 1 }) }
 
@@ -90,48 +109,39 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
     if (saving.value) throw new Error('正在保存，请稍候')
     saving.value = true
     try {
-      let plan: LessonPlan
       const metadata = { title: draft.value.title.trim(), theme: draft.value.theme.trim(), lessonType: draft.value.lessonType ?? 'normal', domain: draft.value.domain?.trim() || '综合', ageGroup: draft.value.ageGroup, objectives: draft.value.objectives.trim(), estimatedMinutes: draft.value.estimatedMinutes, status: draft.value.status }
-      if (current.value) { const { data } = await http.patch<LessonPlan>(`/lesson-plans/${current.value.id}`, { ...metadata, version: draft.value.version }); plan = data }
-      else if (aiDraftId.value) {
-        const { data } = await http.post<LessonPlan>(`/lesson-plans/ai-drafts/${aiDraftId.value}/confirm`, { title: metadata.title, lessonType: metadata.lessonType, changeSummary: '教师确认并保存AI备课草稿' })
-        plan = data
-        const { data: updated } = await http.patch<LessonPlan>(`/lesson-plans/${plan.id}`, { ...metadata, version: plan.version })
-        plan = updated
-      }
-      else { const { data } = await http.post<LessonPlan>('/lesson-plans', metadata); plan = data }
-      const { data: savedSteps } = await http.put<{ version: number; steps: LessonStep[] }>(`/lesson-plans/${plan.id}/steps`, {
-        version: plan.version,
+      const payload = { ...metadata, ...(current.value ? { version: draft.value.version } : {}),
+        aiProvenance: aiProvenance.value.filter(entry => steps.value.some(s => s.localStepId === entry.targetLocalStepId)),
+        changeSummary: changeSummary.value.trim() || (current.value ? '教师修改教案' : '创建人工备课教案'),
         steps: steps.value.map((step) => ({
+          localStepId: step.localStepId,
+          sourceStepId: step.id,
           sortOrder: step.sortOrder,
           title: step.title,
           stepType: step.stepType,
-          content: step.instruction,
-          instruction: step.instruction,
+          teacherInstruction: step.teacherInstruction ?? step.instruction ?? '',
+          studentContent: step.studentContent ?? '',
           expectedResponse: step.expectedResponse,
           teacherTip: step.teacherTip,
           resourceId: step.resourceId,
           durationSeconds: step.durationSeconds,
+          actions: step.actions?.map(action => ({ ...action, content: action.content ?? undefined, targetStudentId: action.targetStudentId ?? undefined })),
+          recoveryPoint: step.recoveryPoint ? { ...step.recoveryPoint, prompt: step.recoveryPoint.prompt ?? undefined } : undefined,
         })),
-      })
-      plan = { ...plan, version: savedSteps.version, steps: savedSteps.steps }
-      current.value = plan; aiDraftId.value = null; draft.value.version = plan.version; draft.value.steps = savedSteps.steps.map((step) => ({ ...step, instruction: step.instruction || step.content || '' })); dirty.value = false
+      }
+      const fingerprint = JSON.stringify({ id: current.value?.id, payload })
+      if (pendingSave?.fingerprint !== fingerprint) pendingSave = { fingerprint, requestId: crypto.randomUUID() }
+      const body = { ...payload, requestId: pendingSave.requestId }
+      const { data: plan } = current.value
+        ? await http.put<LessonPlan>(`/lesson-plans/${current.value.id}/authoring`, body)
+        : await http.post<LessonPlan>('/lesson-plans/authoring', body)
+      current.value = plan; aiDraftId.value = null; draft.value.version = plan.version; draft.value.steps = (plan.steps ?? []).map(editableStep); dirty.value = false; aiProvenance.value = []; editRevision.value++; pendingSave = null; changeSummary.value = ''
       return plan
     } catch (cause) { throw new Error(apiErrorMessage(cause, '教案保存失败，请稍后重试。'), { cause }) }
     finally { saving.value = false }
   }
   async function remove(id: number) { await http.delete(`/lesson-plans/${id}`); await fetchList() }
+  async function fetchVersions() { if (!current.value) return; const { data } = await http.get<typeof versions.value>(`/lesson-plans/${current.value.id}/versions`); versions.value = data }
   async function copy(id: number) { await http.post(`/lesson-plans/${id}/copy`); await fetchList() }
-  async function generateDraft(resourceIds: number[], input?: { theme: string; objectives?: string; domain?: string }) {
-    loading.value = true
-    try {
-      const theme = input?.theme.trim() ?? draft.value.theme.trim()
-      const objectives = input?.objectives?.trim() ?? draft.value.objectives.trim()
-      const { data } = await http.post<{ id: number; output: { title: string; theme: string; ageGroup: LessonAgeGroup; domain: string; estimatedMinutes: number; teachingObjectives: string[]; teachingProcess: Array<{ title: string; stepType: LessonStepType; content: string; durationSeconds: number; resourceId?: number }> } }>('/lesson-plans/ai-drafts', { theme, ageGroup: draft.value.ageGroup, domain: input?.domain?.trim() || draft.value.domain?.trim() || '综合', durationMinutes: draft.value.estimatedMinutes, teachingObjectives: objectives || theme, resourceIds })
-      aiDraftId.value = data.id
-      draft.value = { ...draft.value, title: data.output.title, theme: data.output.theme, ageGroup: data.output.ageGroup, domain: data.output.domain, estimatedMinutes: data.output.estimatedMinutes, objectives: data.output.teachingObjectives.join('\n'), status: draft.value.status, version: current.value?.version ?? 1, steps: data.output.teachingProcess.map((step, index) => ({ title: step.title, stepType: step.stepType, content: step.content, instruction: step.content, resourceId: step.resourceId ?? null, durationSeconds: step.durationSeconds, sortOrder: index + 1 })) }; dirty.value = true
-    } catch (cause) { throw new Error(apiErrorMessage(cause, 'AI 暂时无法生成草稿，仍可手动备课。'), { cause }) }
-    finally { loading.value = false }
-  }
-  return { items, total, page, pageSize, keyword, ageGroup, status, loading, saving, error, current, draft, dirty, steps, fetchList, newDraft, load, markDirty, addStep, removeStep, copyStep, moveStep, save, remove, copy, generateDraft }
+  return { items, total, page, pageSize, keyword, ageGroup, status, loading, saving, error, current, draft, dirty, steps, changeSummary, versions, fetchVersions, fetchList, newDraft, load, markDirty, addStep, removeStep, copyStep, moveStep, save, remove, copy, editRevision, aiProvenance }
 })

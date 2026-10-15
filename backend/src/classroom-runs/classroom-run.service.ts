@@ -6,6 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
+import { deviceHeartbeatTimeoutMs, deviceOnlineStatus } from '../platform/device-online-policy';
 import { Interval } from '@nestjs/schedule';
 import {
   DataSource,
@@ -79,8 +81,11 @@ import {
 import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.entity';
 import { ClassroomEvent } from './entities/classroom-event.entity';
 import { ClassroomRunStepSnapshot } from './entities/classroom-run-step-snapshot.entity';
+import { ScreenLifecycleService, type ScreenLifecycle } from './screen-lifecycle.service';
+import { ScreenHandoffService } from './screen-handoff.service';
 import { ClassroomRun } from './entities/classroom-run.entity';
 import { ClassroomRecordService } from './classroom-record.service';
+import { ScreenPreparationService } from './screen-preparation.service';
 
 type SnapshotSourceStep = LessonStep & {
   actions?: LessonStepAction[];
@@ -113,9 +118,14 @@ export class ClassroomRunService {
     private readonly avatars: AvatarService,
     private readonly avatarConfiguration: AvatarConfigurationService,
     private readonly classroomRecords: ClassroomRecordService,
+    private readonly config: ConfigService,
+    private readonly preparations: ScreenPreparationService,
+    private readonly screenLifecycle: ScreenLifecycleService,
+    private readonly handoffs: ScreenHandoffService,
   ) {}
 
   async start(actor: JwtTeacherPayload, dto: StartClassroomRunDto) {
+    return this.preparations.exclusive(async () => {
     this.requireTeacher(actor);
     const duplicate = await this.findDuplicate(
       actor,
@@ -123,6 +133,7 @@ export class ClassroomRunService {
       ClassroomEventType.Start,
     );
     if (duplicate) return this.get(actor, duplicate.classroomRunId);
+    await this.preparations.assertStart(actor, dto);
 
     const schoolClass = await this.access.requireClassAccess(
       actor,
@@ -143,7 +154,7 @@ export class ClassroomRunService {
       });
 
     try {
-      const runId = await this.dataSource.transaction(async (manager) => {
+      const runId = await this.screenLifecycle.transaction(async (manager) => {
         const eventRepo = manager.getRepository(ClassroomEvent);
         const repeated = await eventRepo.findOne({
           where: {
@@ -216,7 +227,7 @@ export class ClassroomRunService {
               stepIndex: index,
               title: step.title,
               type: step.stepType,
-              content: step.content ?? step.instruction,
+              content: (step as SnapshotSourceStep & { studentContent?: string | null }).studentContent ?? '',
               expectedResponse: step.expectedResponse,
               teacherTip: step.teacherTip,
               durationSeconds: step.durationSeconds,
@@ -254,13 +265,17 @@ export class ClassroomRunService {
           dto,
           dto.requestId,
         );
+        const binding = await manager.findOneOrFail(DeviceBinding, {
+          where: { deviceId: run.deviceId, classId: run.classId, classroomId: run.classroomId, status: BindingStatus.Active },
+          order: { boundAt: 'DESC', id: 'DESC' },
+        });
+        await this.screenLifecycle.createOpening(actor, {
+          runId: run.id, deviceId: run.deviceId, bindingId: binding.id, expectedRevision: 0,
+        }, manager);
         return run.id;
       });
-      await this.snapshotService.capture(
-        runId,
-        ClassroomSnapshotReason.Start,
-        true,
-      );
+      this.preparations.consume(dto.deviceId);
+      this.handoffs.revokeDevice(dto.deviceId);
       return this.get(actor, runId);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -273,6 +288,7 @@ export class ClassroomRunService {
         throw new ConflictException('该班级或设备已经存在进行中的课堂');
       throw error;
     }
+    });
   }
 
   async pause(
@@ -627,7 +643,16 @@ export class ClassroomRunService {
       where: { classroomRunId: id },
       order: { stepIndex: 'ASC' },
     });
-    return this.response(run, steps, await this.readObjectives(actor, run));
+    const latest = await this.snapshotService.loadLatestValid(id);
+    return {
+      ...this.response(run, steps, await this.readObjectives(actor, run)),
+      latestSnapshotVersion: latest?.entity.snapshotVersion ?? null,
+      attendanceState: latest?.attendanceState ?? {},
+      rollCallState: latest?.rollCallState ?? {},
+      rewardState: latest?.rewardState ?? {},
+      interactionState: latest?.interactionState ?? {},
+      playerRecoverySuggestion: latest?.playerState ?? {},
+    };
   }
 
   async active(actor: JwtTeacherPayload, deviceId?: number) {
@@ -650,7 +675,12 @@ export class ClassroomRunService {
     );
   }
 
-  async screenState(actor: JwtTeacherPayload, deviceId: number) {
+  async screenState(actor: JwtTeacherPayload, deviceId: number, handoffId?: string): Promise<{
+    page: string; deviceId: number; classroomState: Awaited<ReturnType<ClassroomRunService['restore']>> | null;
+    preparation?: Awaited<ReturnType<ScreenPreparationService['create']>> | null; serverNow: string;
+    phase?: 'opening' | 'teaching' | 'paused' | 'summary'; lifecycle?: ScreenLifecycle | null;
+    handoff?: { id: string }; summary?: { runId: number; courseTitle: string; endedAt: string | null };
+  }> {
     this.requireTeacher(actor);
     const [device, binding] = await Promise.all([
       this.devices.findOne({ where: { id: deviceId } }),
@@ -664,48 +694,56 @@ export class ClassroomRunService {
       throw new ConflictException('大屏设备当前不可用于课堂');
     if (!binding) throw new ForbiddenException('大屏设备尚未绑定班级');
     await this.access.requireClassAccess(actor, binding.classId);
-    let run = await this.runs.findOne({
-      where: { teacherId: actor.sub, deviceId },
-      order: { updatedAt: 'DESC' },
+    const idle = () => ({ page: 'idle', deviceId, classroomState: null, serverNow: new Date().toISOString() });
+    const candidates = await this.runs.find({
+      where: { teacherId: actor.sub, deviceId, status: In([ClassroomRunStatus.Running, ClassroomRunStatus.Paused]) },
     });
-    if (!run)
-      return {
-        page: 'idle',
-        deviceId,
-        classroomState: null,
-        serverNow: new Date().toISOString(),
-      };
+    if (candidates.length > 1) throw new ConflictException('设备存在多节活动课堂，请教师确认');
+    let run = candidates[0];
+    if (!run) {
+      const state = await this.preparations.screenWhenIdle(actor, deviceId);
+      if ('retryActive' in state) {
+        // Prepared is an administrative reservation, never a fake teaching Run.
+        const reserving = await this.runs.findOneBy({ deviceId, status: ClassroomRunStatus.Prepared });
+        if (reserving) throw new ConflictException('设备存在未开始的课堂，请教师确认');
+        return this.screenState(actor, deviceId, handoffId);
+      }
+      if (state.page === 'idle' && handoffId) {
+        const lease = this.handoffs.resolve(actor, handoffId, deviceId, binding.id);
+        if (lease) {
+          const summaryRun = await this.runs.findOneBy({ id: lease.runId });
+          if (summaryRun?.status === ClassroomRunStatus.Completed) {
+            const lifecycle = await this.screenLifecycle.getValid(actor, { runId: lease.runId, deviceId, bindingId: binding.id });
+            // READY/start may revoke the lease while lifecycle validation awaits.
+            // A captured lease object is not sufficient after that boundary.
+            if (lifecycle?.phase === 'summary' && this.handoffs.resolve(actor, handoffId, deviceId, binding.id)) return {
+              page: 'summary', phase: 'summary', deviceId, classroomState: null, lifecycle,
+              summary: { runId: summaryRun.id, courseTitle: summaryRun.title, endedAt: summaryRun.endedAt?.toISOString() ?? null },
+              handoff: { id: lease.id }, serverNow: new Date().toISOString(),
+            };
+          }
+          this.handoffs.revokeRun(lease.runId);
+        }
+      }
+      return state;
+    }
     await this.finalizeExpiredBreak(run.id);
     run = (await this.runs.findOneBy({ id: run.id })) ?? run;
     await this.access.requireClassAccess(actor, run.classId);
-    if (
-      TERMINAL_CLASSROOM_RUN_STATUSES.includes(
-        run.status as (typeof TERMINAL_CLASSROOM_RUN_STATUSES)[number],
-      )
-    ) {
-      if (run.status === ClassroomRunStatus.Failed)
-        return {
-          page: 'recovery',
-          deviceId,
-          classroomState: await this.restore(actor, run.id, deviceId),
-          serverNow: new Date().toISOString(),
-        };
-      const endedAt = run.endedAt?.getTime() ?? 0;
-      if (endedAt && Date.now() - endedAt > 30 * 60 * 1000)
-        return {
-          page: 'idle',
-          deviceId,
-          classroomState: null,
-          serverNow: new Date().toISOString(),
-        };
-      return {
-        page: 'summary',
-        deviceId,
-        classroomState: await this.restore(actor, run.id, deviceId),
-        serverNow: new Date().toISOString(),
-      };
-    }
+    if (![ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(run.status)) return idle();
+    if (run.classId !== binding.classId || run.classroomId !== binding.classroomId)
+      throw new ConflictException('课堂与设备当前绑定不一致，请教师确认');
+    // Screen-only recovery boundary. Never change the Run or general restore/history APIs.
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' });
+    if (!run.startedAt || !Number.isFinite(run.startedAt.getTime()) || run.startedAt.getTime() > Date.now() || day.format(run.startedAt) !== day.format(new Date()))
+      throw new ConflictException('课堂不是今天开始的有效课堂，请教师确认继续或结束旧课堂');
     const restored = await this.restore(actor, run.id, deviceId);
+    const latest = await this.runs.findOneBy({ id: run.id });
+    if (!latest || ![ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(latest.status)) return idle();
+    const currentBinding = await this.bindings.findOneBy({ id: binding.id, status: BindingStatus.Active });
+    if (!currentBinding || currentBinding.classId !== latest.classId || currentBinding.classroomId !== latest.classroomId || restored.id !== latest.id)
+      throw new ConflictException('课堂恢复期间设备绑定已变化，请教师确认');
+    if (latest.version !== restored.version) throw new ConflictException('课堂状态已变化，请重新读取');
     if (restored.manualInterventionRequired)
       return {
         page: 'recovery',
@@ -713,6 +751,15 @@ export class ClassroomRunService {
         classroomState: restored,
         serverNow: new Date().toISOString(),
       };
+    const lifecycle = await this.screenLifecycle.getValid(actor, {
+      runId: run.id, deviceId, bindingId: binding.id,
+    });
+    const projectedRun = await this.runs.findOneBy({ id: run.id });
+    if (!projectedRun || ![ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(projectedRun.status)) return idle();
+    if (projectedRun.version !== restored.version) throw new ConflictException('课堂状态已变化，请重新读取');
+    const phase = latest.status === ClassroomRunStatus.Paused ? 'paused'
+      : lifecycle?.phase === 'opening' ? 'opening' : 'teaching';
+    const handoff = this.handoffs.issueActive(actor, run.id, deviceId, binding.id);
     if (isBreakActive(run))
       return {
         page:
@@ -721,6 +768,9 @@ export class ClassroomRunService {
             : 'break',
         deviceId,
         classroomState: restored,
+        phase,
+        lifecycle,
+        handoff,
         serverNow: new Date().toISOString(),
       };
     const step = await this.snapshots.findOne({
@@ -730,13 +780,19 @@ export class ClassroomRunService {
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
-    const page = /drawing|artwork|paint|绘画|作品/.test(stepDescriptor)
+    const explicitMode = (restored.playerRecoverySuggestion as Record<string, unknown> | undefined)?.presentationMode;
+    const page = explicitMode === 'resource' || explicitMode === 'avatar'
+      ? 'classroom'
+      : /drawing|artwork|paint|绘画|作品/.test(stepDescriptor)
       ? 'drawing'
       : /reward|honor|奖励|荣誉/.test(stepDescriptor)
         ? 'reward'
         : 'classroom';
     return {
       page,
+      phase,
+      lifecycle,
+      handoff,
       deviceId,
       classroomState: restored,
       serverNow: new Date().toISOString(),
@@ -1193,7 +1249,7 @@ export class ClassroomRunService {
       // Stage 7.4：课间与 pause/resume 不混用（课间是 running 下子状态，pause 需整体暂停课堂）。
       this.assertNotInBreak(preflight);
     try {
-      await this.dataSource.transaction(async (manager) => {
+      await this.screenLifecycle.transaction(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
         const run = await runRepo.findOne({ where: { id } });
         if (!run) throw new NotFoundException('课堂运行不存在');
@@ -1272,6 +1328,22 @@ export class ClassroomRunService {
         );
         if (update.affected !== 1) throw this.versionConflict();
         const updated = await runRepo.findOneByOrFail({ id });
+        if (target === ClassroomRunStatus.Completed) {
+          const binding = await manager.findOne(DeviceBinding, { where: { deviceId: run.deviceId, classId: run.classId, classroomId: run.classroomId, status: BindingStatus.Active }, order: { boundAt: 'DESC', id: 'DESC' } });
+          const previous = await this.snapshotService.loadLatestValid(id, manager);
+          const lifecycle = previous?.interactionState.screenLifecycle as ScreenLifecycle | undefined;
+          if (binding && (!lifecycle || lifecycle.bindingId === binding.id)) {
+            await this.screenLifecycle.createSummary(actor, { runId: id, deviceId: run.deviceId, bindingId: binding.id, expectedRevision: lifecycle?.revision ?? 0 }, 20, manager);
+          } else {
+            // Recovery/transfer may leave no valid screen binding. Ending the
+            // classroom must still work, but such a Run has no SUMMARY eligibility.
+            const saved = await this.snapshotService.capture(id, ClassroomSnapshotReason.Complete, true, {}, manager);
+            if (!saved) throw new ConflictException('结束快照保存失败');
+          }
+        } else {
+          const saved = await this.snapshotService.capture(id, this.transitionSnapshotReason(eventType), true, {}, manager);
+          if (!saved) throw new ConflictException('课堂快照保存失败');
+        }
         await this.writeEvent(
           manager,
           actor,
@@ -1286,11 +1358,7 @@ export class ClassroomRunService {
           dto.requestId,
         );
       });
-      await this.snapshotService.capture(
-        id,
-        this.transitionSnapshotReason(eventType),
-        true,
-      );
+      if ([ClassroomRunStatus.Cancelled, ClassroomRunStatus.Failed].includes(target)) this.handoffs.revokeRun(id);
       return this.get(actor, id);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -1391,7 +1459,7 @@ export class ClassroomRunService {
       throw new ConflictException(
         device.status === DeviceStatus.Disabled ? '设备已停用，无法开始课堂' : '设备故障，无法开始课堂',
       );
-    if (device.status !== DeviceStatus.Online)
+    if (deviceOnlineStatus(device, deviceHeartbeatTimeoutMs(this.config.get('DEVICE_HEARTBEAT_TIMEOUT_SECONDS'))) !== DeviceStatus.Online)
       throw new ConflictException('大屏设备当前离线，无法开始课堂');
   }
 

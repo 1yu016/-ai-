@@ -72,17 +72,21 @@ describe('LessonClassroomView · 课堂右侧布局（数字人常驻 + 紧凑�
     // AI 教学伙伴主卡常驻，带状态标签。
     const card = wrapper.find('[data-test="dh-card"]')
     expect(card.exists()).toBe(true)
-    expect(card.text()).toContain('AI 教学伙伴')
-    expect(card.text()).toContain('当前状态：待机')
+    expect(card.text()).toContain('数字人预览')
+    expect(card.text()).toContain('待命')
+    expect(wrapper.text()).not.toContain('数字人调试（DEV）')
     // 互动入口为紧凑 launcher（不常驻 student select / 奖励按钮）。
     expect(wrapper.find('[data-test="open-interaction"]').text()).toContain('课堂互动')
-    expect(wrapper.find('[data-test="open-interaction"] .l-stars').text()).toContain('🌟 本节 0')
-    expect(wrapper.find('[data-test="open-interaction"] .l-sub').text()).toContain('点名 · 快速奖励')
+    expect(wrapper.find('[data-test="open-interaction"]').text()).toContain('随机点名')
+    expect(wrapper.find('.quick-actions .l-stars').text()).toContain('本节 0')
+    expect(wrapper.find('.quick-actions').text()).toContain('快速奖励')
+    expect(wrapper.find('.quick-actions').text()).toContain('教学资源')
+    expect(wrapper.find('.quick-actions').text()).toContain('AI教学伙伴')
     expect(wrapper.find('.assist-col .i-select').exists()).toBe(false)
     expect(wrapper.find('.assist-col .i-add').exists()).toBe(false)
     // 榜单入口为紧凑 launcher。
     expect(wrapper.find('[data-test="open-leaderboard"]').text()).toContain('本节榜单')
-    expect(wrapper.find('[data-test="open-leaderboard"] .l-sub').text()).toContain('查看课堂表现')
+    expect(wrapper.find('.center-panel .voice-card').exists()).toBe(false)
     wrapper.unmount()
   })
 

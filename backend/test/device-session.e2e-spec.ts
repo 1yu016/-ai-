@@ -20,6 +20,7 @@ import {
 } from '../src/classroom-runs/classroom-run.module';
 import { DeviceSession } from '../src/device-session/entities/device-session.entity';
 import { DeviceSessionModule } from '../src/device-session/device-session.module';
+import { PlatformService } from '../src/platform/platform.service';
 import {
   ResourceAgeGroup,
   ResourceReviewStatus,
@@ -318,7 +319,7 @@ describe('Formal Screen device-session (e2e)', () => {
   const setDeviceStatus = async (status: DeviceStatus) => {
     await devices().update(deviceId, {
       status,
-      lastOnlineAt: status === DeviceStatus.Online ? new Date() : new Date(Date.now() - 60_000),
+      lastOnlineAt: status === DeviceStatus.Online ? new Date() : new Date(Date.now() - 120_000),
     });
   };
 
@@ -350,6 +351,10 @@ describe('Formal Screen device-session (e2e)', () => {
     const dev = await devices().findOneByOrFail({ id: deviceId });
     expect(dev.status).toBe(DeviceStatus.Online);
     expect(dev.lastOnlineAt).toBeTruthy();
+    const session = await sessions().findOneByOrFail({ id: issued.id });
+    expect(session.lastHeartbeatAt.getTime()).toBe(dev.lastOnlineAt!.getTime());
+    await app.get(PlatformService).markTimedOutDevicesOffline();
+    expect((await devices().findOneByOrFail({ id: deviceId })).status).toBe(DeviceStatus.Online);
   });
 
   it('3) heartbeat rejects a missing or unknown credential with 401', async () => {
@@ -459,12 +464,21 @@ describe('Formal Screen device-session (e2e)', () => {
       deviceId,
       requestId: requestId('start-online'),
     });
-    await setDeviceStatus(DeviceStatus.Online);
+    const credential = await issue(deviceId);
+    await request(app.getHttpServer()).post('/device-session/heartbeat').set('x-device-session', credential.token).expect(200);
     await request(app.getHttpServer())
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody())
       .expect(201);
+
+    // No cron grace: expired lastOnlineAt must reject start even with cached Online.
+    await devices().update(deviceId, { status: DeviceStatus.Online, lastOnlineAt: new Date(Date.now() - 120_000) });
+    const expired = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth())
+      .send({ ...startBody(), requestId: requestId('start-expired-cache-online') }).expect(409);
+    expect(expired.body.message).toContain('离线');
+    await app.get(PlatformService).markTimedOutDevicesOffline();
+    expect((await devices().findOneByOrFail({ id: deviceId })).status).toBe(DeviceStatus.Offline);
 
     await setDeviceStatus(DeviceStatus.Offline);
     const offline = await request(app.getHttpServer())

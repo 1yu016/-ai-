@@ -7,6 +7,7 @@ import type { ClassroomRunPayload } from '@/stores/lessonRun'
 import WorkspaceBreadcrumbs from '@/components/WorkspaceBreadcrumbs.vue'
 import { activeNavForRole, userRole } from '@/router/routeMeta'
 import { logoutAuthenticatedSession } from '@/services/authSession'
+import { CLASSROOM_LOGOUT_MESSAGE } from '@/router/classroomExitPolicy'
 
 type WorkspaceNavItem = {
   label: string
@@ -88,10 +89,13 @@ function goBackToClassroom(): void {
 async function logout(): Promise<void> {
   if (loggingOut.value) return
   loggingOut.value = true
-  menuOpen.value = false
-  await logoutAuthenticatedSession()
-  await router.replace({ name: 'login' })
-  loggingOut.value = false
+  try {
+    await loadActiveRun()
+    if (activeRun.value && !window.confirm(CLASSROOM_LOGOUT_MESSAGE)) return
+    menuOpen.value = false
+    await logoutAuthenticatedSession()
+    await router.replace({ name: 'login' })
+  } finally { loggingOut.value = false }
 }
 
 function closeMenu(event: MouseEvent): void {

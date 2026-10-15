@@ -220,9 +220,10 @@ export class ClassroomMobileService {
     );
   }
 
-  screenStream(actor: JwtTeacherPayload, deviceId: number): Observable<MobileStreamEvent> {
+  screenStream(actor: JwtTeacherPayload, deviceId: number, handoffId?: string): Observable<MobileStreamEvent> {
     return timer(0, 750).pipe(
-      concatMap(() => from(this.runs.screenState(actor, deviceId))),
+      concatMap(() => from(this.runs.screenState(actor, deviceId, handoffId))),
+      map(data => { if (data.handoff) handoffId = data.handoff.id; return data; }),
       map((data) => ({ type: 'screen_state', data })),
       catchError((error: unknown) =>
         of({ type: 'screen_error', data: { message: this.errorMessage(error) } }),

@@ -28,6 +28,8 @@ export type ClassroomCommandOperation =
   | 'unmute'
   | 'speak_text'
   | 'display_artwork'
+  | 'update_presentation_queue'
+  | 'set_presentation'
   | 'attendance_update'
   | 'random_roll_call'
   | 'specified_roll_call'

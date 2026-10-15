@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import {
   ElAlert,
   ElButton,
@@ -13,6 +13,8 @@ import {
   ElTimelineItem,
 } from 'element-plus'
 import { apiErrorMessage } from '@/api/http'
+import ManagementLayout from '@/components/ManagementLayout.vue'
+import BackButton from '@/components/BackButton.vue'
 import {
   confirmClassroomSummary,
   discardClassroomSummary,
@@ -27,7 +29,6 @@ import {
 } from '@/services/classroomRecords'
 
 const route = useRoute()
-const router = useRouter()
 const runId = computed(() => Number(route.params.runId))
 const loading = ref(false)
 const saving = ref(false)
@@ -45,7 +46,9 @@ const form = reactive<ClassroomSummaryContent>({
 })
 
 const isFormal = computed(() => Boolean(formal.value))
-const canEdit = computed(() => draft.value?.status !== 'discarded')
+const canEdit = computed(() => run.value?.status === 'completed' && Boolean(draft.value || formal.value) && draft.value?.status !== 'discarded')
+const savedContent = ref('')
+const dirty = computed(() => canEdit.value && savedContent.value !== JSON.stringify(form))
 
 function applyContent(content: ClassroomSummaryContent | null) {
   form.classroomSummary = content?.classroomSummary ?? ''
@@ -53,6 +56,7 @@ function applyContent(content: ClassroomSummaryContent | null) {
   form.interestPoints = [...(content?.interestPoints ?? [])]
   form.commonQuestions = [...(content?.commonQuestions ?? [])]
   form.teachingStrategies = [...(content?.teachingStrategies ?? [])]
+  savedContent.value = JSON.stringify(form)
 }
 
 async function load() {
@@ -98,6 +102,7 @@ async function confirm() {
       teachingStrategies: form.teachingStrategies,
     })
     if (draft.value) draft.value.status = 'confirmed'
+    savedContent.value = JSON.stringify(form)
     ElMessage.success(isFormal.value ? '正式课堂总结已保存' : '课堂总结已确认')
   } catch (cause) {
     ElMessage.error(apiErrorMessage(cause, '总结保存失败'))
@@ -144,10 +149,18 @@ function timelineType(type: string) {
   return 'success'
 }
 
-onMounted(load)
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (!dirty.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+onBeforeRouteLeave(() => !dirty.value || window.confirm('课堂总结有未保存的修改，确定离开吗？'))
+onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 </script>
 
 <template>
+  <ManagementLayout>
   <main class="record-page">
     <header>
       <div>
@@ -156,14 +169,14 @@ onMounted(load)
         <p>课堂时间线来自服务端真实操作记录，AI总结需要教师确认后才成为正式记录。</p>
       </div>
       <div class="header-actions">
-        <ElButton @click="router.push('/lesson-plans')">返回备课中心</ElButton>
+        <BackButton label="返回课堂记录" />
         <ElButton type="primary" :disabled="!formal" @click="exportReport">导出TXT报告</ElButton>
       </div>
     </header>
 
     <ElAlert v-if="error" :title="error" type="error" show-icon :closable="false" />
     <div v-if="loading" class="state">正在汇总课堂记录…</div>
-    <section v-else class="record-grid">
+    <section v-else-if="!error && run" class="record-grid">
       <ElCard class="summary-card" shadow="never">
         <template #header>
           <div class="card-title">
@@ -214,8 +227,9 @@ onMounted(load)
       </ElCard>
     </section>
   </main>
+  </ManagementLayout>
 </template>
 
 <style scoped>
-.record-page{min-height:100vh;padding:32px max(20px,4vw);box-sizing:border-box;background:#fffaf2;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions{display:flex;align-items:center;gap:10px}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.state{padding:32px;text-align:center;color:#967f70}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.timeline-card{max-height:none}}
+.record-page{box-sizing:border-box;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions{display:flex;align-items:center;gap:10px}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.state{padding:32px;text-align:center;color:#967f70}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.timeline-card{max-height:none}}
 </style>

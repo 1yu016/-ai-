@@ -9,11 +9,12 @@ withDefaults(
     subtitle?: string
     className?: string
     teacherName?: string
+    busy?: boolean
   }>(),
   { subtitle: '', className: '', teacherName: '' },
 )
 
-const emit = defineEmits<{ (e: 'enter'): void }>()
+const emit = defineEmits<{ (e: 'enter'): void; (e: 'skip'): void }>()
 </script>
 
 <template>
@@ -26,6 +27,7 @@ const emit = defineEmits<{ (e: 'enter'): void }>()
       <span v-if="className || teacherName" class="top-meta">
         {{ className }}<template v-if="teacherName"> · {{ teacherName }}</template>
       </span>
+      <slot name="controls" />
     </header>
 
     <div class="opening-content">
@@ -36,10 +38,10 @@ const emit = defineEmits<{ (e: 'enter'): void }>()
         <h2 class="info-lesson">{{ lessonTitle }}</h2>
         <p class="info-copy">{{ subtitle }}</p>
         <div class="opening-cta">
-          <button class="enter" type="button" data-test="opening-enter" @click="emit('enter')">
-            准备好了，开始上课
+          <button class="enter" type="button" :disabled="busy" data-test="opening-enter" @click="emit('enter')">
+            进入教学
           </button>
-          <button class="skip" type="button" data-test="opening-skip" @click="emit('enter')">
+          <button class="skip" type="button" :disabled="busy" data-test="opening-skip" @click="emit('skip')">
             跳过开场
           </button>
         </div>
@@ -59,6 +61,7 @@ const emit = defineEmits<{ (e: 'enter'): void }>()
 </template>
 
 <style scoped>
+.opening,.opening-content,.opening-top,.opening-info,.opening-stage,.opening-glow { animation:none !important; }
 .opening {
   position: fixed;
   inset: 0;
@@ -78,6 +81,7 @@ const emit = defineEmits<{ (e: 'enter'): void }>()
     radial-gradient(52% 46% at 50% 100%, rgba(224, 170, 108, 0.14), transparent 70%);
 }
 .opening-top {
+  z-index: 2;
   position: absolute; top: 0; left: 0; right: 0;
   display: flex; align-items: center; justify-content: space-between;
   padding: 26px 56px; font-size: 13px;

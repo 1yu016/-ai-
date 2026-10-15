@@ -83,7 +83,9 @@ function reward() {
 }
 
 async function completeClass() {
-  await ElMessageBox.confirm('确定结束本节课堂吗？结束后手机控制权限立即失效。', '结束课堂', { type: 'warning' })
+  try {
+    await ElMessageBox.confirm('确定结束本节课堂吗？结束后手机控制权限立即失效。', '结束课堂', { type: 'warning' })
+  } catch { return }
   await send('complete_class', undefined, '课堂已结束')
 }
 
@@ -129,6 +131,13 @@ onBeforeUnmount(() => mobile.stop(false))
     </section>
 
     <template v-else-if="state">
+      <section class="control-card" aria-label="常用课堂控制">
+        <h2>常用控制</h2>
+        <div class="button-grid cols-2">
+          <button class="accent" :disabled="busy || !canControl || !['running', 'paused'].includes(classroom?.status || '')" @click="send(classroom?.status === 'paused' ? 'resume_class' : 'pause_class')">{{ classroom?.status === 'paused' ? '继续课堂' : '暂停课堂' }}</button>
+          <button :disabled="busy || !canControl" @click="send(playerState.muted ? 'unmute' : 'mute')">{{ playerState.muted ? '取消静音' : '静音' }}</button>
+        </div>
+      </section>
       <section class="now-card">
         <div><span>当前步骤</span><strong>{{ (classroom?.currentStepIndex ?? 0) + 1 }} / {{ classroom?.steps?.length || 0 }}</strong></div>
         <h2>{{ currentStep?.title || '课堂准备' }}</h2>
@@ -171,6 +180,7 @@ onBeforeUnmount(() => mobile.stop(false))
         </div>
         <div class="button-grid cols-2">
           <button class="accent" :disabled="busy || !canControl" @click="send('random_roll_call')">🎲 随机点名</button>
+          <button :disabled="busy || !canControl || !selectedStudentId" @click="send('specified_roll_call', { studentId: selectedStudentId })">指定点名</button>
           <button class="reward" :disabled="busy || !canControl || !selectedStudentId" @click="reward">🌸 奖励幼儿</button>
         </div>
       </section>
