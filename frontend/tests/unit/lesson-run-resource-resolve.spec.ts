@@ -39,6 +39,7 @@ function runWithResources(
   return {
     id: 9,
     lessonPlanId: 3,
+    classId: 1,
     deviceId: 1,
     version: 1,
     status: 'running',
@@ -99,7 +100,10 @@ describe('lessonRun store · Stage 6.6 课堂资源解析', () => {
     expect(store.currentResource?.id).toBe(500)
     expect(store.currentResource?.title).toBe('第 500 条资源')
     // 打开资源会真正进入播放器 store
-    store.openResource()
+    vi.spyOn(http, 'post').mockResolvedValue({
+      data: { status: 'success', result: {}, classroomState: runWithResources(0, 500, null) },
+    } as never)
+    await store.openResource()
     expect(useResourcePlayerStore().currentResource?.id).toBe(500)
   })
 

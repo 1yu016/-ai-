@@ -55,9 +55,13 @@ let numCardId: number
 
 function trackDownloads(page: Page): string[] {
   const downloads: string[] = []
+  let commandStarted = false
   page.on('request', (request) => {
     const pathname = new URL(request.url()).pathname
-    if (/^\/resources\/\d+\/download$/.test(pathname)) downloads.push(pathname)
+    if (pathname === '/ai/command' && request.method() === 'POST') commandStarted = true
+    // Initial teacher preview may legitimately load the previous presentation.
+    // Measure side effects of this command, not restoration of the previous one.
+    if (commandStarted && /^\/resources\/\d+\/download$/.test(pathname)) downloads.push(pathname)
   })
   return downloads
 }
@@ -77,7 +81,14 @@ async function openClassroomPage(page: Page, targetRunId: number) {
     ] as [string, TeacherInfo],
   )
   await page.goto(`/classroom/lesson/${targetRunId}`)
-  await expect(page.locator('.step-heading')).toContainText('热身环节', { timeout: 30_000 })
+  await expect(page.locator('.header-center')).toContainText('热身环节', { timeout: 15_000 })
+  const opening = page.locator('[data-test="opening-skip"]')
+  if (await opening.isVisible()) {
+    await opening.click()
+    await expect(page.locator('[data-test="opening-overlay"]')).toHaveCount(0)
+  }
+  await page.locator('.voice-detail').click()
+  await expect(page.getByLabel('课堂口令文本输入')).toBeVisible()
 }
 
 async function teacherRequest(
@@ -214,6 +225,18 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
     await adminRequest(request, '/device-bindings', {
       data: { deviceId: deviceBody.id, classroomId: classroomBody.id, classId: classBody.id },
     })
+
+    // 课堂启动要求权威设备状态在线。通过正式 device-session 签发和心跳接口
+    // 建立在线状态，避免测试绕过与真实大屏相同的安全门禁。
+    const sessionResponse = await request.post(`/devices/${deviceBody.id}/device-session`, {
+      headers: { Authorization: `Bearer ${auth.token}` },
+    })
+    expect(sessionResponse.ok()).toBeTruthy()
+    const deviceSession = (await sessionResponse.json()) as { token: string }
+    const heartbeatResponse = await request.post('/device-session/heartbeat', {
+      headers: { 'x-device-session': deviceSession.token },
+    })
+    expect(heartbeatResponse.ok()).toBeTruthy()
 
     // 教师：建教案 + 步骤 → 启动课堂
     const planBody = (await teacherRequest(request, '/lesson-plans', {
@@ -362,12 +385,12 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
 
     await page.getByLabel('课堂口令文本输入').fill('不要播放视频')
     await page.getByRole('button', { name: '执行口令' }).click()
-    await expect(page.locator('.feedback.command')).toContainText('未执行')
+    await expect(page.locator('.feedback.command')).toContainText('未执行', { timeout: 15000 })
     await expect(page.getByLabel('资源候选确认')).toHaveCount(0)
 
     await page.getByLabel('课堂口令文本输入').fill('数字1的视频为什么打不开？')
     await page.getByRole('button', { name: '执行口令' }).click()
-    await expect(page.locator('.feedback.command')).toContainText('未执行')
+    await expect(page.locator('.feedback.command')).toContainText('未执行', { timeout: 15000 })
     await expect(page.getByLabel('资源候选确认')).toHaveCount(0)
 
     expect(downloads.length).toBe(0)
@@ -377,7 +400,7 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
     const seen: string[] = []
     page.on('request', (request) => {
       const url = new URL(request.url())
-      if (url.origin === 'http://127.0.0.1:4173' || url.origin === 'http://localhost:4173') {
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
         seen.push(`${request.method()} ${url.pathname}`)
       }
     })

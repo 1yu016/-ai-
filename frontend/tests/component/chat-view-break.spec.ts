@@ -1,4 +1,4 @@
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessage } from 'element-plus'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -17,6 +17,7 @@ function runningRun(over: Record<string, unknown> = {}): ClassroomRunPayload {
   return {
     id: 9,
     lessonPlanId: 3,
+    classId: 1,
     deviceId: 1,
     version: 1,
     status: 'running',
@@ -62,12 +63,13 @@ describe('ChatView · 课间模式与启发式助教分离', () => {
       if (current.serverNow) current.serverNow = new Date(Date.now()).toISOString()
       return { data: current } as never
     })
-    vi.spyOn(http, 'post').mockImplementation(async (url: string) => {
-      if (url.includes('/break/end')) {
+    vi.spyOn(http, 'post').mockImplementation(async (url: string, body?: unknown) => {
+      const operation = (body as { operation?: string } | undefined)?.operation
+      if (url === '/classroom-commands' && operation === 'end_break') {
         current = runningRun()
         return { data: current } as never
       }
-      if (url.includes('/break')) {
+      if (url === '/classroom-commands' && operation === 'start_break') {
         current = inBreakRun(180)
         return { data: current } as never
       }
@@ -274,6 +276,24 @@ describe('ChatView · 课间模式与启发式助教分离', () => {
     expect(wrapper.find('.break-mode-button').text()).toContain('退出课间模式')
     expect(wrapper.find('.message-area').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('启发式课堂助教')
+    wrapper.unmount()
+  })
+
+  it('10. 没有进行中的课堂：不进入课间且移除按钮焦点', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: [] } as never)
+    const warning = vi.spyOn(ElMessage, 'warning').mockImplementation(() => undefined as never)
+    const wrapper = await mountView()
+    const button = wrapper.find('.break-mode-button')
+
+    ;(button.element as HTMLButtonElement).focus()
+    expect(document.activeElement).toBe(button.element)
+    await button.trigger('click')
+    await settle()
+
+    expect(wrapper.find('[data-test="break-config"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="chat-break"]').exists()).toBe(false)
+    expect(document.activeElement).not.toBe(button.element)
+    expect(warning).toHaveBeenCalledWith('当前没有进行中的课堂，请先到“我的班级”开始上课')
     wrapper.unmount()
   })
 })

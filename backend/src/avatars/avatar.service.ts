@@ -45,7 +45,9 @@ import {
 } from './dto/avatar.dto';
 import { AvatarAsset } from './entities/avatar-asset.entity';
 import { AvatarCharacter } from './entities/avatar-character.entity';
+import { AvatarPersonality } from './entities/avatar-personality.entity';
 import { AvatarVersion } from './entities/avatar-version.entity';
+import { AvatarVoiceProfile } from './entities/avatar-voice-profile.entity';
 import { resolveInside } from '../resources/resource-file.validation';
 
 type AvatarIntegrityResult = {
@@ -68,6 +70,10 @@ export class AvatarService {
     private readonly versions: Repository<AvatarVersion>,
     @InjectRepository(AvatarAsset)
     private readonly assets: Repository<AvatarAsset>,
+    @InjectRepository(AvatarVoiceProfile)
+    private readonly voices: Repository<AvatarVoiceProfile>,
+    @InjectRepository(AvatarPersonality)
+    private readonly personalities: Repository<AvatarPersonality>,
     @InjectRepository(ClassroomRun)
     private readonly classroomRuns: Repository<ClassroomRun>,
     @InjectRepository(ClassroomSnapshot)
@@ -150,17 +156,43 @@ export class AvatarService {
 
   async get(actor: JwtTeacherPayload, id: number) {
     const character = await this.findAccessible(actor, id);
-    const versions = await this.versions.find({
-      where: { characterId: id },
-      order: { version: 'DESC' },
-    });
+    const [versions, voice, personality] = await Promise.all([
+      this.versions.find({
+        where: { characterId: id },
+        order: { version: 'DESC' },
+      }),
+      this.voices.findOne({ where: { characterId: id } }),
+      this.personalities.findOne({ where: { characterId: id } }),
+    ]);
     const assets = versions.length
       ? await this.assets.find({
           where: { versionId: In(versions.map((item) => item.id)) },
           order: { id: 'ASC' },
         })
       : [];
-    return this.characterResponse(character, versions, assets);
+    return {
+      ...this.characterResponse(character, versions, assets),
+      voiceProfile: voice
+        ? {
+            provider: voice.provider,
+            voiceId: voice.voiceId,
+            language: voice.language,
+            speed: voice.speed,
+            volume: voice.volume,
+            pitch: voice.pitch,
+            status: voice.status,
+          }
+        : null,
+      personality: personality
+        ? {
+            style: personality.style,
+            catchphrases: this.parseStringArray(personality.catchphrases),
+            greeting: personality.greeting,
+            encouragementStyle: personality.encouragementStyle,
+            goodbyeText: personality.goodbyeText,
+          }
+        : null,
+    };
   }
 
   async updateCharacter(
@@ -852,6 +884,18 @@ export class AvatarService {
         : {};
     } catch {
       return {};
+    }
+  }
+
+  private parseStringArray(value: string): string[] {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) &&
+        parsed.every((item) => typeof item === 'string')
+        ? parsed
+        : [];
+    } catch {
+      return [];
     }
   }
 

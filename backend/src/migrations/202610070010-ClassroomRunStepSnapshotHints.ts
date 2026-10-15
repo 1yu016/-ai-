@@ -1,9 +1,9 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class ClassroomRunStepSnapshotHints2026092700010
+export class ClassroomRunStepSnapshotHints2026100700010
   implements MigrationInterface
 {
-  name = 'ClassroomRunStepSnapshotHints2026092700010';
+  name = 'ClassroomRunStepSnapshotHints2026100700010';
 
   async up(queryRunner: QueryRunner): Promise<void> {
     if (

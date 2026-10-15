@@ -26,6 +26,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import type { AuthenticatedRequest } from '../auth/auth.types';
 import {
   ChunkHashDto,
+  CompleteUploadSessionDto,
   ConfirmAiSuggestionDto,
   CreateCategoryDto,
   CreateUploadSessionDto,
@@ -41,6 +42,9 @@ import { chunkMulterOptions } from './resource-file.validation';
 import { ResourceUploadExceptionFilter } from './resource-upload-exception.filter';
 import {
   type PaginatedResources,
+  type ResourceFavoriteState,
+  type ResourcePreviewManifest,
+  type ResourceReferenceUsage,
   type ResourceResponse,
   type ResourceSearchResult,
   ResourceService,
@@ -138,9 +142,10 @@ export class ResourceController {
   @UseGuards(AuthGuard)
   completeUpload(
     @Param('id') id: string,
+    @Body() dto: CompleteUploadSessionDto,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.resourceService.completeUpload(request.user, id);
+    return this.resourceService.completeUpload(request.user, id, dto);
   }
 
   @Delete('upload-sessions/:id')
@@ -202,6 +207,38 @@ export class ResourceController {
     return new StreamableFile(createReadStream(file.path));
   }
 
+  @Get(':id/preview-manifest')
+  @UseGuards(AuthGuard)
+  previewManifest(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<ResourcePreviewManifest> {
+    return this.resourceService.getPreviewManifest(request.user, id);
+  }
+
+  @Get(':id/preview-assets/:assetName')
+  @UseGuards(AuthGuard)
+  async previewAsset(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('assetName') assetName: string,
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ): Promise<StreamableFile> {
+    const file = await this.resourceService.getPreviewAsset(
+      request.user,
+      id,
+      assetName,
+    );
+    response.setHeader('Content-Type', file.mimeType);
+    response.setHeader('Content-Length', String(file.size));
+    response.setHeader(
+      'Content-Disposition',
+      `inline; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
+    );
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    return new StreamableFile(createReadStream(file.path));
+  }
+
   @Patch(':id')
   @UseGuards(AuthGuard)
   update(
@@ -225,22 +262,22 @@ export class ResourceController {
   }
 
   @Post(':id/favorite')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   favorite(
     @Param('id', ParseIntPipe) id: number,
     @Req() request: AuthenticatedRequest,
-  ) {
+  ): Promise<ResourceFavoriteState> {
     return this.resourceService.favorite(request.user, id);
   }
 
   @Delete(':id/favorite')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   unfavorite(
     @Param('id', ParseIntPipe) id: number,
     @Req() request: AuthenticatedRequest,
-  ) {
+  ): Promise<ResourceFavoriteState> {
     return this.resourceService.unfavorite(request.user, id);
   }
 
@@ -252,6 +289,15 @@ export class ResourceController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.resourceService.addReference(request.user, id, dto);
+  }
+
+  @Get(':id/references')
+  @UseGuards(AuthGuard)
+  references(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<ResourceReferenceUsage[]> {
+    return this.resourceService.listReferences(request.user, id);
   }
 
   @Delete(':id/references')

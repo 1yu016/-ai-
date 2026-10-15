@@ -23,6 +23,9 @@ export enum ClassroomEventType {
   // Stage 7.4：课间休息开始/提前结束。
   BreakStart = 'break_start',
   BreakEnd = 'break_end',
+  Command = 'command',
+  Attendance = 'attendance',
+  RollCall = 'roll_call',
 }
 
 export enum ClassroomEventResult {
@@ -42,6 +45,55 @@ export const TERMINAL_CLASSROOM_RUN_STATUSES = [
   ClassroomRunStatus.Failed,
 ] as const;
 
+/** 课间内容只能来自内置白名单；卡片不包含 URL、广告或可执行内容。 */
+export enum ClassroomBreakContentType {
+  Water = 'water',
+  Toilet = 'toilet',
+  Movement = 'movement',
+  EyeExercise = 'eye_exercise',
+  LightMusic = 'light_music',
+  Safety = 'safety',
+}
+
+export const CLASSROOM_BREAK_CONTENT = {
+  [ClassroomBreakContentType.Water]: {
+    title: '喝水时间',
+    message: '小口慢慢喝水，喝完把水杯放回原位。',
+    icon: '🥤',
+    avatarAction: 'encourage',
+  },
+  [ClassroomBreakContentType.Toilet]: {
+    title: '如厕时间',
+    message: '排好队、不拥挤，有需要就告诉老师。',
+    icon: '🚻',
+    avatarAction: 'wave',
+  },
+  [ClassroomBreakContentType.Movement]: {
+    title: '快乐律动',
+    message: '跟着老师轻轻活动，不推挤，和身边小朋友保持距离。',
+    icon: '🎵',
+    avatarAction: 'happy',
+  },
+  [ClassroomBreakContentType.EyeExercise]: {
+    title: '眼睛休息一下',
+    message: '看看远处，轻轻眨眼，不用手揉眼睛。',
+    icon: '👀',
+    avatarAction: 'idle',
+  },
+  [ClassroomBreakContentType.LightMusic]: {
+    title: '轻音乐时间',
+    message: '安静听一会儿音乐，让身体和心情都放松下来。',
+    icon: '🎶',
+    avatarAction: 'idle',
+  },
+  [ClassroomBreakContentType.Safety]: {
+    title: '安全小提醒',
+    message: '慢慢走、不奔跑，遇到困难马上告诉老师。',
+    icon: '🛡️',
+    avatarAction: 'encourage',
+  },
+} as const;
+
 export enum ClassroomSnapshotReason {
   Start = 'start',
   ChangeStep = 'change_step',
@@ -54,6 +106,7 @@ export enum ClassroomSnapshotReason {
   Reward = 'reward',
   RecoverableError = 'recoverable_error',
   Timed = 'timed',
+  Command = 'command',
   Takeover = 'takeover',
   Recover = 'recover',
   AvatarBinding = 'avatar_binding',
@@ -88,4 +141,5 @@ export enum ClassroomCheckpointType {
   Reward = 'reward',
   RecoverableError = 'recoverable_error',
   Timed = 'timed',
+  Command = 'command',
 }

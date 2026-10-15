@@ -31,6 +31,8 @@ const emit = defineEmits<{
           type="button"
           class="step-item"
           :class="{ active: step.stepIndex === currentStepIndex, done: step.stepIndex < currentStepIndex }"
+          :aria-current="step.stepIndex === currentStepIndex ? 'step' : undefined"
+          :title="step.title"
           :disabled="paused || busy"
           @click="emit('goStep', step.stepIndex)"
         >
@@ -55,6 +57,7 @@ const emit = defineEmits<{
         </button>
       </template>
     </div>
+    <slot v-if="!collapsed" />
   </aside>
 </template>
 

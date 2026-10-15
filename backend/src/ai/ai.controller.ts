@@ -2,12 +2,16 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpException,
   HttpStatus,
   InternalServerErrorException,
   Logger,
+  Param,
+  ParseIntPipe,
   Post,
+  Query,
   Req,
   UploadedFile,
   UseGuards,
@@ -31,6 +35,7 @@ import {
 } from '../resources/resource.service';
 import { AiService } from './ai.service';
 import { AudioService, type UploadedAudioFile } from './audio.service';
+import { ClassroomDirectorService } from './classroom-director.service';
 import { ChatDto } from './dto/chat.dto';
 import {
   ClassroomCommandDto,
@@ -44,7 +49,27 @@ import {
 } from './dto/classroom-assistant.dto';
 import { TtsDto } from './dto/tts.dto';
 import { VoiceChatDto } from './dto/voice-chat.dto';
-import { LessonPlanDraftRequestDto, LessonPlanDraftResultDto } from './dto/lesson-plan-draft.dto';
+import {
+  LessonPlanDraftRequestDto,
+  LessonPlanDraftResultDto,
+} from './dto/lesson-plan-draft.dto';
+import {
+  ClassroomDirectorDecisionDto,
+  ClassroomDirectorRequestDto,
+} from './dto/classroom-director.dto';
+import {
+  HeuristicAssistantDecisionDto,
+  HeuristicAssistantRequestDto,
+} from './dto/heuristic-assistant.dto';
+import { HeuristicAssistantService } from './heuristic-assistant.service';
+import { ClassroomCommandService } from './classroom-command.service';
+import {
+  ClassroomCommandV2RequestDto,
+  DownloadClassroomRulesQueryDto,
+  ExecuteClassroomCommandDto,
+  SaveClassroomCommandRuleDto,
+  UploadOfflineCommandLogsDto,
+} from './dto/classroom-command-v2.dto';
 
 type VoiceChatResponseDto = {
   userText: string;
@@ -59,11 +84,7 @@ type ChatResponseDto = {
 };
 
 type CommandMatchStatus =
-  | 'not_required'
-  | 'matched'
-  | 'multiple'
-  | 'low_confidence'
-  | 'not_found';
+  'not_required' | 'matched' | 'multiple' | 'low_confidence' | 'not_found';
 
 type CommandResponseDto = CommandModelResultDto & {
   matchStatus: CommandMatchStatus;
@@ -89,7 +110,123 @@ export class AiController {
     private readonly audioService: AudioService,
     private readonly chatPersistenceService: ChatPersistenceService,
     private readonly resourceService: ResourceService,
+    private readonly classroomDirectorService: ClassroomDirectorService,
+    private readonly heuristicAssistantService: HeuristicAssistantService,
+    private readonly classroomCommandService: ClassroomCommandService,
   ) {}
+
+  @Post('classroom-command')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  classroomCommandV2(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: ClassroomCommandV2RequestDto,
+  ) {
+    return this.classroomCommandService.recognize(request.user, dto);
+  }
+
+  @Post('classroom-command/execute')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  executeClassroomCommand(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: ExecuteClassroomCommandDto,
+  ) {
+    return this.classroomCommandService.execute(request.user, dto);
+  }
+
+  @Post('classroom-command/rules')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  saveClassroomCommandRule(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: SaveClassroomCommandRuleDto,
+  ) {
+    return this.classroomCommandService.saveRule(request.user, dto);
+  }
+
+  @Get('classroom-command/rules/download')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  downloadClassroomCommandRules(
+    @Req() request: AuthenticatedRequest,
+    @Query() query: DownloadClassroomRulesQueryDto,
+  ) {
+    return this.classroomCommandService.downloadRules(request.user, query);
+  }
+
+  @Post('classroom-command/offline-logs')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  uploadOfflineClassroomCommandLogs(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: UploadOfflineCommandLogsDto,
+  ) {
+    return this.classroomCommandService.uploadOfflineLogs(request.user, dto);
+  }
+
+  @Post('classroom-director')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  classroomDirector(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: ClassroomDirectorRequestDto,
+  ) {
+    return this.classroomDirectorService.suggest(request.user, dto);
+  }
+
+  @Post('classroom-director/:suggestionId/decision')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  classroomDirectorDecision(
+    @Req() request: AuthenticatedRequest,
+    @Param('suggestionId', ParseIntPipe) suggestionId: number,
+    @Body() dto: ClassroomDirectorDecisionDto,
+  ) {
+    return this.classroomDirectorService.decide(
+      request.user,
+      suggestionId,
+      dto,
+    );
+  }
+
+  @Post('heuristic-assistant')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  heuristicAssistant(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: HeuristicAssistantRequestDto,
+  ) {
+    return this.heuristicAssistantService.create(request.user, dto);
+  }
+
+  @Get('heuristic-assistant/:draftId')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  heuristicAssistantDraft(
+    @Req() request: AuthenticatedRequest,
+    @Param('draftId', ParseIntPipe) draftId: number,
+  ) {
+    return this.heuristicAssistantService.getOne(request.user, draftId);
+  }
+
+  @Post('heuristic-assistant/:draftId/decision')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  heuristicAssistantDecision(
+    @Req() request: AuthenticatedRequest,
+    @Param('draftId', ParseIntPipe) draftId: number,
+    @Body() dto: HeuristicAssistantDecisionDto,
+  ) {
+    return this.heuristicAssistantService.decide(request.user, draftId, dto);
+  }
+
+  @Post('heuristic-assistant/:draftId/play')
+  @UseGuards(AuthGuard, ThrottlerGuard)
+  @HttpCode(HttpStatus.OK)
+  heuristicAssistantPlay(
+    @Req() request: AuthenticatedRequest,
+    @Param('draftId', ParseIntPipe) draftId: number,
+  ) {
+    return this.heuristicAssistantService.play(request.user, draftId);
+  }
 
   /**
    * 与幼儿园 AI 助教对话
@@ -171,9 +308,7 @@ export class AiController {
         `ai.command.search.failed teacher=${request.user.sub}`,
         error instanceof Error ? error.stack : String(error),
       );
-      throw new InternalServerErrorException(
-        '课堂指令处理失败，请稍后重试',
-      );
+      throw new InternalServerErrorException('课堂指令处理失败，请稍后重试');
     }
     const candidates = matches.slice(0, 5);
     if (candidates.length === 0) {
@@ -273,7 +408,11 @@ export class AiController {
     @Body() dto: LessonPlanDraftRequestDto,
     @Req() request: AuthenticatedRequest,
   ): Promise<LessonPlanDraftResultDto> {
-    await Promise.all(dto.resourceIds.map((id) => this.resourceService.getOne(request.user.sub, id)));
+    await Promise.all(
+      dto.resourceIds.map((id) =>
+        this.resourceService.getOne(request.user.sub, id),
+      ),
+    );
     return this.aiService.lessonPlanDraft(dto);
   }
 

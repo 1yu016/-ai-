@@ -191,8 +191,8 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
           schoolId: 'garden-recovery',
           name: '原课堂大屏',
           type: DeviceType.ClassroomScreen,
-          status: DeviceStatus.Offline,
-          lastOnlineAt: null,
+          status: DeviceStatus.Online,
+          lastOnlineAt: new Date(),
         }),
       )
     ).id;
@@ -203,8 +203,8 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
           schoolId: 'garden-recovery',
           name: '接管大屏',
           type: DeviceType.ClassroomScreen,
-          status: DeviceStatus.Offline,
-          lastOnlineAt: null,
+          status: DeviceStatus.Online,
+          lastOnlineAt: new Date(),
         }),
       )
     ).id;
@@ -327,11 +327,17 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
         checkpointType: 'resource_completed',
         resourceId,
         playerState: { resourceId, positionSeconds: 60, completed: true },
+        interactionState: {
+          question: 'checkpoint interaction',
+          screenLifecycle: { phase: 'client-forged', revision: 999 },
+        },
       })
       .expect(201);
     expect(checkpoint.body.playedResourceIds).toContain(resourceId);
     expect(checkpoint.body.playerRecoverySuggestion.autoPlay).toBe(false);
     expect(checkpoint.body.latestSnapshotVersion).toBe(2);
+    expect(checkpoint.body.interactionState.question).toBe('checkpoint interaction');
+    expect(checkpoint.body.interactionState.screenLifecycle).toMatchObject({ phase: 'opening', revision: 1, runId });
 
     await app.close();
     app = await createApp();

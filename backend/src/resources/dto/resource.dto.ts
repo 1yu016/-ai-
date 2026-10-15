@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  IsBoolean,
   IsArray,
   IsEnum,
   IsHash,
@@ -32,6 +33,12 @@ function parseStringArray(value: unknown): unknown {
       .map((item) => item.trim())
       .filter(Boolean);
   }
+}
+
+function normalizeReviewStatus(value: unknown): unknown {
+  if (value === 'pending_review') return ResourceReviewStatus.Pending;
+  if (value === 'archived') return ResourceReviewStatus.Disabled;
+  return value;
 }
 
 export class UploadResourceDto {
@@ -152,6 +159,7 @@ export class ListResourceQueryDto {
   resourceType?: ResourceType;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeReviewStatus(value))
   @IsEnum(ResourceReviewStatus)
   reviewStatus?: ResourceReviewStatus;
 
@@ -168,6 +176,20 @@ export class ListResourceQueryDto {
   @IsString()
   @MaxLength(100)
   tag?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    return value;
+  })
+  @IsBoolean()
+  isFavorite?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  ownerId?: string;
 
   @IsOptional()
   @Type(() => Number)
@@ -210,6 +232,7 @@ export class ResourceReferenceDto {
 }
 
 export class ResourceReviewDto {
+  @Transform(({ value }) => normalizeReviewStatus(value))
   @IsEnum(ResourceReviewStatus) status: ResourceReviewStatus;
   @IsOptional() @IsString() @MaxLength(1000) comment?: string;
 }
@@ -233,6 +256,38 @@ export class CreateUploadSessionDto extends UploadResourceDto {
   @Max(20 * 1024 * 1024)
   chunkSize: number;
   @IsOptional() @IsHash('sha256') expectedSha256?: string;
+}
+
+/**
+ * 分片全部到达后再确认资源元数据。字段保持可选以兼容旧客户端：
+ * 旧客户端不传 body 时继续使用创建会话时保存的元数据。
+ */
+export class CompleteUploadSessionDto {
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(200) title?: string;
+  @IsOptional()
+  @Transform(({ value }) => parseStringArray(value))
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  aliases?: string[];
+  @IsOptional() @IsString() @MaxLength(2000) description?: string;
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(100) category?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) categoryId?: number;
+  @IsOptional() @IsEnum(ResourceAgeGroup) ageGroup?: ResourceAgeGroup;
+  @IsOptional() @IsString() @MaxLength(100) domain?: string;
+  @IsOptional()
+  @Transform(({ value }) => parseStringArray(value))
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  tags?: string[];
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ allowInfinity: false, allowNaN: false })
+  @Min(0)
+  duration?: number;
 }
 
 export class ChunkHashDto {

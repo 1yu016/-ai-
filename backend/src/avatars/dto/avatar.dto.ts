@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsEnum,
   IsInt,
@@ -52,7 +52,10 @@ export class CreateAvatarVersionDto {
 
 export class UploadAvatarAssetDto {
   @IsEnum(AvatarAssetType) assetType: AvatarAssetType;
-  @IsOptional() @IsEnum(AvatarActionName) actionName?: AvatarActionName;
+  @IsOptional()
+  @Transform(({ value }) => (value === 'talk' ? AvatarActionName.Speak : value))
+  @IsEnum(AvatarActionName)
+  actionName?: AvatarActionName;
   @IsOptional() @IsString() @MaxLength(10_000) metadata?: string;
 }
 

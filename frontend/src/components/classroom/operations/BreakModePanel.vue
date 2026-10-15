@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import type { BreakContentType, StartBreakOptions } from '@/stores/lessonRun'
 // 课间休息面板：无本地状态，权威数据全部来自 ClassroomRun（breakStartedAt/breakEndsAt）。
 // 由父组件传入 active/remainingSeconds，成功调用 start-break / end-break 后才切换 UI。
 defineProps<{ active: boolean; remainingSeconds: number; busy: boolean; canStart: boolean }>()
 
-defineEmits<{ (e: 'start-break', durationSeconds: number): void; (e: 'end-break'): void }>()
+const emit = defineEmits<{ (e: 'start-break', options: StartBreakOptions): void; (e: 'end-break'): void }>()
+
+const selectedContent = ref<BreakContentType>('water')
+const CONTENTS: Array<{ type: BreakContentType; icon: string; label: string }> = [
+  { type: 'water', icon: '🥤', label: '喝水' },
+  { type: 'toilet', icon: '🚻', label: '如厕' },
+  { type: 'movement', icon: '🎵', label: '律动' },
+  { type: 'eye_exercise', icon: '👀', label: '眼保健操' },
+  { type: 'light_music', icon: '🎶', label: '轻音乐' },
+  { type: 'safety', icon: '🛡️', label: '安全提示' },
+]
 
 const DURATIONS = [
   { seconds: 180, label: '3 分钟' },
@@ -15,6 +27,14 @@ function formatSeconds(value: number) {
   return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(
     value % 60,
   ).padStart(2, '0')}`
+}
+
+function start(durationSeconds: number) {
+  emit('start-break', {
+    durationSeconds,
+    contentType: selectedContent.value,
+    idleProtectionSeconds: Math.min(120, durationSeconds),
+  })
 }
 </script>
 
@@ -34,15 +54,30 @@ function formatSeconds(value: number) {
       </button>
     </div>
     <div v-else class="duration-actions">
+      <div class="content-options" aria-label="选择课间内容">
+        <button
+          v-for="item in CONTENTS"
+          :key="item.type"
+          type="button"
+          class="content-button"
+          :class="{ selected: selectedContent === item.type }"
+          :disabled="busy || !canStart"
+          @click="selectedContent = item.type"
+        >
+          <span>{{ item.icon }}</span>{{ item.label }}
+        </button>
+      </div>
+      <div class="time-buttons">
       <button
         v-for="item in DURATIONS"
         :key="item.seconds"
         class="button"
         :disabled="busy || !canStart"
-        @click="$emit('start-break', item.seconds)"
+        @click="start(item.seconds)"
       >
         {{ item.label }}
       </button>
+      </div>
     </div>
   </section>
 </template>
@@ -88,10 +123,14 @@ function formatSeconds(value: number) {
   justify-content: center;
 }
 .duration-actions {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  gap: 14px;
   margin-top: 14px;
 }
+.content-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.content-button { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 7px; border: 1px solid #f0ddce; border-radius: 10px; background: #fff; color: #795f50; cursor: pointer; }
+.content-button.selected { border-color: #e99168; background: #fff0e7; color: #a54f32; font-weight: 700; }
+.time-buttons { display: flex; gap: 10px; }
 .button {
   border: 0;
   border-radius: 11px;

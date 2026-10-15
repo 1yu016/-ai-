@@ -26,6 +26,7 @@ import {
   buildResourceResult,
   evaluateResourceCommand,
 } from './ResourceCommandCoordinator'
+import type { TeacherVoiceCommandMatch } from './TeacherVoiceCommandRouter'
 
 /** 仅对 /ai/command 生效的显式超时（毫秒）。不要改为全局。 */
 export const AI_COMMAND_TIMEOUT_MS = 5000
@@ -55,6 +56,12 @@ export type AiCommandOutcome =
       executed: boolean
       message: string
       reason?: string
+    }
+  | {
+      kind: 'confirmation_required'
+      intent: string
+      message: string
+      match: TeacherVoiceCommandMatch
     }
   | {
       kind: 'resource_pending'
@@ -114,13 +121,22 @@ export async function runAiCommandFallback(
     if (isExecutorGroup(executors)) {
       const deviceVerdict = classifyAiDeviceIntent(intent)
       if (deviceVerdict.allowed) {
-        const result = executors.device.execute(deviceVerdict.match)
+        const operation = {
+          PAUSE_MEDIA: 'pause_media', RESUME_MEDIA: 'resume_media', STOP_MEDIA: 'stop_media',
+          CLOSE_RESOURCE: 'stop_media', VOLUME_UP: 'set_volume', VOLUME_DOWN: 'set_volume',
+        }[deviceVerdict.match.intent] as TeacherVoiceCommandMatch['operation']
         return {
-          kind: 'device_executed',
-          intent: deviceVerdict.match.intent,
-          executed: result.executed,
-          message: result.message,
-          ...(result.reason ? { reason: result.reason } : {}),
+          kind: 'confirmation_required',
+          intent,
+          message: '该操作由 AI 判读，需要教师确认后执行。',
+          match: {
+            operation,
+            parameters: intent === 'volume_up' ? { volumeDelta: 0.1 } : intent === 'volume_down' ? { volumeDelta: -0.1 } : undefined,
+            normalized: raw,
+            label: intent,
+            requiresConfirmation: true,
+            source: 'builtin',
+          },
         }
       }
     }
@@ -142,11 +158,23 @@ export async function runAiCommandFallback(
     // ③ 课堂状态意图 → ClassroomCommandExecutor（白名单内）。
     const verdict = classifyAiIntent(intent, raw)
     if (verdict.allowed) {
-      const classroomExecutor = isExecutorGroup(executors)
-        ? executors.classroom
-        : executors
-      const result = await classroomExecutor.execute(verdict.match)
-      return { kind: 'executed', intent, message: result.message }
+      if (!isExecutorGroup(executors)) {
+        const result = await executors.execute(verdict.match)
+        return { kind: 'executed', intent, message: result.message }
+      }
+      const operation = verdict.match.command === 'next' ? 'next_step' : 'previous_step'
+      return {
+        kind: 'confirmation_required',
+        intent,
+        message: '该操作由 AI 判读，需要教师确认后执行。',
+        match: {
+          operation,
+          normalized: raw,
+          label: intent,
+          requiresConfirmation: true,
+          source: 'builtin',
+        },
+      }
     }
     const reply = typeof data?.reply === 'string' ? data.reply : ''
     // ④ 白名单外（open_resources/open_chat/start_activity 等）→ unsupported，不执行。

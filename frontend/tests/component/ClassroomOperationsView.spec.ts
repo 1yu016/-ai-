@@ -79,9 +79,9 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
     await button!.trigger('click')
     await flushPromises()
 
-    expect(post).toHaveBeenCalledWith('/classroom-runs/9/checkpoints', expect.objectContaining({ checkpointType: 'roll_call' }))
+    expect(post).toHaveBeenCalledWith('/classroom-commands', expect.objectContaining({ operation: 'attendance_update' }))
     const body = post.mock.calls[0]![1] as Record<string, unknown>
-    expect(body.attendanceState).toEqual({ 1: 'present' })
+    expect(body.parameters).toEqual({ studentId: 1, status: 'present' })
   })
 
   it('刷新重新加载：进入页面时调用 restore 读取后端快照', async () => {
@@ -91,6 +91,30 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
     await flushPromises()
 
     expect(http.get).toHaveBeenCalledWith('/classroom-runs/9/restore', { params: { deviceId: 2 } })
+  })
+
+  it('活动课堂接口只返回摘要时继续加载完整课堂详情', async () => {
+    const get = vi.spyOn(http, 'get').mockImplementation(async (url: string) => {
+      if (url === '/classes') return classes as never
+      if (url.startsWith('/students')) return students as never
+      if (url === '/classroom-runs/active') {
+        const summary: Partial<typeof run> = { ...run }
+        delete summary.steps
+        return { data: summary } as never
+      }
+      if (url === '/classroom-runs/9') return { data: run } as never
+      if (url.startsWith('/classroom-runs/9/restore')) {
+        return { data: { attendanceState: {}, rewardState: {} } } as never
+      }
+      throw new Error(`unexpected GET ${url}`)
+    })
+
+    const wrapper = await mountOps()
+    await flushPromises()
+
+    expect(get).toHaveBeenCalledWith('/classroom-runs/9')
+    expect(wrapper.text()).toContain('明明')
+    expect(wrapper.text()).not.toContain("reading 'find'")
   })
 
   it('页面恢复：restore 返回的状态渲染为已到人数与小红花总数', async () => {
@@ -108,12 +132,12 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
   it('点击奖励 → POST rewards → 成功后 UI +1（不再写 reward checkpoint）', async () => {
     mockGets()
     const post = vi.spyOn(http, 'post').mockImplementation(async (url: string) => {
-      if (url === '/classroom-runs/9/rewards') {
+      if (url === '/classroom-commands') {
         return {
           data: {
-            record: { id: 11, studentId: 1, studentName: '明明', classId: 1, classroomRunId: 9, teacherId: 1, teacherName: '奖励教师', rewardType: 'flower', stars: 1, reason: '积极回答', requestId: 'reward-x', createdAt: '2026-10-02T14:32:00.000Z' },
-            rewardState: { 1: 1 },
-            studentTotal: 1,
+            status: 'success',
+            result: { studentTotal: 1, rewardState: { 1: 1 } },
+            classroomState: { ...run, version: 4 },
           },
         } as never
       }
@@ -125,16 +149,22 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
 
     await awardFirstStudent(wrapper)
 
-    // 走正式奖励写入口，携带 studentId/stars/reason
+    // 走正式奖励写入口，携带分类、形式、积分和兼容的小红花字段。
     expect(post).toHaveBeenCalledWith(
-      '/classroom-runs/9/rewards',
-      expect.objectContaining({ studentId: 1, stars: 1, reason: '积极回答' }),
+      '/classroom-commands',
+      expect.objectContaining({
+        operation: 'reward_student',
+        parameters: expect.objectContaining({
+          studentId: 1,
+          stars: 1,
+          points: 1,
+          rewardCategory: 'answer',
+          rewardForms: ['flower', 'animation'],
+        }),
+      }),
     )
     // 不再直接写 reward checkpoint
-    expect(post).not.toHaveBeenCalledWith(
-      '/classroom-runs/9/checkpoints',
-      expect.objectContaining({ checkpointType: 'reward' }),
-    )
+    expect(post).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('小红花 1')
   })
 
@@ -147,8 +177,27 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
 
     await awardFirstStudent(wrapper)
 
-    expect(post).toHaveBeenCalledWith('/classroom-runs/9/rewards', expect.objectContaining({ studentId: 1 }))
+    expect(post).toHaveBeenCalledWith('/classroom-commands', expect.objectContaining({ operation: 'reward_student', parameters: expect.objectContaining({ studentId: 1 }) }))
     // 失败后小红花总数保持 0，不提前 +1
     expect(wrapper.text()).toContain('小红花 0')
+  })
+
+  it('随机点名缺少 displayName 时按学生 id 回退到正式姓名，不显示 undefined', async () => {
+    mockGets()
+    vi.spyOn(http, 'post').mockResolvedValue({
+      data: {
+        status: 'success',
+        result: { student: { id: 2 } },
+        classroomState: { ...run, version: 4 },
+      },
+    } as never)
+
+    const wrapper = await mountOps()
+    await flushPromises()
+    await wrapper.find('.head-actions .button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('请 红红 小朋友回答问题！')
+    expect(wrapper.text()).not.toContain('undefined')
   })
 })

@@ -6,7 +6,10 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { ClassroomRunStatus } from '../classroom-run.types';
+import {
+  ClassroomBreakContentType,
+  ClassroomRunStatus,
+} from '../classroom-run.types';
 
 @Entity({ name: 'classroom_run' })
 @Index('UQ_classroom_run_active_class', ['classId'], {
@@ -58,6 +61,15 @@ export class ClassroomRun {
   breakStartedAt: Date | null;
   @Column({ name: 'break_ends_at', type: 'datetime', nullable: true })
   breakEndsAt: Date | null;
+  @Column({ name: 'break_content_type', type: 'varchar', length: 32, nullable: true })
+  breakContentType: ClassroomBreakContentType | null;
+  @Column({ name: 'break_duration_seconds', type: 'integer', nullable: true })
+  breakDurationSeconds: number | null;
+  @Column({ name: 'break_protection_at', type: 'datetime', nullable: true })
+  breakProtectionAt: Date | null;
+  /** 进入课间前的步骤、页码和播放器状态，服务重启后仍可恢复。 */
+  @Column({ name: 'break_context', type: 'text', nullable: true })
+  breakContext: string | null;
   @Column({ name: 'elapsed_seconds', type: 'integer', default: 0 })
   elapsedSeconds: number;
   @Column({ type: 'integer', default: 1 }) version: number;

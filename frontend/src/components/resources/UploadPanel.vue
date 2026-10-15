@@ -9,7 +9,7 @@ import {
   guessResourceType,
   type ResourceAgeGroup,
   type ResourceResponse,
-  type ResourceType,
+  type KnownResourceType,
 } from '@/api/resources'
 import { apiErrorMessage } from '@/api/http'
 
@@ -41,7 +41,7 @@ const form = ref({
   category: '',
   categoryId: undefined as number | undefined,
   ageGroup: 'all' as ResourceAgeGroup,
-  resourceType: 'image' as ResourceType,
+  resourceType: 'image' as KnownResourceType,
   aliases: '',
   description: '',
   domain: '',
@@ -55,13 +55,14 @@ const ageGroupLabels: Record<ResourceAgeGroup, string> = {
   large: '大班',
   all: '全部',
 }
-const resourceTypeLabels: Record<ResourceType, string> = {
+const resourceTypeLabels: Record<KnownResourceType, string> = {
   image: '图片',
   audio: '音频',
   video: '视频',
   pdf: 'PDF 文档',
   ppt: 'PPT 演示',
   picture_book: '绘本',
+  nursery_rhyme: '儿歌',
   animation: '动画',
   question_bank: '题库',
   experiment: '实验',

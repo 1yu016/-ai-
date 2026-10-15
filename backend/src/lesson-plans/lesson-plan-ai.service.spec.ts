@@ -32,6 +32,20 @@ const VALID_OUTPUT = {
 };
 
 describe('LessonPlanAiService', () => {
+  it('validates isolated candidates without filling empty student text', () => {
+    const { service } = createService();
+    const parsed = service.parseCandidates(JSON.stringify({ candidates: [{ title: '提问', teacherInstructionSuggestion: '老师引导观察',
+      studentContentCandidate: '', rationale: '适龄观察', durationSecondsSuggestion: 60 }], warnings: [] }), []);
+    expect(parsed.candidates[0].studentContentCandidate).toBe('');
+  });
+  it('rejects unsafe child content, invalid structure and unselected resources', () => {
+    const { service } = createService();
+    const candidate = { title: '提问', teacherInstructionSuggestion: '观察', studentContentCandidate: '', rationale: '适龄', durationSecondsSuggestion: 60 };
+    for (const patch of [{ studentContentCandidate: '你是笨蛋' }, { resourceId: 99 }, { content: '混合字段' }, { durationSecondsSuggestion: '60' }]) {
+      expect(() => service.parseCandidates(JSON.stringify({ candidates: [{ ...candidate, ...patch }], warnings: [] }), [])).toThrow();
+    }
+    expect(() => service.parseCandidates('not json', [])).toThrow();
+  });
   const actor: JwtTeacherPayload = {
     sub: 1,
     account: 'teacher',

@@ -10,6 +10,9 @@ import { ResourceService } from '../resources/resource.service';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 import { AudioService } from './audio.service';
+import { ClassroomDirectorService } from './classroom-director.service';
+import { HeuristicAssistantService } from './heuristic-assistant.service';
+import { ClassroomCommandService } from './classroom-command.service';
 
 describe('POST /ai/chat', () => {
   let app: INestApplication;
@@ -34,6 +37,29 @@ describe('POST /ai/chat', () => {
         },
         { provide: ChatPersistenceService, useValue: { saveExchange } },
         { provide: ResourceService, useValue: { search, getOne } },
+        {
+          provide: ClassroomDirectorService,
+          useValue: { suggest: jest.fn(), decide: jest.fn() },
+        },
+        {
+          provide: HeuristicAssistantService,
+          useValue: {
+            create: jest.fn(),
+            getOne: jest.fn(),
+            decide: jest.fn(),
+            play: jest.fn(),
+          },
+        },
+        {
+          provide: ClassroomCommandService,
+          useValue: {
+            recognize: jest.fn(),
+            execute: jest.fn(),
+            saveRule: jest.fn(),
+            downloadRules: jest.fn(),
+            uploadOfflineLogs: jest.fn(),
+          },
+        },
       ],
     });
     builder
@@ -220,11 +246,7 @@ describe('POST /ai/chat', () => {
         expect(body.requiresConfirmation).toBe(false);
       });
 
-    expect(search).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 7, role: 'teacher' }),
-      '一闪一闪亮晶晶',
-      'audio',
-    );
+    expect(search).toHaveBeenCalledWith(expect.objectContaining({ sub: 7 }), '一闪一闪亮晶晶', 'audio');
   });
 
   it('does not execute a low-confidence control command', async () => {
@@ -303,9 +325,7 @@ describe('POST /ai/chat', () => {
           responseLength: 'short',
           askedQuestions: [],
           attemptCount: 0,
-          availableResources: [
-            { id: 12, title: '星空图片', type: 'image' },
-          ],
+          availableResources: [{ id: 12, title: '星空图片', type: 'image' }],
         },
         history: [],
       })

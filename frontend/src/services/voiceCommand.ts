@@ -24,6 +24,7 @@ import {
   isRecordingSupported,
   webmToWav,
 } from '@/services/recordingAudio'
+import type { TeacherCommandSynonym } from '@/classroom/command/TeacherVoiceCommandRouter'
 
 export type VoiceCommandOutcome = CommandRuntimeOutcome
 
@@ -46,6 +47,7 @@ export async function runAsrTextThroughCommand(
   executors: CommandRuntimeExecutors,
   deps: AiCommandFallbackDeps,
   timeoutMs = 5000,
+  customSynonyms: TeacherCommandSynonym[] = [],
 ): Promise<CommandRuntimeOutcome> {
   return orchestrateCommand({
     text,
@@ -54,6 +56,7 @@ export async function runAsrTextThroughCommand(
     executors,
     deps,
     timeoutMs,
+    customSynonyms,
   })
 }
 

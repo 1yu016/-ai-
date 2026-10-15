@@ -1,4 +1,9 @@
 import { Module } from '@nestjs/common';
+import { ScreenPreparationService } from './screen-preparation.service';
+import { ScreenLifecycleService } from './screen-lifecycle.service';
+import { ScreenOpeningController } from './screen-opening.controller';
+import { ScreenHandoffService } from './screen-handoff.service';
+import { ScreenPreparationController } from './screen-preparation.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { Teacher } from '../auth/entities/teacher.entity';
@@ -20,6 +25,28 @@ import { StudentRewardRecord } from './entities/student-reward-record.entity';
 import { ClassroomSnapshotService } from './classroom-snapshot.service';
 import { StudentRewardService } from './student-reward.service';
 import { AvatarModule } from '../avatars/avatar.module';
+import { BreakRun } from '../classroom-engagement/entities/break-run.entity';
+import { ClassroomCommandRecord } from './entities/classroom-command-record.entity';
+import { ClassroomCommandController } from './classroom-command.controller';
+import { ClassroomCommandService } from './classroom-command.service';
+import { StudentAttendanceRecord } from './entities/student-attendance-record.entity';
+import { StudentAttendanceChange } from './entities/student-attendance-change.entity';
+import { ClassroomRollCallRecord } from './entities/classroom-roll-call-record.entity';
+import { AttendanceService } from './attendance.service';
+import { ClassGrowthGoal } from './entities/class-growth-goal.entity';
+import { ClassCollectiveRewardRecord } from './entities/class-collective-reward-record.entity';
+import { StudentQuestionRecord } from './entities/student-question-record.entity';
+import { StudentQuestionController } from './student-question.controller';
+import { StudentQuestionService } from './student-question.service';
+import { QuestionMapAiService } from './question-map-ai.service';
+import { ClassroomSummaryDraft } from './entities/classroom-summary-draft.entity';
+import { ClassroomSummary } from './entities/classroom-summary.entity';
+import { ClassroomDirectorV2Suggestion } from '../ai/entities/classroom-director-v2-suggestion.entity';
+import { AuditLog } from '../platform/entities/audit-log.entity';
+import { ClassroomRecordController } from './classroom-record.controller';
+import { ClassroomRecordService } from './classroom-record.service';
+import { ClassroomSummaryAiService } from './classroom-summary-ai.service';
+import { StudentArtworkRecord } from '../artworks/entities/student-artwork-record.entity';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
@@ -28,6 +55,18 @@ export const CLASSROOM_RUN_ENTITIES = [
   ClassroomSnapshot,
   ClassroomDeviceTransfer,
   StudentRewardRecord,
+  BreakRun,
+  ClassroomCommandRecord,
+  StudentAttendanceRecord,
+  StudentAttendanceChange,
+  ClassroomRollCallRecord,
+  ClassGrowthGoal,
+  ClassCollectiveRewardRecord,
+  StudentQuestionRecord,
+  ClassroomSummaryDraft,
+  ClassroomSummary,
+  ClassroomDirectorV2Suggestion,
+  StudentArtworkRecord,
 ];
 
 @Module({
@@ -39,6 +78,7 @@ export const CLASSROOM_RUN_ENTITIES = [
       Device,
       Student,
       Teacher,
+      AuditLog,
     ]),
     AuthModule,
     PlatformModule,
@@ -46,8 +86,36 @@ export const CLASSROOM_RUN_ENTITIES = [
     ResourceModule,
     AvatarModule,
   ],
-  controllers: [ClassroomRunController],
-  providers: [ClassroomRunService, ClassroomSnapshotService, StudentRewardService],
-  exports: [ClassroomRunService, ClassroomSnapshotService, StudentRewardService],
+  controllers: [
+    ScreenOpeningController,
+    ScreenPreparationController,
+    ClassroomRunController,
+    ClassroomCommandController,
+    StudentQuestionController,
+    ClassroomRecordController,
+  ],
+  providers: [
+    ScreenHandoffService,
+    ScreenLifecycleService,
+    ScreenPreparationService,
+    ClassroomRunService,
+    ClassroomSnapshotService,
+    StudentRewardService,
+    ClassroomCommandService,
+    AttendanceService,
+    StudentQuestionService,
+    QuestionMapAiService,
+    ClassroomRecordService,
+    ClassroomSummaryAiService,
+  ],
+  exports: [
+    ClassroomRunService,
+    ClassroomSnapshotService,
+    StudentRewardService,
+    ClassroomCommandService,
+    AttendanceService,
+    StudentQuestionService,
+    ClassroomRecordService,
+  ],
 })
 export class ClassroomRunModule {}

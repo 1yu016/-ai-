@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { apiErrorMessage, http } from '@/api/http'
 import { useConversationStore } from '@/stores/conversation'
 import { useUserStore, type TeacherInfo } from '@/stores/user'
+import { safeInternalRedirect, workspaceHome } from '@/router/authNavigation'
 
 type LoginResponse = {
   access_token: string
@@ -71,10 +72,11 @@ async function submitLogin() {
       ElMessage.warning('登录成功，但历史会话迁移失败，可稍后重新登录再试。')
     }
 
-    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') && !route.query.redirect.startsWith('//')
-      ? route.query.redirect
-      : '/chat'
-    await router.push(redirect)
+    const redirect = safeInternalRedirect(
+      route.query.redirect,
+      workspaceHome(profile.data),
+    )
+    await router.replace(redirect)
   } catch (error) {
     userStore.logout()
     errorText.value = apiErrorMessage(error, '登录失败，请检查账号和密码。')

@@ -5,11 +5,7 @@ import { http } from '@/api/http'
  *
  * 契约来源：《STAGE_7_5_CHILD_QUESTION_BACKEND_HANDOFF.md》
  *
- * 后端接口尚未部署，因此这些请求在真实环境会失败。前端页面必须显式展示
- * "后端未就绪（backend-not-ready）"状态，禁止用 localStorage 冒充正式业务数据，
- * 禁止在失败时伪装成功。
- *
- * 后端完成后再切换为真实可用即结束阻塞。
+ * 所有正式数据均来自后端；不使用 localStorage 保存问题或聚类结果。
  */
 
 /** 一条正式幼儿问题，对齐后端 student_question_record 响应结构。 */
@@ -20,11 +16,17 @@ export type ClassroomQuestion = {
   classId: number
   classroomRunId: number
   lessonStepIndex: number | null
+  asrRawText: string
+  teacherCorrectedText: string | null
   questionText: string
   topic: string | null
+  domain: string | null
+  isAnonymous: boolean
   teacherId: number
   teacherName: string | null
+  lessonTitle: string | null
   createdAt: string
+  updatedAt: string
 }
 
 /** 记录问题的请求体（POST /classroom-runs/:runId/questions）。 */
@@ -32,8 +34,12 @@ export type CreateQuestionPayload = {
   requestId: string
   studentId?: number | null
   lessonStepIndex?: number | null
+  asrRawText?: string
   questionText: string
+  teacherCorrectedText?: string | null
   topic?: string | null
+  domain?: string | null
+  isAnonymous?: boolean
 }
 
 /** 班级历史问题查询（GET /classes/:classId/questions）。 */
@@ -42,6 +48,8 @@ export type ClassQuestionQuery = {
   pageSize: number
   studentId?: number
   keyword?: string
+  topic?: string
+  domain?: string
 }
 
 /** 班级历史问题分页响应。 */
@@ -50,6 +58,37 @@ export type ClassQuestionPage = {
   total: number
   page: number
   pageSize: number
+}
+
+export type QuestionMap = {
+  classId: number
+  filters: { topic: string | null; domain: string | null; studentId: number | null }
+  summary: { total: number; anonymousCount: number; identifiedStudentCount: number }
+  topics: Array<{ name: string; count: number }>
+  domains: Array<{ name: string; count: number }>
+  frequentQuestions: Array<{ question: string; count: number }>
+  interestHotspots: string[]
+  suggestionSource: 'ai' | 'safe_rules'
+  studentClusters: Array<{
+    studentId: number
+    studentName: string
+    questionCount: number
+    topics: Array<{ name: string; count: number }>
+    domains: Array<{ name: string; count: number }>
+  }>
+  teachingSuggestions: string[]
+  activitySuggestions: string[]
+  recommendedResources: Array<{
+    id: number
+    title: string
+    resourceType: string
+    domain: string | null
+  }>
+  safety: {
+    individualRankingGenerated: false
+    negativeLabelsGenerated: false
+    note: string
+  }
 }
 
 function makeRequestId(): string {
@@ -63,6 +102,23 @@ export async function createClassroomQuestion(
 ): Promise<ClassroomQuestion> {
   const { data } = await http.post<{ question: ClassroomQuestion }>(
     `/classroom-runs/${runId}/questions`,
+    { ...payload, requestId: makeRequestId() },
+  )
+  return data.question
+}
+
+export async function updateClassroomQuestion(
+  runId: number,
+  questionId: number,
+  payload: {
+    teacherCorrectedText?: string
+    topic?: string | null
+    domain?: string | null
+    isAnonymous?: boolean
+  },
+): Promise<ClassroomQuestion> {
+  const { data } = await http.patch<{ question: ClassroomQuestion }>(
+    `/classroom-runs/${runId}/questions/${questionId}`,
     { ...payload, requestId: makeRequestId() },
   )
   return data.question
@@ -85,6 +141,17 @@ export async function listClassQuestions(
 ): Promise<ClassQuestionPage> {
   const { data } = await http.get<ClassQuestionPage>(
     `/classes/${classId}/questions`,
+    { params: query },
+  )
+  return data
+}
+
+export async function getQuestionMap(
+  classId: number,
+  query: { topic?: string; domain?: string; studentId?: number } = {},
+): Promise<QuestionMap> {
+  const { data } = await http.get<QuestionMap>(
+    `/classes/${classId}/question-map`,
     { params: query },
   )
   return data

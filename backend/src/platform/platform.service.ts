@@ -1,16 +1,23 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'node:crypto';
+import { readdir, stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { DataSource, In, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
+import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import { Teacher } from '../auth/entities/teacher.entity';
 import {
+  AuditLogQueryDto,
   BindDeviceDto,
   BindTeacherDto,
   ClassQueryDto,
@@ -22,6 +29,7 @@ import {
   CreateStudentDto,
   CreateTeacherDto,
   CreateTicketDto,
+  PageQueryDto,
   StudentQueryDto,
   SyncStudentsDto,
   TeacherQueryDto,
@@ -46,11 +54,24 @@ import { Student } from './entities/student.entity';
 import { TeacherClass } from './entities/teacher-class.entity';
 import { AuditService } from './audit.service';
 import { PlatformAccessService } from './platform-access.service';
-import { BindingStatus, ConsentStatus, RecordStatus } from './platform.types';
+import { deviceHeartbeatTimeoutMs, deviceOnlineStatus } from './device-online-policy';
+import {
+  BindingStatus,
+  ConsentStatus,
+  ConsentType,
+  DeviceStatus,
+  DeviceType,
+  RecordStatus,
+} from './platform.types';
+import {
+  ACTIVE_CLASSROOM_RUN_STATUSES,
+  TERMINAL_CLASSROOM_RUN_STATUSES,
+} from '../classroom-runs/classroom-run.types';
 
 @Injectable()
 export class PlatformService {
   constructor(
+    private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     private readonly access: PlatformAccessService,
     private readonly audit: AuditService,
@@ -79,6 +100,10 @@ export class PlatformService {
     private readonly runs: Repository<ClassroomRun>,
   ) {}
 
+  private get heartbeatTimeoutMs(): number {
+    return deviceHeartbeatTimeoutMs(this.config.get('DEVICE_HEARTBEAT_TIMEOUT_SECONDS'));
+  }
+
   async createClass(actor: JwtTeacherPayload, dto: CreateClassDto) {
     this.access.requireAdministrator(actor);
     const schoolId = actor.schoolId ?? dto.schoolId ?? null;
@@ -95,7 +120,7 @@ export class PlatformService {
       targetType: 'class',
       targetId: saved.id,
     });
-    return saved;
+    return (await this.enrichClasses([saved]))[0];
   }
 
   async updateClass(actor: JwtTeacherPayload, id: number, dto: UpdateClassDto) {
@@ -107,11 +132,12 @@ export class PlatformService {
       targetType: 'class',
       targetId: id,
     });
-    return saved;
+    return (await this.enrichClasses([saved]))[0];
   }
 
   async classDetail(actor: JwtTeacherPayload, id: number) {
-    return this.access.requireClassAccess(actor, id);
+    const schoolClass = await this.access.requireClassAccess(actor, id);
+    return (await this.enrichClasses([schoolClass]))[0];
   }
 
   async listClasses(actor: JwtTeacherPayload, query: ClassQueryDto) {
@@ -128,12 +154,106 @@ export class PlatformService {
     }
     if (query.status)
       builder.andWhere('c.status = :status', { status: query.status });
+    const keyword = query.keyword?.trim();
+    if (keyword) {
+      builder.andWhere(
+        '(c.name LIKE :keyword OR c.grade LIKE :keyword OR c.age_range LIKE :keyword OR c.school_year LIKE :keyword)',
+        { keyword: `%${keyword}%` },
+      );
+    }
     const [items, total] = await builder
       .orderBy('c.id', 'DESC')
       .skip((query.page - 1) * query.pageSize)
       .take(query.pageSize)
       .getManyAndCount();
-    return { items, total, page: query.page, pageSize: query.pageSize };
+    return {
+      items: await this.enrichClasses(items),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
+  }
+
+  private async enrichClasses(items: SchoolClass[]) {
+    if (items.length === 0) return [];
+    const classIds = items.map((item) => item.id);
+    const [teacherRows, studentRows] = await Promise.all([
+      this.teacherClasses
+        .createQueryBuilder('tc')
+        .innerJoin(Teacher, 't', 't.id = tc.teacher_id')
+        .select('tc.class_id', 'classId')
+        .addSelect('tc.role', 'role')
+        .addSelect('t.id', 'teacherId')
+        .addSelect('t.name', 'name')
+        .where('tc.class_id IN (:...classIds)', { classIds })
+        .orderBy('tc.id', 'ASC')
+        .getRawMany<{
+          classId: number | string;
+          role: string;
+          teacherId: number | string;
+          name: string;
+        }>(),
+      this.students
+        .createQueryBuilder('student')
+        .select('student.class_id', 'classId')
+        .addSelect('COUNT(student.id)', 'studentCount')
+        .where('student.class_id IN (:...classIds)', { classIds })
+        .andWhere('student.status = :status', { status: RecordStatus.Active })
+        .groupBy('student.class_id')
+        .getRawMany<{
+          classId: number | string;
+          studentCount: number | string;
+        }>(),
+    ]);
+    const teacherMap = new Map<
+      number,
+      Array<{ teacherId: number; name: string; role: string }>
+    >();
+    for (const row of teacherRows) {
+      const classId = Number(row.classId);
+      const teachers = teacherMap.get(classId) ?? [];
+      teachers.push({
+        teacherId: Number(row.teacherId),
+        name: row.name,
+        role: row.role,
+      });
+      teacherMap.set(classId, teachers);
+    }
+    const studentCountMap = new Map(
+      studentRows.map((row) => [Number(row.classId), Number(row.studentCount)]),
+    );
+    return items.map((item) => ({
+      ...item,
+      teachers: teacherMap.get(item.id) ?? [],
+      studentCount: studentCountMap.get(item.id) ?? 0,
+    }));
+  }
+
+  async listClassRuns(
+    actor: JwtTeacherPayload,
+    classId: number,
+    query: PageQueryDto,
+  ) {
+    await this.access.requireClassAccess(actor, classId);
+    const [runs, total] = await this.runs.findAndCount({
+      where: { classId },
+      order: { createdAt: 'DESC', id: 'DESC' },
+      skip: (query.page - 1) * query.pageSize,
+      take: query.pageSize,
+    });
+    return {
+      items: runs.map((run) => ({
+        id: run.id,
+        title: run.title,
+        status: run.status,
+        startedAt: run.startedAt,
+        endedAt: run.endedAt,
+        createdAt: run.createdAt,
+      })),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
   }
 
   async bindTeacher(
@@ -228,9 +348,10 @@ export class PlatformService {
       .getManyAndCount();
     const summaryRow = (await this.rewards
       .createQueryBuilder('r')
-      .select('COALESCE(SUM(r.stars), 0)', 'totalStars')
+      .select('COALESCE(SUM(CASE WHEN r.revoked_at IS NULL THEN r.stars ELSE 0 END), 0)', 'totalStars')
+      .addSelect('COALESCE(SUM(CASE WHEN r.revoked_at IS NULL THEN r.points ELSE 0 END), 0)', 'totalPoints')
       .where('r.class_id = :classId', { classId })
-      .getRawOne<{ totalStars: number | string }>()) ?? { totalStars: 0 };
+      .getRawOne<{ totalStars: number | string; totalPoints: number | string }>()) ?? { totalStars: 0, totalPoints: 0 };
     const studentIds = [...new Set(records.map((r) => r.studentId))];
     const runIds = [...new Set(records.map((r) => r.classroomRunId))];
     const teacherIds = [...new Set(records.map((r) => r.teacherId))];
@@ -261,8 +382,17 @@ export class PlatformService {
         teacherId: r.teacherId,
         teacherName: teacherMap.get(r.teacherId)?.name ?? null,
         rewardType: r.rewardType,
+        rewardCategory: r.rewardCategory,
+        rewardForms: (() => { try { return JSON.parse(r.rewardForms) as string[]; } catch { return ['flower']; } })(),
+        points: r.points,
+        badgeCode: r.badgeCode,
+        praiseText: r.praiseText,
+        animationKey: r.animationKey,
         stars: r.stars,
         reason: r.reason,
+        revokedAt: r.revokedAt,
+        revokedByTeacherId: r.revokedByTeacherId,
+        revokeReason: r.revokeReason,
         createdAt: r.createdAt,
       };
     });
@@ -275,7 +405,53 @@ export class PlatformService {
         classId,
         className: schoolClass.name,
         totalStars: Number(summaryRow.totalStars),
+        totalPoints: Number(summaryRow.totalPoints),
       },
+    };
+  }
+
+  /**
+   * 班级成长榜使用正式、未撤销的奖励流水聚合。
+   * 结果只含展示名和星星总数，并在查询前执行班级权限校验。
+   */
+  async rewardLeaderboard(
+    actor: JwtTeacherPayload,
+    classId: number,
+    limit: number,
+  ) {
+    const schoolClass = await this.access.requireClassAccess(actor, classId);
+    const rows = await this.rewards
+      .createQueryBuilder('r')
+      .innerJoin(Student, 'student', 'student.id = r.student_id')
+      .select('r.student_id', 'studentId')
+      .addSelect('COALESCE(student.nickname, student.name)', 'studentName')
+      .addSelect('COALESCE(SUM(r.stars), 0)', 'totalStars')
+      .where('r.class_id = :classId', { classId })
+      .andWhere('r.revoked_at IS NULL')
+      .andWhere('student.class_id = :classId', { classId })
+      .andWhere('student.status = :activeStatus', {
+        activeStatus: RecordStatus.Active,
+      })
+      .groupBy('r.student_id')
+      .addGroupBy('student.nickname')
+      .addGroupBy('student.name')
+      .orderBy('totalStars', 'DESC')
+      .addOrderBy('r.student_id', 'ASC')
+      .limit(limit)
+      .getRawMany<{
+        studentId: number | string;
+        studentName: string | null;
+        totalStars: number | string;
+      }>();
+    return {
+      classId,
+      className: schoolClass.name,
+      items: rows.map((row, index) => ({
+        rank: index + 1,
+        studentId: Number(row.studentId),
+        studentName: row.studentName,
+        totalStars: Number(row.totalStars),
+      })),
     };
   }
 
@@ -374,7 +550,11 @@ export class PlatformService {
   }
 
   async createStudent(actor: JwtTeacherPayload, dto: CreateStudentDto) {
-    await this.access.requireClassAccess(actor, dto.classId);
+    const schoolClass = await this.access.requireClassAccess(actor, dto.classId);
+    const duplicate = await this.students.findOne({
+      where: { classId: dto.classId, studentNo: dto.studentNo },
+    });
+    if (duplicate) throw new ConflictException('该班级已存在相同学号');
     const saved = await this.students.save(
       this.students.create({
         ...dto,
@@ -388,7 +568,7 @@ export class PlatformService {
       targetType: 'student',
       targetId: saved.id,
     });
-    return this.studentSummary(saved);
+    return this.studentResponse(saved, schoolClass.name, []);
   }
 
   async updateStudent(
@@ -397,32 +577,59 @@ export class PlatformService {
     dto: UpdateStudentDto,
   ) {
     const entity = await this.access.requireStudentAccess(actor, id);
+    const schoolClass = await this.access.requireClassAccess(actor, entity.classId);
     const saved = await this.students.save(this.students.merge(entity, dto));
     await this.audit.write(actor, {
       action: 'student.update',
       targetType: 'student',
       targetId: id,
     });
-    return this.studentSummary(saved);
+    const consents = await this.consents.find({ where: { studentId: id } });
+    return this.studentResponse(saved, schoolClass.name, consents);
   }
 
   async listStudents(actor: JwtTeacherPayload, query: StudentQueryDto) {
-    await this.access.requireClassAccess(actor, query.classId);
-    const where = {
-      classId: query.classId,
-      ...(query.status ? { status: query.status } : {}),
-    };
-    const [items, total] = await this.students.findAndCount({
-      where,
-      order: { id: 'ASC' },
-      skip: (query.page - 1) * query.pageSize,
-      take: query.pageSize,
-    });
+    const schoolClass = await this.access.requireClassAccess(actor, query.classId);
+    const builder = this.students
+      .createQueryBuilder('student')
+      .where('student.class_id = :classId', { classId: query.classId });
+    if (query.status)
+      builder.andWhere('student.status = :status', { status: query.status });
+    const keyword = query.keyword?.trim();
+    if (keyword) {
+      builder.andWhere(
+        '(student.name LIKE :keyword OR student.student_no LIKE :keyword)',
+        { keyword: `%${keyword}%` },
+      );
+    }
+    const [items, total] = await builder
+      .orderBy('student.id', 'ASC')
+      .skip((query.page - 1) * query.pageSize)
+      .take(query.pageSize)
+      .getManyAndCount();
+    const consentMap = await this.studentConsentMap(items.map((item) => item.id));
     return {
-      items: items.map((item) => this.studentSummary(item)),
+      items: items.map((item) =>
+        this.studentResponse(item, schoolClass.name, consentMap.get(item.id) ?? []),
+      ),
       total,
       page: query.page,
       pageSize: query.pageSize,
+    };
+  }
+
+  async studentDetail(actor: JwtTeacherPayload, id: number) {
+    const student = await this.access.requireStudentAccess(actor, id);
+    const schoolClass = await this.access.requireClassAccess(actor, student.classId);
+    const consents = await this.consents.find({
+      where: { studentId: id },
+      order: { consentType: 'ASC' },
+    });
+    return {
+      ...this.studentResponse(student, schoolClass.name, consents),
+      gender: student.gender,
+      birthday: student.birthday,
+      consents,
     };
   }
 
@@ -512,12 +719,14 @@ export class PlatformService {
   }
 
   async listClassrooms(actor: JwtTeacherPayload) {
-    if (this.access.isAdministrator(actor))
-      return this.classrooms.find({
+    if (this.access.isAdministrator(actor)) {
+      const classrooms = await this.classrooms.find({
         where: actor.schoolId ? { schoolId: actor.schoolId } : {},
         order: { id: 'DESC' },
       });
-    return this.classrooms
+      return this.classroomSummaries(actor, classrooms);
+    }
+    const classrooms = await this.classrooms
       .createQueryBuilder('room')
       .innerJoin(
         DeviceBinding,
@@ -533,6 +742,17 @@ export class PlatformService {
       )
       .distinct(true)
       .getMany();
+    return this.classroomSummaries(actor, classrooms);
+  }
+
+  async classroomDetail(actor: JwtTeacherPayload, id: number) {
+    const classroom = await this.classrooms.findOne({ where: { id } });
+    if (!classroom) throw new NotFoundException('教室不存在');
+    this.requireSameSchool(actor, classroom.schoolId);
+    const [summary] = await this.classroomSummaries(actor, [classroom]);
+    if (!this.access.isAdministrator(actor) && !summary?.bindings.length)
+      throw new ForbiddenException('无权访问该教室');
+    return summary;
   }
 
   async createDevice(actor: JwtTeacherPayload, dto: CreateDeviceDto) {
@@ -570,12 +790,14 @@ export class PlatformService {
   }
 
   async listDevices(actor: JwtTeacherPayload) {
-    if (this.access.isAdministrator(actor))
-      return this.devices.find({
+    if (this.access.isAdministrator(actor)) {
+      const devices = await this.devices.find({
         where: actor.schoolId ? { schoolId: actor.schoolId } : {},
         order: { id: 'DESC' },
       });
-    return this.devices
+      return this.deviceSummaries(devices);
+    }
+    const devices = await this.devices
       .createQueryBuilder('d')
       .innerJoin(
         DeviceBinding,
@@ -591,6 +813,59 @@ export class PlatformService {
       )
       .distinct(true)
       .getMany();
+    return this.deviceSummaries(devices);
+  }
+
+  async deviceDetail(actor: JwtTeacherPayload, id: number) {
+    const device = await this.devices.findOne({ where: { id } });
+    if (!device) throw new NotFoundException('设备不存在');
+    this.requireSameSchool(actor, device.schoolId);
+    const [summary] = await this.deviceSummaries([device]);
+    if (!summary) throw new NotFoundException('设备不存在');
+    if (!this.access.isAdministrator(actor)) {
+      if (!summary.binding) throw new ForbiddenException('无权访问该设备');
+      await this.access.requireClassAccess(actor, summary.binding.classId);
+    }
+    return summary;
+  }
+
+  async heartbeat(
+    actor: JwtTeacherPayload,
+    deviceId: number,
+    deviceCode: string,
+  ) {
+    const device = await this.devices.findOne({ where: { id: deviceId } });
+    if (!device) throw new NotFoundException('设备不存在');
+    this.requireSameSchool(actor, device.schoolId);
+    if (deviceCode !== device.deviceCode)
+      throw new ForbiddenException('设备身份校验失败');
+    if (!this.access.isAdministrator(actor)) {
+      const binding = await this.bindings.findOne({
+        where: { deviceId, status: BindingStatus.Active },
+      });
+      if (!binding) throw new ForbiddenException('设备尚未绑定到当前教师班级');
+      await this.access.requireClassAccess(actor, binding.classId);
+    }
+    if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+      throw new ConflictException('停用或故障设备不能参与课堂');
+    device.lastOnlineAt = new Date();
+    device.status = DeviceStatus.Online;
+    const saved = await this.devices.save(device);
+    return this.deviceStatusSummary(saved);
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async markTimedOutDevicesOffline(): Promise<void> {
+    const cutoff = new Date(Date.now() - this.heartbeatTimeoutMs);
+    await this.devices
+      .createQueryBuilder()
+      .update(Device)
+      .set({ status: DeviceStatus.Offline })
+      .where('status = :online', { online: DeviceStatus.Online })
+      .andWhere('(last_online_at IS NULL OR last_online_at < :cutoff)', {
+        cutoff,
+      })
+      .execute();
   }
 
   async bindDevice(actor: JwtTeacherPayload, dto: BindDeviceDto) {
@@ -614,6 +889,12 @@ export class PlatformService {
     ].filter((schoolId): schoolId is string => Boolean(schoolId));
     if (new Set(schoolIds).size > 1)
       throw new ConflictException('设备、教室与班级不属于同一园所');
+    if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+      throw new ConflictException('停用或故障设备不能绑定到班级');
+    if (classroom.status !== RecordStatus.Active)
+      throw new ConflictException('停用教室不能绑定设备');
+    if (schoolClass.status !== RecordStatus.Active)
+      throw new ConflictException('停用班级不能绑定设备');
     const active = await this.bindings.findOne({
       where: { deviceId: dto.deviceId, status: BindingStatus.Active },
     });
@@ -701,18 +982,22 @@ export class PlatformService {
     return bindings.map((b) => {
       const device = deviceById.get(b.deviceId);
       const classroom = classroomById.get(b.classroomId);
+      const deviceSummary = device ? this.deviceStatusSummary(device) : null;
       return {
         id: b.id,
         classId: b.classId,
         classroomId: b.classroomId,
         classroom: classroom ? { id: classroom.id, name: classroom.name } : null,
         deviceId: b.deviceId,
-        device: device
+        device: deviceSummary
           ? {
-              id: device.id,
-              name: device.name,
-              type: device.type,
-              status: device.status,
+              id: deviceSummary.id,
+              deviceCode: deviceSummary.deviceCode,
+              name: deviceSummary.name,
+              type: deviceSummary.type,
+              status: deviceSummary.status,
+              online: deviceSummary.online,
+              lastOnlineAt: deviceSummary.lastOnlineAt,
             }
           : null,
       };
@@ -720,16 +1005,41 @@ export class PlatformService {
   }
 
   async createTicket(actor: JwtTeacherPayload, dto: CreateTicketDto) {
+    if (actor.userType !== AuthUserType.Teacher)
+      throw new ForbiddenException('课堂扫码凭证只能由教师生成');
     await this.access.requireClassAccess(actor, dto.classId);
-    const binding = await this.bindings.findOne({
-      where: {
-        deviceId: dto.deviceId,
-        classroomId: dto.classroomId,
-        classId: dto.classId,
-        status: BindingStatus.Active,
-      },
-    });
+    const [binding, device, activeRun] = await Promise.all([
+      this.bindings.findOne({
+        where: {
+          deviceId: dto.deviceId,
+          classroomId: dto.classroomId,
+          classId: dto.classId,
+          status: BindingStatus.Active,
+        },
+      }),
+      this.devices.findOne({ where: { id: dto.deviceId } }),
+      this.runs.findOne({
+        where: {
+          deviceId: dto.deviceId,
+          status: In([...ACTIVE_CLASSROOM_RUN_STATUSES]),
+        },
+      }),
+    ]);
     if (!binding) throw new ConflictException('设备、教室与班级不存在有效绑定');
+    if (!device) throw new NotFoundException('设备不存在');
+    if (device.type !== DeviceType.ClassroomScreen)
+      throw new ConflictException('只有课堂大屏可以生成扫码凭证');
+    if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+      throw new ConflictException('停用或故障设备不能参与课堂');
+    if (
+      activeRun &&
+      (activeRun.classId !== dto.classId ||
+        activeRun.classroomId !== dto.classroomId ||
+        (dto.lessonRunId != null && activeRun.id !== dto.lessonRunId))
+    )
+      throw new ConflictException('该大屏已有进行中的课堂');
+    if (dto.lessonRunId != null && !activeRun)
+      throw new ConflictException('指定课堂不存在或已经结束');
     const ticket = randomBytes(32).toString('base64url');
     const entity = await this.tickets.save(
       this.tickets.create({
@@ -737,7 +1047,7 @@ export class PlatformService {
         deviceId: dto.deviceId,
         classroomId: dto.classroomId,
         classId: dto.classId,
-        lessonRunId: dto.lessonRunId ?? null,
+        lessonRunId: activeRun?.id ?? dto.lessonRunId ?? null,
         expiresAt: new Date(Date.now() + dto.expiresInSeconds * 1000),
         usedAt: null,
         isUsed: false,
@@ -749,10 +1059,20 @@ export class PlatformService {
       targetType: 'classroom_ticket',
       targetId: entity.id,
     });
-    return { ticket, expiresAt: entity.expiresAt };
+    return {
+      ticket,
+      expiresAt: entity.expiresAt,
+      deviceCode: device.deviceCode,
+    };
   }
 
-  async consumeTicket(ticket: string, deviceCode: string) {
+  async consumeTicket(
+    actor: JwtTeacherPayload,
+    ticket: string,
+    deviceCode: string,
+  ) {
+    if (actor.userType !== AuthUserType.Teacher)
+      throw new ForbiddenException('只有教师可以扫码进入课堂');
     return this.dataSource.transaction(async (manager) => {
       const tickets = manager.getRepository(ClassroomTicket);
       const entity = await tickets.findOne({
@@ -769,6 +1089,45 @@ export class PlatformService {
         entity.expiresAt.getTime() <= Date.now()
       ) {
         throw new BadRequestException('课堂凭证无效或已过期');
+      }
+      await this.access.requireClassAccess(actor, entity.classId);
+      if ([DeviceStatus.Disabled, DeviceStatus.Fault].includes(device.status))
+        throw new BadRequestException('课堂凭证无效或已过期');
+      const runs = manager.getRepository(ClassroomRun);
+      if (entity.lessonRunId != null) {
+        const linkedRun = await runs.findOne({
+          where: { id: entity.lessonRunId },
+        });
+        if (
+          !linkedRun ||
+          linkedRun.classId !== entity.classId ||
+          linkedRun.classroomId !== entity.classroomId ||
+          linkedRun.deviceId !== entity.deviceId ||
+          !ACTIVE_CLASSROOM_RUN_STATUSES.includes(
+            linkedRun.status as (typeof ACTIVE_CLASSROOM_RUN_STATUSES)[number],
+          )
+        )
+          throw new BadRequestException('课堂凭证无效或已过期');
+        if (linkedRun.teacherId !== actor.sub)
+          throw new ForbiddenException('只有当前课堂教师可以使用该凭证');
+      } else {
+        const endedAfterIssue = await runs
+          .createQueryBuilder('run')
+          .where('run.device_id = :deviceId', { deviceId: entity.deviceId })
+          .andWhere('run.class_id = :classId', { classId: entity.classId })
+          .andWhere('run.classroom_id = :classroomId', {
+            classroomId: entity.classroomId,
+          })
+          .andWhere('run.status IN (:...terminalStatuses)', {
+            terminalStatuses: [...TERMINAL_CLASSROOM_RUN_STATUSES],
+          })
+          .andWhere('run.ended_at IS NOT NULL')
+          .andWhere('run.ended_at >= :createdAt', {
+            createdAt: entity.createdAt,
+          })
+          .getOne();
+        if (endedAfterIssue)
+          throw new BadRequestException('课堂凭证无效或已过期');
       }
       const updated = await tickets
         .createQueryBuilder()
@@ -795,6 +1154,7 @@ export class PlatformService {
         classroomId: entity.classroomId,
         deviceId: entity.deviceId,
         lessonRunId: entity.lessonRunId,
+        deviceCode: device.deviceCode,
       };
     });
   }
@@ -838,16 +1198,47 @@ export class PlatformService {
 
   async listAuditLogs(
     actor: JwtTeacherPayload,
-    page: number,
-    pageSize: number,
+    query: AuditLogQueryDto,
   ) {
     this.access.requireAdministrator(actor);
-    const [items, total] = await this.auditLogs.findAndCount({
-      order: { id: 'DESC' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
-    return { items, total, page, pageSize };
+    const builder = this.auditLogs.createQueryBuilder('log');
+    if (actor.schoolId)
+      builder.andWhere(
+        `((log.actor_type = 'teacher' AND log.actor_id IN
+          (SELECT id FROM teachers WHERE school_id = :auditSchoolId))
+         OR (log.actor_type = 'administrator' AND log.actor_id IN
+          (SELECT id FROM administrator WHERE school_id = :auditSchoolId)))`,
+        { auditSchoolId: actor.schoolId },
+      );
+    if (query.action)
+      builder.andWhere('log.action LIKE :action', {
+        action: `%${query.action.trim()}%`,
+      });
+    if (query.actorType)
+      builder.andWhere('log.actor_type = :actorType', {
+        actorType: query.actorType,
+      });
+    if (query.result)
+      builder.andWhere('log.result = :result', { result: query.result });
+    if (query.from)
+      builder.andWhere('log.created_at >= :from', {
+        from: new Date(query.from),
+      });
+    if (query.to)
+      builder.andWhere('log.created_at <= :to', {
+        to: new Date(query.to),
+      });
+    const [records, total] = await builder
+      .orderBy('log.id', 'DESC')
+      .skip((query.page - 1) * query.pageSize)
+      .take(query.pageSize)
+      .getManyAndCount();
+    const items = records.map((record) => ({
+      ...record,
+      ipAddress: this.maskIp(record.ipAddress),
+      metadata: this.maskAuditMetadata(record.metadata),
+    }));
+    return { items, total, page: query.page, pageSize: query.pageSize };
   }
 
   async listAiCallLogs(
@@ -856,22 +1247,428 @@ export class PlatformService {
     pageSize: number,
   ) {
     this.access.requireAdministrator(actor);
-    const [items, total] = await this.aiCallLogs.findAndCount({
-      order: { id: 'DESC' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
+    const builder = this.aiCallLogs.createQueryBuilder('ai');
+    if (actor.schoolId)
+      builder.andWhere(
+        `((ai.actor_type = 'teacher' AND ai.actor_id IN
+          (SELECT id FROM teachers WHERE school_id = :aiSchoolId))
+         OR (ai.actor_type = 'administrator' AND ai.actor_id IN
+          (SELECT id FROM administrator WHERE school_id = :aiSchoolId)))`,
+        { aiSchoolId: actor.schoolId },
+      );
+    const [items, total] = await builder
+      .orderBy('ai.id', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
     return { items, total, page, pageSize };
   }
 
-  private studentSummary(student: Student) {
+  async adminDashboard(actor: JwtTeacherPayload) {
+    this.access.requireAdministrator(actor);
+    const schoolId = actor.schoolId ?? null;
+    const teachers = this.teachers.createQueryBuilder('teacher');
+    const classes = this.classes.createQueryBuilder('class');
+    const students = this.students
+      .createQueryBuilder('student')
+      .innerJoin(
+        SchoolClass,
+        'studentClass',
+        'studentClass.id = student.class_id',
+      );
+    const devices = this.devices.createQueryBuilder('device');
+    const runs = this.runs
+      .createQueryBuilder('run')
+      .innerJoin(SchoolClass, 'runClass', 'runClass.id = run.class_id');
+    if (schoolId) {
+      teachers.andWhere('teacher.school_id = :schoolId', { schoolId });
+      classes.andWhere('class.school_id = :schoolId', { schoolId });
+      students.andWhere('studentClass.school_id = :schoolId', { schoolId });
+      devices.andWhere('device.school_id = :schoolId', { schoolId });
+      runs.andWhere('runClass.school_id = :schoolId', { schoolId });
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const allDevices = await devices.getMany();
+    const onlineDevices = allDevices.filter(
+      (device) => deviceOnlineStatus(device, this.heartbeatTimeoutMs) === DeviceStatus.Online,
+    ).length;
+    const aiBuilder = this.aiCallLogs.createQueryBuilder('ai');
+    if (schoolId)
+      aiBuilder.andWhere(
+        `((ai.actor_type = 'teacher' AND ai.actor_id IN
+          (SELECT id FROM teachers WHERE school_id = :aiSchoolId))
+         OR (ai.actor_type = 'administrator' AND ai.actor_id IN
+          (SELECT id FROM administrator WHERE school_id = :aiSchoolId)))`,
+        { aiSchoolId: schoolId },
+      );
+    const aiStats = await aiBuilder
+      .select('COUNT(*)', 'total')
+      .addSelect(
+        "SUM(CASE WHEN ai.status = 'success' THEN 1 ELSE 0 END)",
+        'success',
+      )
+      .addSelect(
+        "SUM(CASE WHEN ai.status <> 'success' THEN 1 ELSE 0 END)",
+        'error',
+      )
+      .addSelect('AVG(ai.latency_ms)', 'averageLatencyMs')
+      .getRawOne<{
+        total: number | string;
+        success: number | string | null;
+        error: number | string | null;
+        averageLatencyMs: number | string | null;
+      }>();
+    const [
+      teacherCount,
+      classCount,
+      studentCount,
+      todayClassrooms,
+      activeClassrooms,
+      abnormalClassrooms,
+      resourceStats,
+      physicalStorage,
+    ] = await Promise.all([
+      teachers.getCount(),
+      classes.getCount(),
+      students.getCount(),
+      runs
+        .clone()
+        .andWhere('run.created_at >= :today', { today })
+        .getCount(),
+      runs
+        .clone()
+        .andWhere("run.status IN ('prepared','running','paused')")
+        .getCount(),
+      runs.clone().andWhere("run.status = 'failed'").getCount(),
+      this.resourceDashboardStats(schoolId),
+      this.storageUsageBytes(),
+    ]);
+    const aiTotal = Number(aiStats?.total ?? 0);
+    const aiSuccess = Number(aiStats?.success ?? 0);
+    const aiErrors = Number(aiStats?.error ?? 0);
+    return {
+      generatedAt: new Date().toISOString(),
+      teachers: teacherCount,
+      classes: classCount,
+      students: studentCount,
+      devices: {
+        total: allDevices.length,
+        online: onlineDevices,
+        offline: allDevices.length - onlineDevices,
+      },
+      classrooms: {
+        today: todayClassrooms,
+        active: activeClassrooms,
+        abnormal: abnormalClassrooms,
+      },
+      resources: {
+        pending: resourceStats.pending,
+        disabled: resourceStats.disabled,
+      },
+      ai: {
+        total: aiTotal,
+        success: aiSuccess,
+        errors: aiErrors,
+        successRate: aiTotal
+          ? Number(((aiSuccess / aiTotal) * 100).toFixed(2))
+          : 0,
+        errorRate: aiTotal
+          ? Number(((aiErrors / aiTotal) * 100).toFixed(2))
+          : 0,
+        averageLatencyMs: Math.round(
+          Number(aiStats?.averageLatencyMs ?? 0),
+        ),
+      },
+      storage: {
+        indexedResourceBytes: resourceStats.bytes,
+        physicalBytes: physicalStorage,
+      },
+    };
+  }
+
+  private async resourceDashboardStats(
+    schoolId: string | null,
+  ): Promise<{ pending: number; disabled: number; bytes: number }> {
+    const runner = this.dataSource.createQueryRunner();
+    try {
+      if (!(await runner.hasTable('teaching_resource')))
+        return { pending: 0, disabled: 0, bytes: 0 };
+      const schoolClause = schoolId ? ' AND school_id = ?' : '';
+      const parameters = schoolId ? [schoolId] : [];
+      const rows = (await runner.query(
+        `SELECT
+           SUM(CASE WHEN review_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN review_status = 'disabled' THEN 1 ELSE 0 END) AS disabled,
+           COALESCE(SUM(file_size), 0) AS bytes
+         FROM teaching_resource
+         WHERE deleted_at IS NULL${schoolClause}`,
+        parameters,
+      )) as Array<{
+        pending: number | string | null;
+        disabled: number | string | null;
+        bytes: number | string | null;
+      }>;
+      return {
+        pending: Number(rows[0]?.pending ?? 0),
+        disabled: Number(rows[0]?.disabled ?? 0),
+        bytes: Number(rows[0]?.bytes ?? 0),
+      };
+    } finally {
+      await runner.release();
+    }
+  }
+
+  private maskIp(value: string | null): string | null {
+    if (!value) return null;
+    if (value.includes(':'))
+      return `${value.split(':').slice(0, 2).join(':')}:***`;
+    const parts = value.split('.');
+    return parts.length === 4
+      ? `${parts[0]}.${parts[1]}.*.*`
+      : '***';
+  }
+
+  private maskAuditMetadata(
+    value: string | null,
+  ): Record<string, unknown> | null {
+    if (!value) return null;
+    try {
+      return this.maskAuditValue(JSON.parse(value)) as Record<string, unknown>;
+    } catch {
+      return { value: '[无法解析的历史元数据]' };
+    }
+  }
+
+  private maskAuditValue(value: unknown, key = ''): unknown {
+    if (
+      /password|token|secret|authorization|phone|address|rawAudio/i.test(key)
+    )
+      return '***';
+    if (Array.isArray(value))
+      return value.map((item) => this.maskAuditValue(item));
+    if (value && typeof value === 'object')
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(
+          ([entryKey, entryValue]) => [
+            entryKey,
+            this.maskAuditValue(entryValue, entryKey),
+          ],
+        ),
+      );
+    return value;
+  }
+
+  private async storageUsageBytes(): Promise<number> {
+    const roots = [
+      this.config.get<string>('DATABASE_PATH'),
+      this.config.get<string>('RESOURCE_UPLOAD_ROOT_PATH') ??
+        resolve(process.cwd(), 'uploads'),
+    ].filter((path): path is string => Boolean(path));
+    const sizeOf = async (path: string): Promise<number> => {
+      const info = await stat(path).catch(() => null);
+      if (!info) return 0;
+      if (info.isFile()) return info.size;
+      if (!info.isDirectory()) return 0;
+      const entries = await readdir(path).catch(() => [] as string[]);
+      const sizes = await Promise.all(
+        entries.map((entry) => sizeOf(resolve(path, entry))),
+      );
+      return sizes.reduce((sum, size) => sum + size, 0);
+    };
+    const sizes = await Promise.all(
+      roots.map((root) => sizeOf(resolve(root))),
+    );
+    return sizes.reduce((sum, size) => sum + size, 0);
+  }
+
+  private async deviceSummaries(devices: Device[]) {
+    if (!devices.length) return [];
+    const bindings = await this.bindings.find({
+      where: {
+        deviceId: In(devices.map((device) => device.id)),
+        status: BindingStatus.Active,
+      },
+    });
+    const [classrooms, classes] = await Promise.all([
+      bindings.length
+        ? this.classrooms.find({
+            where: { id: In(bindings.map((binding) => binding.classroomId)) },
+          })
+        : Promise.resolve([]),
+      bindings.length
+        ? this.classes.find({
+            where: { id: In(bindings.map((binding) => binding.classId)) },
+          })
+        : Promise.resolve([]),
+    ]);
+    const bindingByDevice = new Map(
+      bindings.map((binding) => [binding.deviceId, binding]),
+    );
+    const classroomById = new Map(classrooms.map((item) => [item.id, item]));
+    const classById = new Map(classes.map((item) => [item.id, item]));
+    return devices.map((device) => {
+      const binding = bindingByDevice.get(device.id);
+      return {
+        ...this.deviceStatusSummary(device),
+        binding: binding
+          ? {
+              id: binding.id,
+              classroomId: binding.classroomId,
+              classroomName:
+                classroomById.get(binding.classroomId)?.name ?? null,
+              classId: binding.classId,
+              className: classById.get(binding.classId)?.name ?? null,
+              boundAt: binding.boundAt,
+            }
+          : null,
+      };
+    });
+  }
+
+  private async classroomSummaries(
+    actor: JwtTeacherPayload,
+    classrooms: Classroom[],
+  ) {
+    if (!classrooms.length) return [];
+    const bindings = await this.bindings.find({
+      where: {
+        classroomId: In(classrooms.map((classroom) => classroom.id)),
+        status: BindingStatus.Active,
+      },
+    });
+    let visibleBindings = bindings;
+    if (!this.access.isAdministrator(actor)) {
+      const teacherClasses = await this.teacherClasses.find({
+        where: { teacherId: actor.sub },
+      });
+      const allowedClassIds = new Set(
+        teacherClasses.map((relation) => relation.classId),
+      );
+      visibleBindings = bindings.filter((binding) =>
+        allowedClassIds.has(binding.classId),
+      );
+    }
+    const [devices, classes] = await Promise.all([
+      visibleBindings.length
+        ? this.devices.find({
+            where: {
+              id: In(visibleBindings.map((binding) => binding.deviceId)),
+            },
+          })
+        : Promise.resolve([]),
+      visibleBindings.length
+        ? this.classes.find({
+            where: { id: In(visibleBindings.map((binding) => binding.classId)) },
+          })
+        : Promise.resolve([]),
+    ]);
+    const deviceById = new Map(devices.map((device) => [device.id, device]));
+    const classById = new Map(classes.map((schoolClass) => [schoolClass.id, schoolClass]));
+    const bindingsByClassroom = new Map<number, typeof visibleBindings>();
+    for (const binding of visibleBindings) {
+      const rows = bindingsByClassroom.get(binding.classroomId) ?? [];
+      rows.push(binding);
+      bindingsByClassroom.set(binding.classroomId, rows);
+    }
+    return classrooms.map((classroom) => {
+      const rows = bindingsByClassroom.get(classroom.id) ?? [];
+      const enrichedBindings = rows.map((binding) => {
+        const device = deviceById.get(binding.deviceId);
+        const deviceSummary = device ? this.deviceStatusSummary(device) : null;
+        return {
+          id: binding.id,
+          classId: binding.classId,
+          className: classById.get(binding.classId)?.name ?? null,
+          deviceId: binding.deviceId,
+          device: deviceSummary
+            ? {
+                id: deviceSummary.id,
+                deviceCode: deviceSummary.deviceCode,
+                name: deviceSummary.name,
+                type: deviceSummary.type,
+                status: deviceSummary.status,
+                online: deviceSummary.online,
+                lastOnlineAt: deviceSummary.lastOnlineAt,
+              }
+            : null,
+          boundAt: binding.boundAt,
+        };
+      });
+      return {
+        ...classroom,
+        bindingCount: enrichedBindings.length,
+        onlineDeviceCount: enrichedBindings.filter(
+          (binding) => binding.device?.online,
+        ).length,
+        bindings: enrichedBindings,
+      };
+    });
+  }
+
+  private deviceStatusSummary(device: Device) {
+    const status = deviceOnlineStatus(device, this.heartbeatTimeoutMs);
+    return { ...device, status, online: status === DeviceStatus.Online };
+  }
+
+  private async studentConsentMap(studentIds: number[]) {
+    const map = new Map<number, GuardianConsent[]>();
+    if (!studentIds.length) return map;
+    const rows = await this.consents.find({
+      where: { studentId: In(studentIds) },
+      order: { consentType: 'ASC' },
+    });
+    for (const row of rows) {
+      const list = map.get(row.studentId) ?? [];
+      list.push(row);
+      map.set(row.studentId, list);
+    }
+    return map;
+  }
+
+  private authorizationSummary(consents: GuardianConsent[]) {
+    const statuses = new Map(consents.map((item) => [item.consentType, item.status]));
+    const granted = (type: ConsentType) =>
+      statuses.get(type) === ConsentStatus.Granted;
+    const grantedCount = [
+      granted(ConsentType.Photo),
+      granted(ConsentType.Voice),
+      granted(ConsentType.Artwork),
+    ].filter(Boolean).length;
+    const hasRevoked = consents.some((item) => item.status === ConsentStatus.Revoked);
+    const status = grantedCount === 3
+      ? 'authorized'
+      : grantedCount > 0
+        ? 'partial'
+        : hasRevoked
+          ? 'unauthorized'
+          : 'pending';
+    return {
+      status,
+      permissions: {
+        photo: granted(ConsentType.Photo),
+        voice: granted(ConsentType.Voice),
+        artwork: granted(ConsentType.Artwork),
+      },
+    };
+  }
+
+  private studentResponse(
+    student: Student,
+    className: string,
+    consents: GuardianConsent[],
+  ) {
+    const authorization = this.authorizationSummary(consents);
     return {
       id: student.id,
       classId: student.classId,
+      className,
       studentNo: student.studentNo,
       name: student.name,
       nickname: student.nickname,
       status: student.status,
+      authorizationStatus: authorization.status,
+      permissions: authorization.permissions,
       createdAt: student.createdAt,
       updatedAt: student.updatedAt,
     };

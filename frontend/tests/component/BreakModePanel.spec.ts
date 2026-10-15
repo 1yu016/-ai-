@@ -3,16 +3,21 @@ import { describe, expect, it } from 'vitest'
 import BreakModePanel from '@/components/classroom/operations/BreakModePanel.vue'
 
 describe('BreakModePanel 课间面板', () => {
-  it('未课间时展示 3/5/10 分钟三档，点击发射 start-break(durationSeconds)', async () => {
+  it('未课间时先选择内容，再发射 3/5/10 分钟的完整配置', async () => {
     const wrapper = mount(BreakModePanel, {
       props: { active: false, remainingSeconds: 0, busy: false, canStart: true },
     })
     const buttons = wrapper.findAll('button')
-    expect(buttons.map((b) => b.text())).toEqual(['3 分钟', '5 分钟', '10 分钟'])
-    await buttons[0]!.trigger('click')
-    await buttons[1]!.trigger('click')
-    await buttons[2]!.trigger('click')
-    expect(wrapper.emitted('start-break')).toEqual([[180], [300], [600]])
+    expect(buttons.map((b) => b.text())).toContain('🎵律动')
+    await buttons.find((b) => b.text().includes('律动'))!.trigger('click')
+    await buttons.find((b) => b.text() === '3 分钟')!.trigger('click')
+    await buttons.find((b) => b.text() === '5 分钟')!.trigger('click')
+    await buttons.find((b) => b.text() === '10 分钟')!.trigger('click')
+    expect(wrapper.emitted('start-break')).toEqual([
+      [{ durationSeconds: 180, contentType: 'movement', idleProtectionSeconds: 120 }],
+      [{ durationSeconds: 300, contentType: 'movement', idleProtectionSeconds: 120 }],
+      [{ durationSeconds: 600, contentType: 'movement', idleProtectionSeconds: 120 }],
+    ])
   })
 
   it('canStart=false（非 running 课堂）时三档按钮禁用', () => {

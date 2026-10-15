@@ -24,9 +24,9 @@ describe('ArtworkReviewPanel 绘画作品评价', () => {
     localStorage.clear()
   })
 
-  it('后端未就绪 → 明确 blocking 状态，不使用硬编码评价', async () => {
+  it('显式关闭后端能力时进入 blocking 状态，不使用硬编码评价', async () => {
     const wrapper = mount(ArtworkReviewPanel, {
-      props: { runId: 9, lessonStepIndex: 0, students },
+      props: { runId: 9, lessonStepIndex: 0, students, backendReady: false },
       global: { plugins: [ElementPlus, createPinia()] },
     })
     await flushPromises()
@@ -109,6 +109,49 @@ describe('ArtworkReviewPanel 绘画作品评价', () => {
     await flushPromises()
     expect(wrapper.find('.confirmed').exists()).toBe(true)
     expect(wrapper.text()).toContain('观察细致')
+  })
+
+  it('拍照后立即释放摄像头轨道并进入预览', async () => {
+    const stop = vi.fn()
+    const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn().mockResolvedValue(stream) } })
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as never)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback) => callback(new Blob(['photo'], { type: 'image/jpeg' })))
+    const wrapper = mount(ArtworkReviewPanel, {
+      props: { runId: 9, lessonStepIndex: 0, students, backendReady: true },
+      global: { plugins: [ElementPlus, createPinia()] },
+    })
+    Object.defineProperty(wrapper.get('video').element, 'videoWidth', { value: 640 })
+    Object.defineProperty(wrapper.get('video').element, 'videoHeight', { value: 480 })
+    await wrapper.findAll('button').find((button) => button.text().includes('使用大屏摄像头'))!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '拍下作品')!.trigger('click')
+    await flushPromises()
+    expect(stop).toHaveBeenCalled()
+    expect(wrapper.find('img.preview').exists()).toBe(true)
+  })
+
+  it('教师确认后通过统一接口投递到指定大屏', async () => {
+    vi.spyOn(artworkService, 'uploadStudentArtwork').mockResolvedValue(artwork as never)
+    vi.spyOn(artworkService, 'generateArtworkAiDraft').mockResolvedValue({ aiDraft: '可编辑草稿' })
+    vi.spyOn(artworkService, 'confirmArtworkReview').mockResolvedValue({ teacherComment: '教师确认评价', confirmedAt: '2026-10-02T15:10:00.000Z' })
+    const deliver = vi.spyOn(artworkService, 'deliverArtworkReview').mockResolvedValue()
+    const wrapper = mount(ArtworkReviewPanel, {
+      props: { runId: 9, lessonStepIndex: 0, students, backendReady: true, deviceId: 3, runVersion: 7 },
+      global: { plugins: [ElementPlus, createPinia()] },
+    })
+    const input = wrapper.find('input[type=file]')
+    Object.defineProperty(input.element, 'files', { value: [fileOf()] })
+    await input.trigger('change')
+    await wrapper.find('button.button').trigger('click')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('教师确认评价')
+    await wrapper.findAll('button').find((button) => button.text() === '确认并保存')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '在大屏展示并朗读')!.trigger('click')
+    await flushPromises()
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ artworkId: 10, deviceId: 3, targetDeviceId: 3, expectedVersion: 7 }))
   })
 
   it('confirm 失败保持待确认且不显示成功', async () => {

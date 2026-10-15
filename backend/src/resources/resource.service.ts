@@ -22,22 +22,25 @@ import {
   stat,
   unlink,
 } from 'node:fs/promises';
-import { extname, join, parse, relative, resolve } from 'node:path';
-import { DataSource, IsNull, Repository } from 'typeorm';
+import { basename, extname, join, parse, relative, resolve } from 'node:path';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import { TeacherRole } from '../auth/entities/teacher.entity';
 import {
   ResourceReviewStatus,
-  type ResourceType,
+  ResourceType,
   TeachingResource,
 } from '../data/entities/teaching-resource.entity';
 import { OwnerType } from '../data/owner.types';
 import { AuditService } from '../platform/audit.service';
+import { LessonPlan } from '../lesson-plans/entities/lesson-plan.entity';
+import { LessonStep } from '../lesson-plans/entities/lesson-step.entity';
 import type {
   ConfirmAiSuggestionDto,
   CreateCategoryDto,
   CreateUploadSessionDto,
+  CompleteUploadSessionDto,
   ListResourceQueryDto,
   ResourceReferenceDto,
   ResourceReviewDto,
@@ -64,6 +67,7 @@ import {
 } from './resource-ai.service';
 import {
   RESOURCE_CHUNK_DIRECTORY,
+  RESOURCE_PREVIEW_DIRECTORY,
   RESOURCE_SIZE_LIMITS,
   RESOURCE_UPLOAD_DIRECTORY,
   resolveInside,
@@ -105,7 +109,7 @@ export type ResourceResponse = {
   duration: number | null;
   sha256: string | null;
   currentVersionId: number | null;
-  reviewStatus: string;
+  reviewStatus: ResourceReviewState;
   ownerType: OwnerType;
   ownerId: string;
   schoolId: string | null;
@@ -114,6 +118,20 @@ export type ResourceResponse = {
   createdAt: Date;
   updatedAt: Date;
 };
+export type ResourceReviewState =
+  | 'draft'
+  | 'pending_review'
+  | 'approved'
+  | 'rejected'
+  | 'archived';
+export type ResourceReferenceUsage = {
+  referenceType: string;
+  referenceId: string;
+  lessonPlanId: number | null;
+  lessonPlanTitle: string | null;
+  steps: Array<{ id: number; sortOrder: number; title: string }>;
+  createdAt: Date;
+};
 export type PaginatedResources = {
   items: ResourceResponse[];
   total: number;
@@ -121,6 +139,29 @@ export type PaginatedResources = {
   pageSize: number;
 };
 export type ResourceSearchResult = ResourceResponse & { score: number };
+export type ResourceFavoriteState = {
+  resourceId: number;
+  isFavorite: boolean;
+};
+export type ResourcePreviewAsset = {
+  name: string;
+  mimeType: string;
+  pageNumber: number | null;
+};
+export type ResourcePreviewManifest = {
+  status: 'ready' | 'unavailable';
+  mode: 'source' | 'pdf' | 'images' | 'unsupported';
+  assets: ResourcePreviewAsset[];
+  message: string | null;
+};
+
+const PREVIEW_ASSET_MIME: Readonly<Record<string, string>> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
 
 const SONG_METADATA: Record<string, SongMetadata> = {
   BV1sS421w7fk: {
@@ -314,6 +355,18 @@ export class ResourceService {
       builder.andWhere('r.tags LIKE :tag', {
         tag: `%${this.escapeLike(query.tag)}%`,
       });
+    if (query.ownerId?.trim())
+      builder.andWhere('r.owner_id = :ownerId', {
+        ownerId: query.ownerId.trim(),
+      });
+    if (query.isFavorite !== undefined) {
+      const favoriteClause =
+        'EXISTS (SELECT 1 FROM resource_favorite favorite WHERE favorite.resource_id = r.id AND favorite.teacher_id = :favoriteTeacherId)';
+      builder.andWhere(
+        query.isFavorite ? favoriteClause : `NOT ${favoriteClause}`,
+        { favoriteTeacherId: actor.sub },
+      );
+    }
     if (query.keyword?.trim())
       builder.andWhere(
         "(r.title LIKE :keyword ESCAPE '\\' OR r.aliases LIKE :keyword ESCAPE '\\' OR r.tags LIKE :keyword ESCAPE '\\')",
@@ -366,6 +419,19 @@ export class ResourceService {
   ): Promise<ResourceResponse> {
     const actor = this.asActor(actorInput);
     return this.toResponse(await this.findAccessible(actor, id), actor.sub);
+  }
+
+  async getUsable(
+    actorInput: JwtTeacherPayload | number,
+    id: number,
+  ): Promise<ResourceResponse> {
+    const actor = this.asActor(actorInput);
+    const resource = await this.findAccessible(actor, id);
+    if (resource.reviewStatus !== ResourceReviewStatus.Approved)
+      throw new ConflictException(
+        '资源尚未审核通过，不能绑定教案或进入正式课堂',
+      );
+    return this.toResponse(resource, actor.sub);
   }
 
   async upload(
@@ -524,6 +590,8 @@ export class ResourceService {
     dto: UpdateResourceDto,
   ): Promise<ResourceResponse> {
     const r = await this.findManageable(actor, id);
+    if (r.reviewStatus === ResourceReviewStatus.Disabled)
+      throw new ConflictException('已停用资源不可编辑');
     if (dto.title !== undefined) r.title = dto.title.trim();
     if (dto.aliases !== undefined)
       r.aliases = JSON.stringify(normalizedStringList(dto.aliases));
@@ -551,13 +619,13 @@ export class ResourceService {
     id: number,
   ): Promise<{ referenceCount: number }> {
     const resource = await this.findManageable(actor, id);
-    const referenceCount = await this.references.count({
-      where: { resourceId: id },
-    });
+    const references = await this.buildReferenceUsages(actor, id);
+    const referenceCount = references.length;
     if (referenceCount)
       throw new ConflictException({
         message: '资源正在被引用，无法删除',
         referenceCount,
+        references,
       });
     const versions = await this.versions.find({ where: { resourceId: id } });
     for (const version of versions)
@@ -590,7 +658,10 @@ export class ResourceService {
     return { referenceCount: 0 };
   }
 
-  async favorite(actor: JwtTeacherPayload, id: number): Promise<void> {
+  async favorite(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<ResourceFavoriteState> {
     await this.findAccessible(actor, id);
     const found = await this.favorites.findOne({
       where: { teacherId: actor.sub, resourceId: id },
@@ -599,9 +670,15 @@ export class ResourceService {
       await this.favorites.save(
         this.favorites.create({ teacherId: actor.sub, resourceId: id }),
       );
+    return { resourceId: id, isFavorite: true };
   }
-  async unfavorite(actor: JwtTeacherPayload, id: number): Promise<void> {
+  async unfavorite(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<ResourceFavoriteState> {
+    await this.findAccessible(actor, id);
     await this.favorites.delete({ teacherId: actor.sub, resourceId: id });
+    return { resourceId: id, isFavorite: false };
   }
   async addReference(
     actor: JwtTeacherPayload,
@@ -642,13 +719,26 @@ export class ResourceService {
     });
   }
 
+  async listReferences(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<ResourceReferenceUsage[]> {
+    await this.findManageable(actor, id);
+    return this.buildReferenceUsages(actor, id);
+  }
+
   async submitReview(
     actor: JwtTeacherPayload,
     id: number,
   ): Promise<ResourceResponse> {
     const r = await this.findManageable(actor, id);
-    if (r.reviewStatus === ResourceReviewStatus.Disabled)
-      throw new ConflictException('已停用资源不能提交审核');
+    if (
+      ![
+        ResourceReviewStatus.Draft,
+        ResourceReviewStatus.Rejected,
+      ].includes(r.reviewStatus)
+    )
+      throw new ConflictException('只有草稿或已驳回资源可以提交审核');
     r.reviewStatus = ResourceReviewStatus.Pending;
     const saved = await this.resources.save(r);
     await this.audit.write(actor, {
@@ -665,6 +755,14 @@ export class ResourceService {
   ): Promise<ResourceResponse> {
     if (!this.isAdmin(actor))
       throw new ForbiddenException('仅管理员可审核资源');
+    if (
+      [
+        ResourceReviewStatus.Rejected,
+        ResourceReviewStatus.Disabled,
+      ].includes(dto.status) &&
+      !dto.comment?.trim()
+    )
+      throw new BadRequestException('驳回或归档资源必须填写原因');
     if (
       ![
         ResourceReviewStatus.Approved,
@@ -741,6 +839,94 @@ export class ResourceService {
     };
   }
 
+  async getPreviewManifest(
+    actor: JwtTeacherPayload,
+    id: number,
+  ): Promise<ResourcePreviewManifest> {
+    const resource = await this.findAccessible(actor, id);
+    const previewDirectory = resolveInside(
+      RESOURCE_PREVIEW_DIRECTORY,
+      String(id),
+    );
+    const entries = await readdir(previewDirectory, {
+      withFileTypes: true,
+    }).catch(() => []);
+    const assets = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => {
+        const extension = extname(entry.name).toLowerCase();
+        const mimeType = PREVIEW_ASSET_MIME[extension];
+        if (!mimeType) return null;
+        const pageMatch = entry.name.match(/^page[-_ ]?(\d+)\.(?:png|jpe?g|webp)$/i);
+        return {
+          name: entry.name,
+          mimeType,
+          pageNumber: pageMatch ? Number(pageMatch[1]) : null,
+        } satisfies ResourcePreviewAsset;
+      })
+      .filter((asset): asset is ResourcePreviewAsset => asset !== null);
+
+    const imagePages = assets
+      .filter((asset) => asset.mimeType.startsWith('image/'))
+      .sort(
+        (left, right) =>
+          (left.pageNumber ?? Number.MAX_SAFE_INTEGER) -
+            (right.pageNumber ?? Number.MAX_SAFE_INTEGER) ||
+          left.name.localeCompare(right.name, 'zh-CN', { numeric: true }),
+      );
+    const pdf = assets.find(
+      (asset) =>
+        asset.mimeType === 'application/pdf' &&
+        asset.name.toLowerCase() === 'preview.pdf',
+    );
+
+    if (resource.resourceType === ResourceType.PictureBook && imagePages.length)
+      return { status: 'ready', mode: 'images', assets: imagePages, message: null };
+    if (pdf)
+      return { status: 'ready', mode: 'pdf', assets: [pdf], message: null };
+    if (imagePages.length)
+      return { status: 'ready', mode: 'images', assets: imagePages, message: null };
+
+    if (
+      resource.resourceType === ResourceType.PictureBook &&
+      (resource.mimeType === 'application/pdf' ||
+        resource.mimeType.startsWith('image/'))
+    ) {
+      return { status: 'ready', mode: 'source', assets: [], message: null };
+    }
+    if (resource.resourceType === ResourceType.Ppt) {
+      return {
+        status: 'unavailable',
+        mode: 'unsupported',
+        assets: [],
+        message: '课件尚未生成服务端预览，请先完成 PDF 或逐页图片转换。',
+      };
+    }
+    return { status: 'ready', mode: 'source', assets: [], message: null };
+  }
+
+  async getPreviewAsset(
+    actor: JwtTeacherPayload,
+    id: number,
+    assetName: string,
+  ): Promise<{ path: string; size: number; mimeType: string; fileName: string }> {
+    await this.findAccessible(actor, id);
+    if (
+      !assetName ||
+      basename(assetName) !== assetName ||
+      assetName.includes('/') ||
+      assetName.includes('\\')
+    )
+      throw new BadRequestException('预览文件名无效');
+    const mimeType = PREVIEW_ASSET_MIME[extname(assetName).toLowerCase()];
+    if (!mimeType) throw new BadRequestException('不支持的预览文件类型');
+    const directory = resolveInside(RESOURCE_PREVIEW_DIRECTORY, String(id));
+    const path = resolveInside(directory, assetName);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) throw new NotFoundException('预览文件不存在');
+    return { path, size: info.size, mimeType, fileName: assetName };
+  }
+
   async createCategory(actor: JwtTeacherPayload, dto: CreateCategoryDto) {
     if (!this.isAdmin(actor))
       throw new ForbiddenException('仅管理员可管理分类');
@@ -788,8 +974,14 @@ export class ResourceService {
         originalName: dto.originalName,
         declaredMime: dto.declaredMime,
         resourceType: rule.resourceType,
+        aliases: JSON.stringify(normalizedStringList(dto.aliases)),
+        description: dto.description?.trim() || null,
         category: dto.category.trim(),
+        categoryId: dto.categoryId ?? null,
         ageGroup: dto.ageGroup,
+        domain: dto.domain?.trim() || null,
+        tags: JSON.stringify(normalizedStringList(dto.tags)),
+        duration: dto.duration ?? null,
         totalSize: dto.totalSize,
         chunkSize: dto.chunkSize,
         totalChunks,
@@ -872,8 +1064,22 @@ export class ResourceService {
   async completeUpload(
     actor: JwtTeacherPayload,
     id: string,
+    dto: CompleteUploadSessionDto = {},
   ): Promise<ResourceResponse> {
     const session = await this.requireActiveSession(actor, id);
+    if (dto.title !== undefined) session.title = dto.title.trim();
+    if (dto.aliases !== undefined)
+      session.aliases = JSON.stringify(normalizedStringList(dto.aliases));
+    if (dto.description !== undefined)
+      session.description = dto.description.trim() || null;
+    if (dto.category !== undefined) session.category = dto.category.trim();
+    if (dto.categoryId !== undefined) session.categoryId = dto.categoryId;
+    if (dto.ageGroup !== undefined) session.ageGroup = dto.ageGroup;
+    if (dto.domain !== undefined) session.domain = dto.domain.trim() || null;
+    if (dto.tags !== undefined)
+      session.tags = JSON.stringify(normalizedStringList(dto.tags));
+    if (dto.duration !== undefined) session.duration = dto.duration;
+    await this.uploadSessions.save(session);
     const chunks = await this.uploadChunks.find({
       where: { sessionId: id },
       order: { chunkNo: 'ASC' },
@@ -1109,7 +1315,7 @@ export class ResourceService {
         Boolean(actor.schoolId && r.schoolId === actor.schoolId))
     )
       return r;
-    throw new NotFoundException('资源不存在或无权访问');
+    throw new ForbiddenException('无权访问该资源');
   }
   private async findManageable(actor: JwtTeacherPayload, id: number) {
     const r = await this.resources.findOne({
@@ -1120,7 +1326,7 @@ export class ResourceService {
       !this.isAdmin(actor) &&
       !(r.ownerType === OwnerType.Teacher && r.ownerId === String(actor.sub))
     )
-      throw new NotFoundException('资源不存在或无权管理');
+      throw new ForbiddenException('无权编辑该资源');
     if (
       this.isAdmin(actor) &&
       actor.schoolId &&
@@ -1160,7 +1366,7 @@ export class ResourceService {
       duration: r.duration,
       sha256: version?.sha256 ?? null,
       currentVersionId: r.currentVersionId,
-      reviewStatus: r.reviewStatus,
+      reviewStatus: this.publicReviewStatus(r.reviewStatus),
       ownerType: r.ownerType,
       ownerId: r.ownerId,
       schoolId: r.schoolId,
@@ -1182,6 +1388,68 @@ export class ResourceService {
       }
     });
   }
+
+  private publicReviewStatus(status: ResourceReviewStatus): ResourceReviewState {
+    if (status === ResourceReviewStatus.Pending) return 'pending_review';
+    if (status === ResourceReviewStatus.Disabled) return 'archived';
+    return status;
+  }
+
+  private async buildReferenceUsages(
+    actor: JwtTeacherPayload,
+    resourceId: number,
+  ): Promise<ResourceReferenceUsage[]> {
+    const references = await this.references.find({
+      where: { resourceId },
+      order: { createdAt: 'ASC', id: 'ASC' },
+    });
+    const planIds = references
+      .filter((reference) => reference.referenceType === 'lesson_plan')
+      .map((reference) => Number(reference.referenceId))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    const plans = planIds.length
+      ? await this.dataSource.getRepository(LessonPlan).find({
+          where: { id: In(planIds), deletedAt: IsNull() },
+        })
+      : [];
+    const visiblePlanIds = plans
+      .filter((plan) => this.isAdmin(actor) || plan.teacherId === actor.sub)
+      .map((plan) => plan.id);
+    const steps = visiblePlanIds.length
+      ? await this.dataSource.getRepository(LessonStep).find({
+          where: { lessonPlanId: In(visiblePlanIds), resourceId },
+          order: { lessonPlanId: 'ASC', sortOrder: 'ASC' },
+        })
+      : [];
+    const plansById = new Map(plans.map((plan) => [plan.id, plan]));
+    return references.map((reference) => {
+      const lessonPlanId =
+        reference.referenceType === 'lesson_plan'
+          ? Number(reference.referenceId)
+          : null;
+      const plan = lessonPlanId ? plansById.get(lessonPlanId) : undefined;
+      const canViewPlan = Boolean(
+        plan && (this.isAdmin(actor) || plan.teacherId === actor.sub),
+      );
+      return {
+        referenceType: reference.referenceType,
+        referenceId: reference.referenceId,
+        lessonPlanId:
+          lessonPlanId && Number.isInteger(lessonPlanId) ? lessonPlanId : null,
+        lessonPlanTitle: canViewPlan ? plan!.title : plan ? '其他教师的教案' : null,
+        steps: canViewPlan
+          ? steps
+              .filter((step) => step.lessonPlanId === lessonPlanId)
+              .map((step) => ({
+                id: step.id,
+                sortOrder: step.sortOrder,
+                title: step.title,
+              }))
+          : [],
+        createdAt: reference.createdAt,
+      };
+    });
+  }
   private async persistMerged(
     actor: JwtTeacherPayload,
     s: UploadSession,
@@ -1191,25 +1459,27 @@ export class ResourceService {
   ) {
     return this.dataSource.transaction(async (manager) => {
       const rr = manager.getRepository(TeachingResource),
-        vr = manager.getRepository(ResourceVersion);
+        vr = manager.getRepository(ResourceVersion),
+        tagRepo = manager.getRepository(ResourceTag),
+        relationRepo = manager.getRepository(ResourceTagRelation);
       let r = await rr.save(
         rr.create({
           title: s.title,
-          aliases: '[]',
-          description: null,
+          aliases: s.aliases,
+          description: s.description,
           schoolId: s.schoolId,
           resourceType: s.resourceType,
           category: s.category,
-          categoryId: null,
+          categoryId: s.categoryId,
           ageGroup: s.ageGroup,
-          domain: null,
-          tags: '[]',
+          domain: s.domain,
+          tags: s.tags,
           fileUrl: '',
           coverUrl: null,
           fileName: s.originalName,
           mimeType,
           fileSize: s.totalSize,
-          duration: null,
+          duration: s.duration,
           currentVersionId: null,
           aiTeachingGoals: null,
           aiActivitySuggestions: null,
@@ -1234,14 +1504,22 @@ export class ResourceService {
           sha256,
           mimeType,
           fileSize: s.totalSize,
-          duration: null,
+          duration: s.duration,
           createdBy: actor.sub,
           createdByType: actor.userType,
         }),
       );
       r.currentVersionId = v.id;
       r.fileUrl = `/resources/${r.id}/download`;
-      return rr.save(r);
+      r = await rr.save(r);
+      for (const name of normalizedStringList(parseStoredList(s.tags))) {
+        let tag = await tagRepo.findOne({ where: { name } });
+        if (!tag) tag = await tagRepo.save(tagRepo.create({ name }));
+        await relationRepo.save(
+          relationRepo.create({ resourceId: r.id, tagId: tag.id }),
+        );
+      }
+      return r;
     });
   }
   private async requireUploadSession(actor: JwtTeacherPayload, id: string) {

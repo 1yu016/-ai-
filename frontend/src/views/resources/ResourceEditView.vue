@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElButton, ElForm, ElFormItem, ElInput, ElMessage, ElOption, ElSelect } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
-import { AGE_GROUPS, resourceApi, toArrayField } from '@/api/resources'
-import type { ResourceAgeGroup, ResourceMeta } from '@/api/resources'
+import LoadingState from '@/components/LoadingState.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import ForbiddenState from '@/components/ForbiddenState.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import { AGE_GROUPS, toArrayField } from '@/api/resources'
+import type { ResourceAgeGroup, UpdateResourceMetadata } from '@/api/resources'
 import { apiErrorMessage } from '@/api/http'
 import { useCourseLibraryStore } from '@/stores/library'
+import { useUserStore } from '@/stores/user'
 
 const props = defineProps<{ id: number }>()
 const router = useRouter()
 const store = useCourseLibraryStore()
+const user = useUserStore()
 
 const AGE_LABELS: Record<ResourceAgeGroup, string> = {
   small: '小班',
@@ -40,6 +46,22 @@ const form = reactive<{
 })
 
 const saving = ref(false)
+const currentUserId = computed(() =>
+  user.teacherInfo?.teacherId ?? user.teacherInfo?.userId ?? user.teacherInfo?.administratorId,
+)
+const canEdit = computed(() => {
+  const resource = store.detail
+  if (!resource) return false
+  if (user.isAdmin) return true
+  return resource.ownerType === 'teacher' && resource.ownerId === String(currentUserId.value)
+})
+const editBlockedReason = computed(() => {
+  const resource = store.detail
+  if (!resource) return ''
+  if (resource.reviewStatus === 'archived') return '该资源已归档，不能编辑元数据。'
+  if (!canEdit.value) return '只有资源所有者或有权管理员可以编辑该资源。'
+  return ''
+})
 
 onMounted(async () => {
   try {
@@ -58,19 +80,30 @@ onMounted(async () => {
 })
 
 async function save(): Promise<void> {
+  if (saving.value || editBlockedReason.value) return
+  if (!form.title.trim()) {
+    ElMessage.warning('请填写资源标题')
+    return
+  }
+  if (!form.category.trim()) {
+    ElMessage.warning('请填写资源分类')
+    return
+  }
   saving.value = true
   try {
-    const payload: Partial<ResourceMeta> = {
-      title: form.title,
+    const payload: UpdateResourceMetadata = {
+      title: form.title.trim(),
       aliases: toArrayField(form.aliases),
-      description: form.description || undefined,
-      category: form.category || undefined,
-      categoryId: form.categoryId,
+      description: form.description.trim(),
+      category: form.category.trim(),
       ageGroup: form.ageGroup,
-      domain: form.domain || undefined,
+      domain: form.domain.trim(),
       tags: toArrayField(form.tags),
     }
-    await resourceApi.update(props.id, payload)
+    if (Number.isInteger(form.categoryId) && Number(form.categoryId) > 0) {
+      payload.categoryId = Number(form.categoryId)
+    }
+    await store.updateMetadata(props.id, payload)
     ElMessage.success('资源信息已保存')
     void router.push({ name: 'resource-detail', params: { id: props.id } })
   } catch (error) {
@@ -89,10 +122,33 @@ async function save(): Promise<void> {
       <button class="button" @click="router.push({ name: 'resource-detail', params: { id } })">返回详情</button>
     </div>
 
-    <div class="panel">
-      <p v-if="store.detailLoading">加载中…</p>
-      <p v-else-if="store.detailError" class="bad">{{ store.detailError }}</p>
-      <ElForm v-else label-position="top" class="edit-form" @submit.prevent>
+    <LoadingState v-if="store.detailLoading" title="正在加载资源" description="正在读取资源元数据和编辑权限。" />
+    <ForbiddenState
+      v-else-if="store.detailState === 'forbidden'"
+      description="当前账号没有权限访问或编辑该资源。"
+      action-label="返回资源库"
+      @action="router.push({ name: 'resources' })"
+    />
+    <EmptyState
+      v-else-if="store.detailState === 'not_found'"
+      title="资源不可编辑"
+      description="资源可能已经归档、删除或地址已经失效。"
+      action-label="返回资源库"
+      @action="router.push({ name: 'resources' })"
+    />
+    <ErrorState
+      v-else-if="store.detailError"
+      :description="store.detailError"
+      @retry="store.getById(id)"
+    />
+    <div v-else-if="store.detail" class="panel">
+      <div class="file-boundary">
+        <strong>文件本体</strong>
+        <span>{{ store.detail.fileName }} · {{ store.detail.mimeType }}</span>
+        <small>此页面只修改元数据。如需替换文件，请使用资源版本功能。</small>
+      </div>
+      <p v-if="editBlockedReason" class="blocked" role="alert">{{ editBlockedReason }}</p>
+      <ElForm v-else label-position="top" class="edit-form" @submit.prevent="save">
         <ElFormItem label="标题（必填）">
           <ElInput v-model="form.title" placeholder="资源标题" />
         </ElFormItem>
@@ -130,7 +186,7 @@ async function save(): Promise<void> {
           <ElInput v-model="form.tags" placeholder="多个标签用逗号分隔" />
         </ElFormItem>
         <div class="form-actions">
-          <ElButton :loading="saving" type="primary" @click="save">保存</ElButton>
+          <ElButton :loading="saving" :disabled="saving" type="primary" native-type="submit">保存</ElButton>
           <ElButton @click="router.push({ name: 'resource-detail', params: { id } })">取消</ElButton>
         </div>
       </ElForm>
@@ -156,4 +212,8 @@ async function save(): Promise<void> {
   gap: 10px;
   margin-top: 8px;
 }
+
+.file-boundary { display: grid; gap: 5px; margin-bottom: 20px; padding: 14px 16px; border-radius: 12px; background: #f6f2ed; color: #66564d; }
+.file-boundary span, .file-boundary small { color: #8b7568; }
+.blocked { padding: 14px 16px; border-radius: 10px; background: #fff3dc; color: #9b6818; }
 </style>

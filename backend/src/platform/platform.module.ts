@@ -21,6 +21,7 @@ import {
 } from './platform.controller';
 import { PlatformAccessService } from './platform-access.service';
 import { PlatformService } from './platform.service';
+import { StudentImportService } from './student-import.service';
 
 export const PLATFORM_ENTITIES = [
   SchoolClass,
@@ -46,7 +47,7 @@ export const PLATFORM_ENTITIES = [
     AuthModule,
   ],
   controllers: [PlatformController, ClassroomTicketPublicController],
-  providers: [PlatformService, PlatformAccessService, AuditService],
+  providers: [PlatformService, PlatformAccessService, AuditService, StudentImportService],
   exports: [
     PlatformService,
     PlatformAccessService,

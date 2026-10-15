@@ -9,12 +9,19 @@ import {
 } from 'vue'
 import { ElButton, ElMessage, ElSlider } from 'element-plus'
 import { storeToRefs } from 'pinia'
-import { fetchAuthedBlob } from '@/api/resources'
+import {
+  fetchAuthedBlob,
+  fetchAuthedPreviewAsset,
+  getResourcePreviewManifest,
+  type ResourcePreviewManifest,
+} from '@/api/resources'
+import ModelPreviewStage from '@/components/resources/ModelPreviewStage.vue'
 import type { CourseResource } from '@/stores/courseResource'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
 const props = defineProps<{
   resources: CourseResource[]
+  showClose?: boolean
 }>()
 
 const playerStore = useResourcePlayerStore()
@@ -25,6 +32,9 @@ const {
   duration,
   volume,
   muted,
+  pageIndex,
+  pageCount,
+  zoom,
   isClassroomMode,
   errorMessage,
   hasPlayableMedia,
@@ -39,9 +49,14 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const sourceUrl = computed(
   () => currentResource.value?.contentUrl || currentResource.value?.dataUrl || '',
 )
-// 受保护媒体通过带 Authorization 的 blob 加载，供 <audio>/<video> 使用，
-// 避免原生媒体元素无法携带 token 导致 401。
+const effectiveMediaType = computed(
+  () => currentResource.value?.playerMediaType ?? currentResource.value?.mediaType,
+)
+// 资源库文件统一通过带 Authorization 的请求转成 blob URL。这样图片、PDF、
+// 音频和视频都不会把 Token 写进 URL，也不会绕过服务端资源权限检查。
 const mediaSource = ref('')
+const previewManifest = ref<ResourcePreviewManifest | null>(null)
+const previewNotice = ref('')
 let activeBlobRevoke: (() => void) | null = null
 // 每次进场加载都自增的世代号，用于丢弃「迟到」的过期响应：仅当本次 fetch 仍是
 // 最新一次加载时才允许写入 mediaSource，避免旧资源的晚到结果覆盖当前资源。
@@ -65,12 +80,48 @@ function releaseActiveBlob() {
 }
 async function loadMediaSource(resource: CourseResource) {
   const loadId = ++mediaLoadSeq
-  if (resource.mediaType !== 'audio' && resource.mediaType !== 'video') {
-    releaseActiveBlob()
-    return null
-  }
+  playerStore.setStatus('loading')
+  previewManifest.value = null
+  previewNotice.value = ''
   try {
-    const { url, revoke } = await fetchAuthedBlob(Number(resource.id))
+    if (resource.source !== 'library') {
+      if (isPresentationResource(resource)) {
+        releaseActiveBlob()
+        previewNotice.value = '本地 PowerPoint 源文件不能直接预览，请上传并由服务端转换。'
+        playerStore.setStatus('paused')
+        return null
+      }
+      releaseActiveBlob()
+      mediaSource.value = resource.contentUrl || resource.dataUrl || ''
+      return mediaSource.value
+    }
+    const resourceId = Number(resource.id)
+    if (!Number.isInteger(resourceId) || resourceId <= 0) {
+      throw new Error('资源编号无效')
+    }
+    let loader = () => fetchAuthedBlob(resourceId)
+    if (isPresentationResource(resource) || resource.mediaType === 'picture_book') {
+      const manifest = await getResourcePreviewManifest(resourceId)
+      if (loadId !== mediaLoadSeq) return null
+      previewManifest.value = manifest
+      previewNotice.value = manifest.message ?? ''
+      if (manifest.status !== 'ready' || manifest.mode === 'unsupported') {
+        releaseActiveBlob()
+        playerStore.setStatus('paused')
+        return null
+      }
+      if (manifest.mode === 'images') {
+        playerStore.setPage(1, manifest.assets.length)
+        const first = manifest.assets[0]
+        if (!first) throw new Error('预览页为空')
+        loader = () => fetchAuthedPreviewAsset(resourceId, first.name)
+      } else if (manifest.mode === 'pdf') {
+        const asset = manifest.assets[0]
+        if (!asset) throw new Error('PDF 预览文件不存在')
+        loader = () => fetchAuthedPreviewAsset(resourceId, asset.name)
+      }
+    }
+    const { url, revoke } = await loader()
     if (loadId !== mediaLoadSeq) {
       // 已被更新的资源取代：仅回收本次自己的 object URL，绝不触碰正在使用的当前 blob。
       revoke()
@@ -91,14 +142,74 @@ async function loadMediaSource(resource: CourseResource) {
     return null
   }
 }
-const isPresentation = computed(() => {
+
+async function loadPictureBookPage(page: number) {
   const resource = currentResource.value
-  if (!resource) return false
+  const manifest = previewManifest.value
+  if (
+    !resource ||
+    resource.source !== 'library' ||
+    manifest?.mode !== 'images'
+  ) return
+  const asset = manifest.assets[page - 1]
+  const resourceId = Number(resource.id)
+  if (!asset || !Number.isInteger(resourceId) || resourceId <= 0) return
+  const loadId = ++mediaLoadSeq
+  playerStore.setStatus('loading')
+  try {
+    const { url, revoke } = await fetchAuthedPreviewAsset(resourceId, asset.name)
+    if (loadId !== mediaLoadSeq) {
+      revoke()
+      return
+    }
+    releaseActiveBlob()
+    activeBlobRevoke = revoke
+    mediaSource.value = url
+    playerStore.setStatus('paused')
+  } catch {
+    if (loadId === mediaLoadSeq)
+      playerStore.setStatus('error', '绘本页面暂时无法加载，请稍后重试。')
+  }
+}
+function isPresentationResource(resource: CourseResource): boolean {
   return (
+    resource.mediaType === 'ppt' ||
     resource.mimeType === 'application/vnd.ms-powerpoint' ||
     resource.mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
     /\.pptx?$/i.test(resource.fileName)
   )
+}
+const isPresentation = computed(() => {
+  const resource = currentResource.value
+  return resource ? isPresentationResource(resource) : false
+})
+const previewMode = computed(() => {
+  const resource = currentResource.value
+  if (!resource) return 'unsupported'
+  if (isPresentation.value || resource.mediaType === 'picture_book') {
+    const mode = previewManifest.value?.mode
+    if (mode === 'images') return 'images'
+    if (mode === 'pdf') return 'pdf'
+    if (mode === 'source') {
+      if (resource.mimeType?.startsWith('image/')) return 'image'
+      if (resource.mimeType === 'application/pdf') return 'pdf'
+    }
+    return 'presentation'
+  }
+  if (resource.mediaType === 'model_3d') return 'model_3d'
+  if (effectiveMediaType.value === 'image') return 'image'
+  if (effectiveMediaType.value === 'audio') return 'audio'
+  if (effectiveMediaType.value === 'video') return 'video'
+  if (resource.mediaType === 'pdf' || resource.mimeType === 'application/pdf') return 'pdf'
+  return 'unsupported'
+})
+const hasPageZoomControls = computed(() =>
+  ['image', 'images', 'pdf'].includes(previewMode.value),
+)
+const documentSource = computed(() => {
+  if (!mediaSource.value) return ''
+  const separator = mediaSource.value.includes('#') ? '&' : '#'
+  return `${mediaSource.value}${separator}page=${pageIndex.value}&zoom=${Math.round(zoom.value * 100)}`
 })
 const currentIndex = computed(() =>
   props.resources.findIndex(
@@ -113,8 +224,8 @@ const progressMaximum = computed(() => Math.max(duration.value, 1))
 const isPlaying = computed(() => playerStatus.value === 'playing')
 
 function activeMedia(): HTMLMediaElement | null {
-  if (currentResource.value?.mediaType === 'audio') return audioRef.value
-  if (currentResource.value?.mediaType === 'video') return videoRef.value
+  if (effectiveMediaType.value === 'audio') return audioRef.value
+  if (effectiveMediaType.value === 'video') return videoRef.value
   return null
 }
 
@@ -137,8 +248,8 @@ async function play() {
   if (!media) return
   // 受保护媒体源尚未就绪（mediaSource 为空）时不播放，避免空源 NotSupportedError。
   if (
-    (currentResource.value?.mediaType === 'audio' ||
-      currentResource.value?.mediaType === 'video') &&
+    (effectiveMediaType.value === 'audio' ||
+      effectiveMediaType.value === 'video') &&
     !mediaSource.value
   ) {
     return
@@ -197,6 +308,9 @@ function updateDuration(event: Event) {
   const media = event.currentTarget as HTMLMediaElement
   media.volume = volume.value
   media.muted = muted.value
+  if (currentTime.value > 0 && Number.isFinite(media.duration)) {
+    media.currentTime = Math.min(currentTime.value, media.duration)
+  }
   playerStore.setProgress(media.currentTime, media.duration)
   if (playerStatus.value === 'loading') playerStore.setStatus('paused')
 }
@@ -216,6 +330,54 @@ function changeVolume(value: number | number[]) {
 
 function setVolume(value: number) {
   playerStore.setVolume(value)
+}
+
+function previousPage() {
+  playerStore.setPage(Math.max(1, pageIndex.value - 1))
+}
+
+function nextPage() {
+  const maximum = pageCount.value ?? 999
+  playerStore.setPage(Math.min(maximum, pageIndex.value + 1))
+}
+
+function zoomIn() {
+  playerStore.setZoom(Math.min(3, zoom.value + 0.25))
+}
+
+function zoomOut() {
+  playerStore.setZoom(Math.max(0.5, zoom.value - 0.25))
+}
+
+function fitToWindow() {
+  playerStore.setZoom(1)
+}
+
+async function downloadCurrent() {
+  const resource = currentResource.value
+  if (!resource || resource.source !== 'library') return
+  const resourceId = Number(resource.id)
+  if (!Number.isInteger(resourceId) || resourceId <= 0) return
+  try {
+    const { url, revoke } = await fetchAuthedBlob(resourceId)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = resource.fileName || resource.title
+    anchor.rel = 'noopener'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(revoke, 0)
+  } catch {
+    ElMessage.error('下载失败，请稍后重试。')
+  }
+}
+
+async function retryCurrentResource() {
+  const resource = currentResource.value
+  if (!resource) return
+  playerStore.setStatus('loading')
+  await loadMediaSource(resource)
 }
 
 function handleEnded() {
@@ -311,15 +473,15 @@ watch(
     if (!resource) return
     stopMediaElements()
     const loaded = await loadMediaSource(resource)
-    if (
-      (resource.mediaType === 'audio' || resource.mediaType === 'video') &&
-      !loaded
-    ) {
+    if (!loaded && !isPresentationResource(resource)) {
       return
     }
     await nextTick()
     const media = activeMedia()
-    if (!media) return
+    if (!media) {
+      if (loaded) playerStore.setStatus('paused')
+      return
+    }
     media.volume = volume.value
     media.muted = muted.value
     if (!autoPlayOnOpen.value) {
@@ -362,9 +524,10 @@ watch(controlRequest, (request) => {
   }
 })
 
-watch(isPresentation, (presentation) => {
-  if (presentation && currentResource.value) playerStore.setStatus('paused')
-}, { immediate: true })
+watch(pageIndex, (page, previousPage) => {
+  if (page !== previousPage && previewManifest.value?.mode === 'images')
+    void loadPictureBookPage(page)
+})
 
 watch([volume, muted], ([nextVolume, nextMuted]) => {
   const media = activeMedia()
@@ -399,6 +562,10 @@ defineExpose({
   seek,
   previous,
   next,
+  previousPage,
+  nextPage,
+  zoomIn,
+  zoomOut,
 })
 </script>
 
@@ -414,11 +581,11 @@ defineExpose({
       <div class="resource-heading">
         <span class="resource-type-icon" aria-hidden="true">
           {{
-            currentResource.mediaType === 'image'
+            effectiveMediaType === 'image'
               ? '🖼️'
-              : currentResource.mediaType === 'audio'
+              : effectiveMediaType === 'audio'
                 ? '🎵'
-                : currentResource.mediaType === 'video'
+                : effectiveMediaType === 'video'
                   ? '🎬'
                   : isPresentation
                     ? '📊'
@@ -442,24 +609,25 @@ defineExpose({
           全屏课堂模式
         </ElButton>
         <ElButton v-else @click="exitClassroomMode">返回</ElButton>
-        <ElButton aria-label="关闭播放器" @click="closePlayer">关闭</ElButton>
+        <ElButton v-if="showClose !== false" aria-label="关闭播放器" @click="closePlayer">关闭</ElButton>
       </div>
     </header>
 
     <div class="player-stage">
       <img
-        v-if="currentResource.mediaType === 'image'"
+        v-if="previewMode === 'image' || previewMode === 'images'"
         class="stage-image"
-        :src="sourceUrl"
+        :src="mediaSource"
         :alt="currentResource.title"
+        :style="{ transform: `scale(${zoom})` }"
         @load="handleVisualLoaded"
         @error="handleVisualError"
       />
 
-      <div v-else-if="currentResource.mediaType === 'audio'" class="audio-stage">
+      <div v-else-if="previewMode === 'audio'" class="audio-stage">
         <div class="album-art" aria-hidden="true">
           <img
-            v-if="currentResource.coverUrl"
+            v-if="currentResource.source === 'browser' && currentResource.coverUrl"
             :src="currentResource.coverUrl"
             alt=""
           />
@@ -481,11 +649,11 @@ defineExpose({
       </div>
 
       <video
-        v-else-if="currentResource.mediaType === 'video'"
+        v-else-if="previewMode === 'video'"
         ref="videoRef"
         class="stage-video"
         :src="mediaSource"
-        :poster="currentResource.coverUrl || undefined"
+        :poster="currentResource.source === 'browser' ? currentResource.coverUrl || undefined : undefined"
         playsinline
         preload="metadata"
         @loadedmetadata="updateDuration"
@@ -497,30 +665,45 @@ defineExpose({
       ></video>
 
       <iframe
-        v-else-if="!isPresentation"
+        v-else-if="previewMode === 'pdf'"
         class="stage-document"
-        :src="sourceUrl"
+        :src="documentSource"
         :title="`${currentResource.title} PDF预览`"
         @load="handleVisualLoaded"
       ></iframe>
 
-      <div v-else class="presentation-stage">
+      <ModelPreviewStage
+        v-else-if="previewMode === 'model_3d' && mediaSource"
+        :src="mediaSource"
+        :title="currentResource.title"
+      />
+
+      <div v-else-if="previewMode === 'presentation'" class="presentation-stage">
         <div class="presentation-icon" aria-hidden="true">📊</div>
         <h3>{{ currentResource.title }}</h3>
-        <p>PowerPoint 课件已保存到资源库。浏览器无法稳定预览 PPT，请打开或下载后使用 PowerPoint/WPS 放映。</p>
-        <a
-          class="presentation-open"
-          :href="sourceUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          打开或下载课件
-        </a>
+        <p>{{ previewNotice || '该 PowerPoint 课件需要由服务端转换为 PDF 或逐页图片后播放。' }}</p>
+        <ElButton type="primary" @click="downloadCurrent">安全下载源文件</ElButton>
       </div>
 
-      <p v-if="errorMessage" class="player-error" role="alert">
-        {{ errorMessage }}
-      </p>
+      <div v-else class="presentation-stage unsupported-stage">
+        <div class="presentation-icon" aria-hidden="true">📦</div>
+        <h3>当前类型无法在线预览</h3>
+        <p>文件已受到权限保护，可以下载后使用受信任的本地应用打开。</p>
+        <ElButton type="primary" @click="downloadCurrent">安全下载</ElButton>
+      </div>
+
+      <div v-if="errorMessage" class="player-error" role="alert">
+        <strong>资源加载失败</strong>
+        <span>{{ errorMessage }}</span>
+        <ElButton type="primary" @click="retryCurrentResource">重新加载</ElButton>
+      </div>
+      <div
+        v-else-if="playerStatus === 'loading'"
+        class="player-loading"
+        role="status"
+      >
+        资源加载中…
+      </div>
     </div>
 
     <div v-if="hasPlayableMedia" class="media-controls">
@@ -559,10 +742,13 @@ defineExpose({
       </div>
     </div>
 
-    <footer v-else class="non-media-controls">
-      <ElButton :disabled="!canGoPrevious" @click="previous">上一项</ElButton>
-      <span>按 ESC 可退出课堂模式</span>
-      <ElButton :disabled="!canGoNext" @click="next">下一项</ElButton>
+    <footer v-else-if="hasPageZoomControls" class="non-media-controls">
+      <ElButton :disabled="pageIndex <= 1" @click="previousPage">上一页</ElButton>
+      <ElButton @click="zoomOut">缩小</ElButton>
+      <span>第 {{ pageIndex }} 页 · {{ Math.round(zoom * 100) }}%</span>
+      <ElButton v-if="previewMode === 'image' || previewMode === 'images'" @click="fitToWindow">适应窗口</ElButton>
+      <ElButton @click="zoomIn">放大</ElButton>
+      <ElButton :disabled="pageCount !== null && pageIndex >= pageCount" @click="nextPage">下一页</ElButton>
     </footer>
   </section>
 </template>
@@ -689,6 +875,10 @@ defineExpose({
   box-shadow: 0 14px 40px rgb(52 35 25 / 18%);
 }
 
+.stage-image {
+  transition: transform 180ms ease;
+}
+
 .stage-video {
   width: 100%;
   height: 100%;
@@ -734,6 +924,20 @@ defineExpose({
   margin: 0;
   color: #8a7466;
   line-height: 1.7;
+}
+
+.presentation-stage :deep(.el-button) {
+  margin-top: 20px;
+}
+
+.player-loading {
+  position: absolute;
+  z-index: 5;
+  padding: 12px 18px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 92%);
+  color: #806c61;
+  box-shadow: 0 8px 24px rgb(52 35 25 / 12%);
 }
 
 .presentation-open {
@@ -796,13 +1000,19 @@ defineExpose({
 
 .player-error {
   position: absolute;
-  bottom: 16px;
-  margin: 0;
-  padding: 9px 13px;
-  border-radius: 10px;
-  background: #fff0f0;
+  inset: 50% auto auto 50%;
+  display: grid;
+  width: min(90%, 460px);
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #f4c8c8;
+  border-radius: 18px;
+  background: rgb(255 240 240 / 96%);
   color: #b64747;
-  font-size: 13px;
+  text-align: center;
+  box-shadow: 0 16px 46px rgb(90 45 45 / 16%);
 }
 
 .media-controls,

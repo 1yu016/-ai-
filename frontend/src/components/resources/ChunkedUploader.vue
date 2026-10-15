@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   AGE_GROUPS,
-  RESOURCE_TYPES,
+  RESOURCE_UPLOAD_ACCEPT,
+  UPLOAD_RESOURCE_TYPES,
   resourceApi,
   toArrayField,
   guessResourceType,
+  validateResourceFile,
   type ResourceAgeGroup,
+  type ResourceMeta,
   type ResourceResponse,
-  type ResourceType,
+  type KnownResourceType,
 } from '@/api/resources'
 import { apiErrorMessage } from '@/api/http'
 
@@ -20,7 +23,10 @@ import { apiErrorMessage } from '@/api/http'
 //          error ←-- paused -----> error
 // 支持暂停/继续、取消并清理、刷新后基于 sessionStorage 会话续传。
 
-const emit = defineEmits<{ (e: 'done', resource: ResourceResponse): void }>()
+const emit = defineEmits<{
+  (e: 'done', resource: ResourceResponse): void
+  (e: 'pending-change', pending: boolean): void
+}>()
 
 const CHUNK_SIZE = 4 * 1024 * 1024 // 4MB
 const CONCURRENCY = 4
@@ -32,6 +38,7 @@ type TaskState =
   | 'starting'
   | 'uploading'
   | 'paused'
+  | 'metadata'
   | 'merging'
   | 'done'
   | 'error'
@@ -42,13 +49,15 @@ type StoredSession = {
   chunkSize: number
   totalSize: number
   fileName: string
+  fileLastModified?: number
+  meta?: ResourceMeta
 }
 
 const form = ref({
   title: '',
   category: '',
   ageGroup: 'all' as ResourceAgeGroup,
-  resourceType: 'image' as ResourceType,
+  resourceType: 'image' as KnownResourceType,
   aliases: '',
   description: '',
   domain: '',
@@ -65,12 +74,12 @@ const uploaded = ref<Set<number>>(new Set())
 const progress = ref(0) // 0-100
 const error = ref('')
 const paused = ref(false)
-const pausedChunks = ref<Set<number>>(new Set())
 const currentChunk = ref(0)
+const completedResourceId = ref<number | null>(null)
+const categories = ref<string[]>([])
 
 const file = ref<File | null>(null)
 const fileName = ref('')
-const hasFileType = ref(true)
 const storedSession = ref<StoredSession | null>(null)
 
 const ageGroupLabels: Record<ResourceAgeGroup, string> = {
@@ -79,13 +88,14 @@ const ageGroupLabels: Record<ResourceAgeGroup, string> = {
   large: '大班',
   all: '全部',
 }
-const resourceTypeLabels: Record<ResourceType, string> = {
+const resourceTypeLabels: Record<KnownResourceType, string> = {
   image: '图片',
   audio: '音频',
   video: '视频',
   pdf: 'PDF 文档',
   ppt: 'PPT 演示',
   picture_book: '绘本',
+  nursery_rhyme: '儿歌',
   animation: '动画',
   question_bank: '题库',
   experiment: '实验',
@@ -103,6 +113,8 @@ const stateLabel = computed<string>(() => {
       return '上传中'
     case 'paused':
       return '已暂停'
+    case 'metadata':
+      return '待填写元数据'
     case 'merging':
       return '合并中'
     case 'done':
@@ -122,23 +134,53 @@ const stateBadgeClass = computed<string>(() => {
   return 'idle'
 })
 
+const fileValidation = computed(() =>
+  file.value ? validateResourceFile(file.value, form.value.resourceType) : null,
+)
+
 function isBusy(s: TaskState) {
   return s === 'starting' || s === 'uploading' || s === 'merging'
 }
 
 const taking = new Set<number>() // 已被 worker 领取的分片
+const inFlightBytes = new Map<number, number>()
+const activeControllers = new Map<number, AbortController>()
+let dispatcherPromise: Promise<void> | null = null
 let stopped = false // 出错/取消后阻止分发
+let operationVersion = 0
+
+const hasPendingSession = computed(
+  () =>
+    taskState.value !== 'done' &&
+    (Boolean(sessionId.value) || Boolean(storedSession.value) || isBusy(taskState.value)),
+)
+
+watch(hasPendingSession, (pending) => emit('pending-change', pending), { immediate: true })
 
 onMounted(() => {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as StoredSession
-      if (parsed && parsed.sessionId) storedSession.value = parsed
+      if (parsed && parsed.sessionId) {
+        storedSession.value = parsed
+        if (parsed.meta) Object.assign(form.value, parsed.meta)
+        void verifyStoredSession()
+      }
     }
   } catch {
     storedSession.value = null
   }
+  void resourceApi.categories().then(({ data }) => {
+    categories.value = data.map((category) => category.name)
+  }).catch(() => undefined)
+})
+
+onBeforeUnmount(() => {
+  operationVersion += 1
+  stopped = true
+  for (const controller of activeControllers.values()) controller.abort()
+  activeControllers.clear()
 })
 
 function persistSession(s: StoredSession) {
@@ -157,10 +199,11 @@ function resetCoreState() {
   progress.value = 0
   error.value = ''
   paused.value = false
-  pausedChunks.value = new Set()
   currentChunk.value = 0
+  completedResourceId.value = null
   taking.clear()
-  stopped = false
+  inFlightBytes.clear()
+  activeControllers.clear()
 }
 
 function onFileChange(event: Event) {
@@ -169,38 +212,29 @@ function onFileChange(event: Event) {
   if (!picked) {
     file.value = null
     fileName.value = ''
-    hasFileType.value = true
     return
   }
   file.value = picked
   fileName.value = picked.name
   const guessed = guessResourceType(picked.name)
   if (guessed) form.value.resourceType = guessed
-  hasFileType.value = guessed !== null
 }
 
 function isSameStoredFile() {
   return (
     !!file.value &&
     !!storedSession.value &&
-    file.value.name === storedSession.value.fileName
+    file.value.name === storedSession.value.fileName &&
+    file.value.size === storedSession.value.totalSize &&
+    (!storedSession.value.fileLastModified ||
+      file.value.lastModified === storedSession.value.fileLastModified)
   )
 }
 
-function buildMeta() {
+function buildMeta(): ResourceMeta {
   const aliases = toArrayField(form.value.aliases)
   const tags = toArrayField(form.value.tags)
-  const meta: {
-    title: string
-    category: string
-    ageGroup: ResourceAgeGroup
-    resourceType: ResourceType
-    aliases?: string[]
-    description?: string
-    domain?: string
-    tags?: string[]
-    duration?: number
-  } = {
+  const meta: ResourceMeta = {
     title: form.value.title.trim(),
     category: form.value.category.trim(),
     ageGroup: form.value.ageGroup,
@@ -214,24 +248,43 @@ function buildMeta() {
   return meta
 }
 
-function validate(): string | null {
+function validateMetadata(): string | null {
   if (!form.value.title.trim()) return '请填写资源标题'
   if (!form.value.category.trim()) return '请填写资源分类'
+  if (form.value.duration.trim()) {
+    const duration = Number(form.value.duration)
+    if (!Number.isFinite(duration) || duration < 0) return '时长必须是大于等于 0 的数字'
+  }
+  return null
+}
+
+function validateFile(): string | null {
   if (!file.value) return '请选择文件'
-  if (!hasFileType.value) return '无法识别该文件的扩展名类型'
+  if (!fileValidation.value?.valid) return fileValidation.value?.message ?? '文件不可用'
   return null
 }
 
 function takenUpdate() {
   uploaded.value = new Set(uploaded.value)
-  pausedChunks.value = new Set(pausedChunks.value)
+}
+
+function chunkByteLength(chunkNo: number): number {
+  if (!file.value) return 0
+  const start = chunkNo * chunkSize.value
+  return Math.max(0, Math.min(chunkSize.value, file.value.size - start))
 }
 
 function refreshProgress() {
-  progress.value =
-    totalChunks.value > 0
-      ? Math.round((uploaded.value.size / totalChunks.value) * 100)
-      : 0
+  if (!file.value?.size) {
+    progress.value = 0
+    return
+  }
+  let bytes = 0
+  for (const chunkNo of uploaded.value) bytes += chunkByteLength(chunkNo)
+  for (const [chunkNo, loaded] of inFlightBytes) {
+    if (!uploaded.value.has(chunkNo)) bytes += Math.min(loaded, chunkByteLength(chunkNo))
+  }
+  progress.value = Math.min(100, Math.round((bytes / file.value.size) * 100))
 }
 
 function takeNextMissing(): number | null {
@@ -257,14 +310,28 @@ async function uploadChunkWithRetry(chunkNo: number): Promise<void> {
   let sha = ''
   try {
     sha = await sha256Hex(chunk)
-  } catch {
-    // 签名计算异常走失败重试路径
+  } catch (cause) {
+    taking.delete(chunkNo)
+    throw new Error(apiErrorMessage(cause, '浏览器无法计算分片校验值'))
   }
   let lastError = ''
   for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
     if (stopped) return
+    const controller = new AbortController()
+    activeControllers.set(chunkNo, controller)
+    inFlightBytes.set(chunkNo, 0)
     try {
-      await resourceApi.uploadChunk(sessionId.value!, chunkNo, chunk, sha)
+      await resourceApi.uploadChunk(sessionId.value!, chunkNo, chunk, sha, {
+        signal: controller.signal,
+        onProgress: (loaded, total) => {
+          const realBytes = total > 0
+            ? Math.round(chunk.size * Math.min(1, loaded / total))
+            : 0
+          inFlightBytes.set(chunkNo, realBytes)
+          refreshProgress()
+        },
+      })
+      if (stopped) return
       uploaded.value.add(chunkNo)
       taking.delete(chunkNo)
       currentChunk.value = chunkNo
@@ -272,12 +339,18 @@ async function uploadChunkWithRetry(chunkNo: number): Promise<void> {
       takenUpdate()
       return
     } catch (e) {
-      lastError = apiErrorMessage(e, `分片 ${chunkNo} 上传失败`)
+      if (stopped) return
+      lastError = apiErrorMessage(e, `分片 ${chunkNo + 1} 上传失败`)
       if (attempt < MAX_RETRY) {
         await new Promise((r) => setTimeout(r, 400 * attempt))
       }
+    } finally {
+      activeControllers.delete(chunkNo)
+      inFlightBytes.delete(chunkNo)
+      refreshProgress()
     }
   }
+  taking.delete(chunkNo)
   error.value = lastError
   taskState.value = 'error'
   stopped = true
@@ -294,7 +367,7 @@ async function worker() {
   }
 }
 
-async function startDispatcher() {
+async function runDispatcher() {
   taskState.value = 'uploading'
   const runners = Array.from({ length: CONCURRENCY }, () => worker())
   await Promise.all(runners)
@@ -304,12 +377,24 @@ async function startDispatcher() {
     return
   }
   if (uploaded.value.size < totalChunks.value) return
-  await doComplete()
+  progress.value = 100
+  taskState.value = 'metadata'
+}
+
+async function startDispatcher() {
+  if (dispatcherPromise) return dispatcherPromise
+  dispatcherPromise = runDispatcher()
+  try {
+    await dispatcherPromise
+  } finally {
+    dispatcherPromise = null
+  }
 }
 
 async function loadUploaded() {
   if (!sessionId.value) return
   const { data } = await resourceApi.listUploadedChunks(sessionId.value)
+  if (data.status !== 'active') throw new Error('上传会话已失效，请清理后重新上传')
   uploaded.value = new Set(data.uploadedChunks.map((chunk) => chunk.chunkNo))
   refreshProgress()
   takenUpdate()
@@ -317,43 +402,87 @@ async function loadUploaded() {
 
 async function doComplete() {
   if (!sessionId.value) return
+  const validationMessage = validateMetadata()
+  if (validationMessage) {
+    ElMessage.warning(validationMessage)
+    return
+  }
   const sid = sessionId.value
   taskState.value = 'merging'
   error.value = ''
   try {
-    const { data } = await resourceApi.completeUpload(sid)
-    taskState.value = 'done'
-    ElMessage.success('分片上传完成，资源已合并')
+    const metadata = buildMeta()
+    const finalMetadata: Partial<ResourceMeta> = { ...metadata }
+    delete finalMetadata.resourceType
+    const { data } = await resourceApi.completeUpload(sid, finalMetadata)
     clearStoredSession()
-    emit('done', data)
+    sessionId.value = null
+    completedResourceId.value = data.id
+    progress.value = 100
+    await loadCompletedResource()
   } catch (e) {
     error.value = apiErrorMessage(e, '合并文件失败')
     taskState.value = 'error'
+    await reconcileCurrentSession()
     ElMessage.error(error.value)
+  }
+}
+
+async function loadCompletedResource() {
+  if (!completedResourceId.value) return
+  try {
+    const { data } = await resourceApi.get(completedResourceId.value)
+    taskState.value = 'done'
+    error.value = ''
+    ElMessage.success('上传完成，已读取最新资源状态')
+    emit('done', data)
+  } catch (cause) {
+    taskState.value = 'error'
+    error.value = apiErrorMessage(cause, '资源已保存，但读取最新状态失败，请重试')
   }
 }
 
 // —— 新建会话并上传 ——
 async function startNewUpload() {
-  const msg = validate()
+  const msg = validateFile()
   if (msg) {
     ElMessage.warning(msg)
     return
   }
+  if (storedSession.value) {
+    ElMessage.warning('请先继续或清理上次未完成的上传')
+    return
+  }
+  const currentOperation = ++operationVersion
+  resetCoreState()
   taskState.value = 'starting'
   error.value = ''
   stopped = false
   let f: File
   try {
     f = file.value!
+    const enteredMeta = buildMeta()
+    const validation = fileValidation.value
+    if (!validation?.valid) throw new Error(validation?.message ?? '文件不可用')
+    const provisionalMeta: ResourceMeta = {
+      ...enteredMeta,
+      title: enteredMeta.title || f.name.replace(/\.[^.]+$/, ''),
+      category: enteredMeta.category || '待完善',
+      ageGroup: enteredMeta.ageGroup || 'all',
+      resourceType: form.value.resourceType,
+    }
     const res = await resourceApi.createUploadSession({
-      ...buildMeta(),
+      ...provisionalMeta,
       originalName: f.name,
-      declaredMime: f.type,
+      declaredMime: validation.declaredMime,
       totalSize: f.size,
       chunkSize: CHUNK_SIZE,
     })
     const id = res.data.id
+    if (currentOperation !== operationVersion) {
+      await resourceApi.abortUpload(id).catch(() => undefined)
+      return
+    }
     const size = res.data.chunkSize || CHUNK_SIZE
     const total =
       res.data.totalChunks || Math.ceil(f.size / (res.data.chunkSize || CHUNK_SIZE))
@@ -368,6 +497,8 @@ async function startNewUpload() {
       chunkSize: size,
       totalSize: f.size,
       fileName: f.name,
+      fileLastModified: f.lastModified,
+      meta: enteredMeta,
     })
     await loadUploaded()
     await startDispatcher()
@@ -384,12 +515,12 @@ async function resumeUpload() {
     ElMessage.warning('没有可恢复的上传会话')
     return
   }
-  const f = file.value
-  if (!f || f.name !== storedSession.value.fileName || f.size !== storedSession.value.totalSize) {
-    ElMessage.warning('请选择与原文件名称和大小都一致的文件后再继续')
+  if (!isSameStoredFile()) {
+    ElMessage.warning('请选择与原任务名称、大小和修改时间一致的文件后再继续')
     return
   }
   const stored = storedSession.value
+  operationVersion += 1
   taskState.value = 'starting'
   error.value = ''
   stopped = false
@@ -398,6 +529,7 @@ async function resumeUpload() {
   chunkSize.value = stored.chunkSize
   paused.value = false
   taking.clear()
+  inFlightBytes.clear()
   uploaded.value = new Set()
   takenUpdate()
   try {
@@ -413,7 +545,6 @@ async function resumeUpload() {
 function pauseUpload() {
   if (taskState.value !== 'uploading') return
   paused.value = true
-  pausedChunks.value = new Set(taking)
   taskState.value = 'paused'
   ElMessage.info('已暂停，已发出的几个分片会继续完成接收')
 }
@@ -421,7 +552,7 @@ function pauseUpload() {
 async function continueUpload() {
   if (!sessionId.value) return
   paused.value = false
-  pausedChunks.value = new Set()
+  stopped = false
   taskState.value = 'uploading'
   try {
     await loadUploaded()
@@ -433,21 +564,78 @@ async function continueUpload() {
   }
 }
 
-async function cancelUpload() {
-  stopped = true
+async function retryUpload() {
+  if (!sessionId.value) return
+  stopped = false
   paused.value = false
+  taking.clear()
+  inFlightBytes.clear()
+  taskState.value = 'starting'
+  error.value = ''
+  try {
+    await loadUploaded()
+    await startDispatcher()
+  } catch (cause) {
+    error.value = apiErrorMessage(cause, '重试上传失败')
+    taskState.value = 'error'
+  }
+}
+
+async function reconcileCurrentSession() {
+  if (!sessionId.value) return
+  try {
+    const { data } = await resourceApi.listUploadedChunks(sessionId.value)
+    if (data.status !== 'active') {
+      sessionId.value = null
+      clearStoredSession()
+    }
+  } catch {
+    sessionId.value = null
+    clearStoredSession()
+  }
+}
+
+async function verifyStoredSession() {
+  const stored = storedSession.value
+  if (!stored) return
+  try {
+    const { data } = await resourceApi.listUploadedChunks(stored.sessionId)
+    if (data.status !== 'active') clearStoredSession()
+  } catch {
+    clearStoredSession()
+    ElMessage.info('上次上传会话已失效，已安全清除本地记录')
+  }
+}
+
+async function cancelUpload() {
+  operationVersion += 1
+  stopped = true
+  paused.value = true
+  for (const controller of activeControllers.values()) controller.abort()
+  activeControllers.clear()
+  await dispatcherPromise?.catch(() => undefined)
   const sid = sessionId.value
-  resetCoreState()
-  taskState.value = 'idle'
-  clearStoredSession()
   if (sid) {
     try {
       await resourceApi.abortUpload(sid)
       ElMessage.info('已取消并清理分片上传')
     } catch (e) {
-      ElMessage.error(apiErrorMessage(e, '取消失败'))
+      error.value = apiErrorMessage(e, '取消失败')
+      taskState.value = 'error'
+      stopped = false
+      return
     }
   }
+  clearStoredSession()
+  resetCoreState()
+  stopped = false
+  taskState.value = 'idle'
+}
+
+async function cancelStoredUpload() {
+  if (!storedSession.value) return
+  sessionId.value = storedSession.value.sessionId
+  await cancelUpload()
 }
 </script>
 
@@ -459,60 +647,80 @@ async function cancelUpload() {
         <span class="muted">上次上传文件：{{ storedSession.fileName }}（共 {{ storedSession.totalChunks }} 片）</span>
       </div>
       <p class="restore-tip">
-        刷新后不提供无感恢复：请重新选择与原文件同名的文件，再点击「继续上次上传」。
+        浏览器不会保存原文件内容。请重新选择同一文件后续传，或清理这次服务端会话。
       </p>
-    </div>
-
-    <div class="field">
-      <label class="req">标题</label>
-      <input v-model="form.title" type="text" maxlength="120" placeholder="资源标题" />
-    </div>
-    <div class="field">
-      <label class="req">分类</label>
-      <input v-model="form.category" type="text" placeholder="输入资源分类" />
-    </div>
-    <div class="field-row">
-      <div class="field">
-        <label class="req">适用年龄段</label>
-        <select v-model="form.ageGroup">
-          <option v-for="a in AGE_GROUPS" :key="a" :value="a">{{ ageGroupLabels[a] }}</option>
-        </select>
-      </div>
-      <div class="field">
-        <label class="req">资源类型</label>
-        <select v-model="form.resourceType">
-          <option v-for="t in RESOURCE_TYPES" :key="t" :value="t">{{ resourceTypeLabels[t] }}</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>时长(秒)</label>
-        <input v-model="form.duration" type="number" min="0" placeholder="音视频时长" />
-      </div>
-    </div>
-    <div class="field-row">
-      <div class="field">
-        <label>学科领域</label>
-        <input v-model="form.domain" type="text" placeholder="如：语言、科学" />
-      </div>
-      <div class="field">
-        <label>标签</label>
-        <input v-model="form.tags" type="text" placeholder="多个标签用逗号分隔" />
-      </div>
-    </div>
-    <div class="field">
-      <label>别名</label>
-      <input v-model="form.aliases" type="text" placeholder="多个别名用逗号分隔" />
-    </div>
-    <div class="field">
-      <label>描述</label>
-      <textarea v-model="form.description" rows="3" placeholder="资源描述" />
+      <button class="button danger compact" type="button" @click="cancelStoredUpload">
+        清理上次上传
+      </button>
     </div>
 
     <div class="field">
       <label class="req">文件（将按 4MB 自动分片并发上传）</label>
-      <input type="file" @change="onFileChange" />
+      <input type="file" :accept="RESOURCE_UPLOAD_ACCEPT" @change="onFileChange" />
       <p v-if="fileName" class="file-name">已选择：{{ fileName }}</p>
+      <p v-if="fileValidation?.valid" class="muted">
+        此类型最大允许 {{ Math.round(fileValidation.maxSize / 1024 / 1024) }}MB；服务端还会校验真实文件内容。
+      </p>
     </div>
+    <div class="field">
+      <label class="req">资源类型</label>
+      <select v-model="form.resourceType" :disabled="Boolean(sessionId || storedSession)">
+        <option v-for="t in UPLOAD_RESOURCE_TYPES" :key="t" :value="t">{{ resourceTypeLabels[t] }}</option>
+      </select>
+    </div>
+
+    <section v-if="taskState === 'metadata'" class="metadata-form">
+      <div>
+        <h2>填写资源信息</h2>
+        <p class="muted">文件已完整上传。确认以下信息后，服务端才会创建可查看的草稿资源。</p>
+      </div>
+      <div class="field">
+        <label class="req">标题</label>
+        <input v-model="form.title" type="text" maxlength="120" placeholder="资源标题" />
+      </div>
+      <div class="field">
+        <label class="req">分类</label>
+        <input
+          v-model="form.category"
+          type="text"
+          list="chunk-upload-category-options"
+          placeholder="输入资源分类"
+        />
+        <datalist id="chunk-upload-category-options">
+          <option v-for="category in categories" :key="category" :value="category" />
+        </datalist>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label class="req">适用年龄段</label>
+          <select v-model="form.ageGroup">
+            <option v-for="a in AGE_GROUPS" :key="a" :value="a">{{ ageGroupLabels[a] }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>时长(秒)</label>
+          <input v-model="form.duration" type="number" min="0" placeholder="音视频时长" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>学科领域</label>
+          <input v-model="form.domain" type="text" placeholder="如：语言、科学" />
+        </div>
+        <div class="field">
+          <label>标签</label>
+          <input v-model="form.tags" type="text" placeholder="多个标签用逗号分隔" />
+        </div>
+      </div>
+      <div class="field">
+        <label>别名</label>
+        <input v-model="form.aliases" type="text" placeholder="多个别名用逗号分隔" />
+      </div>
+      <div class="field">
+        <label>描述</label>
+        <textarea v-model="form.description" rows="3" placeholder="资源描述" />
+      </div>
+    </section>
 
     <!-- 状态徽章 -->
     <div class="state-row">
@@ -520,14 +728,14 @@ async function cancelUpload() {
       <span v-if="taskState === 'uploading' || taskState === 'paused'" class="muted">
         已传 {{ uploaded.size }}/{{ totalChunks }} 片
       </span>
-      <span v-if="currentChunk > 0 && taskState === 'uploading'" class="muted">
-        当前分片 #{{ currentChunk }}
+      <span v-if="uploaded.size > 0 && taskState === 'uploading'" class="muted">
+        最近完成分片 #{{ currentChunk + 1 }}
       </span>
     </div>
 
     <!-- 进度 -->
     <div
-      v-if="taskState === 'starting' || taskState === 'uploading' || taskState === 'paused' || taskState === 'merging'"
+      v-if="taskState === 'starting' || taskState === 'uploading' || taskState === 'paused' || taskState === 'metadata' || taskState === 'merging'"
       class="progress-wrap"
     >
       <div class="progress-track">
@@ -536,20 +744,38 @@ async function cancelUpload() {
       <span class="progress-text">{{ progress }}%</span>
     </div>
     <div v-if="taskState === 'merging'" class="hint ok">分片已全部上传，正在合并文件中…</div>
+    <div v-else-if="taskState === 'metadata'" class="hint ok">文件上传完成，尚未创建资源。请填写元数据并正式保存。</div>
     <div v-else-if="taskState === 'error'" class="hint bad">{{ error }}</div>
-    <div v-else-if="fileName && !hasFileType" class="hint warn">无法识别该文件的扩展名，无法上传。</div>
+    <div v-else-if="fileName && fileValidation && !fileValidation.valid" class="hint warn">
+      {{ fileValidation.message }}
+    </div>
 
     <!-- 操作按钮 -->
     <div class="actions">
       <template v-if="taskState === 'idle' || taskState === 'error'">
-        <button class="button primary" @click="startNewUpload">开始分片上传</button>
         <button
-          v-if="storedSession"
+          v-if="!sessionId && !storedSession && !completedResourceId"
+          class="button primary"
+          @click="startNewUpload"
+        >
+          创建会话并上传
+        </button>
+        <button
+          v-if="storedSession && !sessionId"
           class="button outline"
           :disabled="!isSameStoredFile()"
           @click="resumeUpload"
         >
           {{ isSameStoredFile() ? '继续上次上传' : '续传（需重新选择同文件）' }}
+        </button>
+        <button v-if="sessionId" class="button primary" @click="retryUpload">
+          重试当前上传
+        </button>
+        <button v-if="sessionId" class="button danger" @click="cancelUpload">
+          取消并清理
+        </button>
+        <button v-if="completedResourceId" class="button primary" @click="loadCompletedResource">
+          重新读取资源详情
         </button>
       </template>
       <template
@@ -561,6 +787,17 @@ async function cancelUpload() {
         <button v-if="taskState === 'paused'" class="button primary" @click="continueUpload">
           继续
         </button>
+        <button
+          v-if="taskState !== 'merging'"
+          class="button danger"
+          @click="cancelUpload"
+        >
+          取消并清理
+        </button>
+        <span v-else class="muted">服务端正在合并和校验文件，请稍候。</span>
+      </template>
+      <template v-else-if="taskState === 'metadata'">
+        <button class="button primary" @click="doComplete">保存元数据并完成</button>
         <button class="button danger" @click="cancelUpload">取消并清理</button>
       </template>
     </div>
@@ -590,6 +827,18 @@ async function cancelUpload() {
   margin: 0;
   font-size: 13px;
   color: #8a6d2f;
+}
+.metadata-form {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid #dce5ed;
+  border-radius: 10px;
+  background: #f9fcfb;
+}
+.metadata-form h2,
+.metadata-form p {
+  margin: 0;
 }
 .field {
   display: grid;
@@ -739,6 +988,10 @@ async function cancelUpload() {
 }
 .button.danger:hover {
   background: #ffdcdc;
+}
+.button.compact {
+  justify-self: start;
+  padding: 7px 12px;
 }
 .button:disabled {
   opacity: 0.55;

@@ -10,11 +10,13 @@ const TYPE_LABELS: Record<ResourceType, string> = {
   pdf: 'PDF',
   ppt: 'PPT',
   picture_book: '绘本',
+  nursery_rhyme: '儿歌',
   animation: '动画',
   question_bank: '题库',
   experiment: '实验',
   model_3d: '3D模型',
   document: '文档',
+  unknown: '未知类型',
 }
 const AGE_LABELS: Record<ResourceAgeGroup, string> = {
   small: '小班',
@@ -24,13 +26,16 @@ const AGE_LABELS: Record<ResourceAgeGroup, string> = {
 }
 const STATUS_LABELS: Record<ResourceReviewStatus, string> = {
   draft: '草稿',
-  pending: '待审核',
+  pending_review: '待审核',
   approved: '已通过',
   rejected: '已驳回',
-  disabled: '已停用',
+  archived: '已归档',
 }
 
-const props = defineProps<{ resource: ResourceResponse }>()
+const props = defineProps<{
+  resource: ResourceResponse
+  favoritePending?: boolean
+}>()
 const emit = defineEmits<{
   (e: 'open-detail', resource: ResourceResponse): void
   (e: 'preview', resource: ResourceResponse): void
@@ -42,7 +47,7 @@ const ageLabel = computed(() => AGE_LABELS[props.resource.ageGroup] ?? props.res
 const statusLabel = computed(() => STATUS_LABELS[props.resource.reviewStatus] ?? props.resource.reviewStatus)
 const statusClass = computed(() => {
   if (props.resource.reviewStatus === 'approved') return 'ok'
-  if (props.resource.reviewStatus === 'pending') return 'warn'
+  if (props.resource.reviewStatus === 'pending_review') return 'warn'
   return 'bad'
 })
 const showTags = computed(() => props.resource.tags.slice(0, 3))
@@ -82,12 +87,17 @@ function preview(): void { emit('preview', props.resource) }
           :class="{ on: resource.isFavorite }"
           :title="resource.isFavorite ? '取消收藏' : '收藏'"
           :aria-label="resource.isFavorite ? '取消收藏' : '收藏'"
+          :disabled="favoritePending"
           @click.stop="emit('toggle-favorite', resource)"
-        >{{ resource.isFavorite ? '★' : '☆' }}</button>
+        >{{ favoritePending ? '…' : resource.isFavorite ? '★' : '☆' }}</button>
       </div>
       <div class="actions">
         <button class="link" @click.stop="open">详情</button>
-        <button class="link primary" @click.stop="preview">预览</button>
+        <button
+          class="link primary"
+          :disabled="resource.resourceType === 'unknown'"
+          @click.stop="preview"
+        >{{ resource.resourceType === 'unknown' ? '类型不支持' : '预览' }}</button>
       </div>
     </div>
   </article>
@@ -144,9 +154,11 @@ function preview(): void { emit('preview', props.resource) }
 .time { font-size: 12px; color: #9a7e6e; }
 .fav { border: 0; background: none; color: #cbd6dd; font-size: 20px; line-height: 1; cursor: pointer; }
 .fav.on { color: #f0a020; }
+.fav:disabled { cursor: wait; opacity: 0.55; }
 .actions { display: flex; gap: 8px; }
 .link { flex: 1; border: 1px solid #efd9c8; background: #fffdf9; color: #876b5d; border-radius: 9px; padding: 6px 0; font-size: 13px; cursor: pointer; }
 .link:hover { border-color: #e99168; color: #d67b59; }
 .link.primary { background: #e99168; border-color: #e99168; color: #fff; }
 .link.primary:hover { background: #d67b59; border-color: #d67b59; }
+.link:disabled { opacity: 0.55; cursor: not-allowed; }
 </style>

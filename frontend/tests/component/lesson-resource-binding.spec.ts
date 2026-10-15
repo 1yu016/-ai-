@@ -16,6 +16,12 @@ import {
 import { useLessonPlanStore } from '@/stores/lessonPlan'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
+const resourceMocks = vi.hoisted(() => ({ fetchBlob: vi.fn() }))
+vi.mock('@/api/resources', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@/api/resources')>()
+  return { ...original, fetchAuthedBlob: resourceMocks.fetchBlob }
+})
+
 // Stage 6.6：备课资源绑定 —— 选择资源、save payload 携带 resourceId、重开教案回显、图片渲染。
 const imageResource: ServerResource = {
   id: 12,
@@ -47,6 +53,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     setActivePinia(createPinia())
     const user = useUserStore()
     user.setLogin('token', { teacherId: 1, account: 'teacher', name: '老师' })
+    resourceMocks.fetchBlob.mockResolvedValue({ url: 'blob:protected-image', revoke: vi.fn() })
   })
 
   it('资源选择器：点击“选择”发出 update:modelValue 与 selected 事件', async () => {
@@ -69,6 +76,9 @@ describe('备课资源绑定 · Stage 6.6', () => {
       },
     })
     await flushPromises()
+    expect(http.get).toHaveBeenCalledWith('/resources', {
+      params: expect.objectContaining({ reviewStatus: 'approved' }),
+    })
     const choose = wrapper
       .findAll('button')
       .find((button) => button.text().trim() === '选择')
@@ -78,13 +88,14 @@ describe('备课资源绑定 · Stage 6.6', () => {
     expect(wrapper.emitted('selected')).toHaveLength(1)
   })
 
-  it('保存教案：PUT /steps payload 携带 resourceId', async () => {
+  it('保存教案：单次 authoring 请求携带资源与隔离字段，不分项保存', async () => {
     const store = useLessonPlanStore()
     store.newDraft()
     store.draft.title = '颜色认知'
     store.draft.theme = '认识颜色'
     store.draft.objectives = '目标'
     store.addStep({ title: '看卡片', stepType: 'resource', resourceId: 12 })
+    Object.assign(store.steps[0]!, { teacherInstruction: '请老师引导观察', studentContent: '看看这张卡片' })
     const post = vi
       .spyOn(http, 'post')
       .mockResolvedValue({ data: { id: 1, version: 1 } } as never)
@@ -99,11 +110,12 @@ describe('备课资源绑定 · Stage 6.6', () => {
         },
       } as never)
     const plan = await store.save()
-    expect(post).toHaveBeenCalledWith('/lesson-plans', expect.objectContaining({ title: '颜色认知' }))
-    const putBody = put.mock.calls[0]?.[1]
-    const steps = (putBody as { steps?: Array<{ resourceId?: number | null }> }).steps
-    expect(steps?.[0]?.resourceId).toBe(12)
-    expect(plan.version).toBe(2)
+    expect(post).toHaveBeenCalledExactlyOnceWith('/lesson-plans/authoring', expect.objectContaining({
+      title: '颜色认知', requestId: expect.any(String),
+      steps: [expect.objectContaining({ resourceId: 12, teacherInstruction: '请老师引导观察', studentContent: '看看这张卡片' })],
+    }))
+    expect(put).not.toHaveBeenCalled()
+    expect(plan.version).toBe(1)
   })
 
   it('重开教案：不在已加载列表的 resourceId 经 fallback 回显资源标题', async () => {
@@ -172,7 +184,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     expect(wrapper.text()).not.toContain('资源已失效')
   })
 
-  it('图片资源：ResourcePlayer 渲染 <img> 并指向资源地址', async () => {
+  it('图片资源：ResourcePlayer 通过鉴权 Blob 渲染 <img>', async () => {
     const wrapper = mount(ResourcePlayer, {
       props: { resources: [] },
       global: { plugins: [ElementPlus] },
@@ -182,6 +194,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     await flushPromises()
     const image = wrapper.find('img.stage-image')
     expect(image.exists()).toBe(true)
-    expect(image.attributes('src')).toContain('/resources/12/download')
+    expect(resourceMocks.fetchBlob).toHaveBeenCalledWith(12)
+    expect(image.attributes('src')).toBe('blob:protected-image')
   })
 })

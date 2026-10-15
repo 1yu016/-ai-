@@ -3,7 +3,16 @@ import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue({
+      // 仅识别第三方 Web Component <agent-robot-avatar>（Agent Robot Avatar）
+      template: {
+        compilerOptions: {
+          isCustomElement: (tag: string) => tag === 'agent-robot-avatar',
+        },
+      },
+    }),
+  ],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

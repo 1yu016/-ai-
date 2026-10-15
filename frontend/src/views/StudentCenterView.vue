@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
+import StudentAuthorizationBadge from '@/components/StudentAuthorizationBadge.vue'
+import StudentAvatar from '@/components/StudentAvatar.vue'
+import StudentImportPanel from '@/components/StudentImportPanel.vue'
 import { platformApi, type SchoolClass, type Student } from '@/api/platform'
+import { withNavigationSource } from '@/router/navigation'
+import { studentDisplayName, studentStatusLabel } from '@/utils/student'
 
 type StudentRow = Student & { className: string }
 
@@ -17,6 +22,7 @@ type ClassState = {
 
 const TIMEOUT_MS = 10000
 
+const route = useRoute()
 const router = useRouter()
 const pageLoading = ref(true)
 const classesError = ref('')
@@ -28,7 +34,8 @@ const statusFilter = ref<'active' | 'all' | 'disabled'>('active')
 const adding = ref(false)
 const saving = ref(false)
 const form = ref({ classId: '', studentNo: '', name: '', nickname: '' })
-const csvInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+const importClassId = ref('')
 const classCount = computed(() => Array.isArray(classes.value) ? classes.value.length : 0)
 
 function makeState(schoolClass: SchoolClass): ClassState {
@@ -43,7 +50,13 @@ async function loadClass(cs: ClassState) {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const result = await Promise.race([
-      platformApi.students(cs.class.id),
+      platformApi.students({
+        classId: cs.class.id,
+        page: 1,
+        pageSize: 100,
+        keyword: query.value.trim() || undefined,
+        status: statusFilter.value === 'all' ? undefined : statusFilter.value,
+      }),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('timeout')), TIMEOUT_MS)
       }),
@@ -150,20 +163,19 @@ async function createStudent() {
   }
 }
 
-function parseCsvLine(line: string) {
-  const cells: string[] = []; const pattern = /("(?:[^"]|"")*"|[^,]*)(?:,|$)/g; let match: RegExpExecArray | null
-  while ((match = pattern.exec(line)) !== null) { cells.push((match[1] ?? '').replace(/^"|"$/g, '').replace(/""/g, '')); if (match[0].endsWith(',') === false) break }
-  return cells
+function toggleImport() {
+  importing.value = !importing.value
+  adding.value = false
+  if (importing.value && !importClassId.value) {
+    importClassId.value = classFilter.value !== 'all' ? classFilter.value : String(classes.value[0]?.id ?? '')
+  }
 }
-async function importCsv(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]; (event.target as HTMLInputElement).value = ''
-  if (!file || !form.value.classId) { ElMessage.warning('请先在“添加学生”区域选择所属班级，再选择 CSV 文件。'); return }
-  try {
-    const text = await file.text(); const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean); const rows = lines.slice(1).map(parseCsvLine).filter((cells) => cells.length >= 2 && cells[0] && cells[1]).map((cells) => ({ studentNo: cells[0]!, name: cells[1]!, nickname: cells[2] || undefined }))
-    if (!rows.length) { ElMessage.warning('CSV 中没有可导入的数据。第一行应为表头：学号,姓名,昵称'); return }
-    if (rows.length > 500) { ElMessage.error('一次最多导入 500 名学生。'); return }
-    await platformApi.syncStudents({ classId: Number(form.value.classId), students: rows }); ElMessage.success(`已导入 ${rows.length} 名学生`); await loadClasses()
-  } catch { ElMessage.error('CSV 导入失败，请使用 UTF-8 CSV 文件并检查表头。') }
+
+async function importedStudents() {
+  await loadClasses()
+}
+function openStudent(item: StudentRow): void {
+  void router.push(withNavigationSource({ name: 'student-profile', params: { classId: item.classId, studentId: item.id } }, route))
 }
 </script>
 
@@ -184,10 +196,9 @@ async function importCsv(event: Event) {
         <option value="all">全部状态</option>
         <option value="disabled">已停用</option>
       </select>
-      <button class="button" @click="loadClasses">刷新</button>
-      <button class="button" @click="adding = !adding">{{ adding ? '取消添加' : '添加学生' }}</button>
-      <button class="button" :disabled="!form.classId" @click="csvInput?.click()">导入 CSV</button>
-      <input ref="csvInput" type="file" accept=".csv,text/csv" hidden @change="importCsv" />
+      <button class="button" @click="loadClasses">查询</button>
+      <button class="button" @click="adding = !adding; importing = false">{{ adding ? '取消添加' : '添加学生' }}</button>
+      <button class="button" :disabled="!classes.length" @click="toggleImport">{{ importing ? '关闭导入' : '表格导入' }}</button>
     </div>
 
     <div v-if="adding" class="panel add-form">
@@ -195,8 +206,22 @@ async function importCsv(event: Event) {
       <label>学号<input v-model="form.studentNo" maxlength="64" placeholder="请输入学号" /></label>
       <label>姓名<input v-model="form.name" maxlength="100" placeholder="请输入姓名" /></label>
       <label>昵称（可选）<input v-model="form.nickname" maxlength="100" placeholder="请输入昵称" /></label>
-      <button class="button" :disabled="saving || !form.classId || !form.studentNo.trim() || !form.name.trim()" @click="createStudent">{{ saving ? '保存中…' : '保存学生' }}</button><small class="hint">CSV 格式：学号,姓名,昵称（首行为表头，UTF-8，最多 500 行）</small>
+      <button class="button" :disabled="saving || !form.classId || !form.studentNo.trim() || !form.name.trim()" @click="createStudent">{{ saving ? '保存中…' : '保存学生' }}</button>
     </div>
+
+    <section v-if="importing" class="import-section">
+      <label>导入班级
+        <select v-model="importClassId"><option value="">请选择班级</option><option v-for="item in classes" :key="item.id" :value="String(item.id)">{{ item.name }}</option></select>
+      </label>
+      <StudentImportPanel
+        v-if="importClassId"
+        :key="importClassId"
+        :class-id="Number(importClassId)"
+        :class-name="classes.find((item) => String(item.id) === importClassId)?.name"
+        @cancel="importing = false"
+        @imported="importedStudents"
+      />
+    </section>
 
     <div class="summary">
       <span>班级 {{ classCount }}</span>
@@ -231,16 +256,17 @@ async function importCsv(event: Event) {
         <div v-else-if="sectionRows(cs).length">
           <table class="table">
             <thead>
-              <tr><th>头像</th><th>姓名</th><th>学号</th><th>状态</th><th></th></tr>
+              <tr><th>头像</th><th>姓名</th><th>学号</th><th>授权状态</th><th>状态</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="item in sectionRows(cs)" :key="item.id">
-                <td>🧒</td>
-                <td>{{ item.name }}<small v-if="item.nickname">（{{ item.nickname }}）</small></td>
+                <td><StudentAvatar :student="item" /></td>
+                <td>{{ studentDisplayName(item) }}<small v-if="item.nickname && item.nickname !== item.name">（{{ item.nickname }}）</small></td>
                 <td>{{ item.studentNo }}</td>
-                <td><span class="badge" :class="item.status === 'active' ? 'ok' : 'bad'">{{ item.status === 'active' ? '在读' : '已停用' }}</span></td>
+                <td><StudentAuthorizationBadge :status="item.authorizationStatus" /></td>
+                <td><span class="badge" :class="item.status === 'active' ? 'ok' : 'bad'">{{ studentStatusLabel(item.status) }}</span></td>
                 <td class="row-actions">
-                  <button @click="router.push({ name: 'student-profile', params: { studentId: item.id }, query: { classId: item.classId } })">资料/编辑</button>
+                  <button @click="openStudent(item)">资料/编辑</button>
                   <button v-if="item.status === 'active'" @click="toggleStatus(item)">停用</button>
                   <button v-else @click="toggleStatus(item)">恢复</button>
                 </td>
@@ -270,6 +296,9 @@ async function importCsv(event: Event) {
 .add-form { display: grid; grid-template-columns: 1.2fr repeat(3, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 16px }
 .add-form label { display: grid; gap: 6px; color: #876b5d; font-size: 13px }
 .add-form input, .add-form select { height: 38px; border: 1px solid #efd9c8; border-radius: 10px; padding: 0 10px; background: #fffdf9; color: #60483e }
+.import-section { display: grid; gap: 12px; margin-bottom: 16px }
+.import-section > label { display: grid; grid-template-columns: 100px minmax(180px, 320px); align-items: center; gap: 10px; color: #876b5d }
+.import-section > label select { height: 40px; border: 1px solid #efd9c8; border-radius: 10px; padding: 0 10px; background: #fffdf9; color: #60483e }
 .hint { grid-column: 1 / -1; color: #a38270; font-size: 12px }
 .summary { display: flex; gap: 14px; margin: 14px 0; color: #a38270 }
 .summary span { padding: 10px 15px; background: #fff0e4; border-radius: 12px; color: #a9654c }

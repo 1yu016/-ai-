@@ -98,11 +98,28 @@ export class AuthService {
       !(await bcrypt.compare(password, user.passwordHash)) ||
       user.status !== AccountStatus.Active
     ) {
+      await this.recordAuthAudit(
+        userType,
+        user?.id ?? 0,
+        'auth.login',
+        'failure',
+        options,
+        account,
+      );
       throw new UnauthorizedException('账号或密码错误');
     }
     user.lastLoginAt = new Date();
     await (repository as Repository<AuthIdentity>).save(user);
-    return this.issueTokenPair(userType, user, options);
+    const result = await this.issueTokenPair(userType, user, options);
+    await this.recordAuthAudit(
+      userType,
+      user.id,
+      'auth.login',
+      'success',
+      options,
+      account,
+    );
+    return result;
   }
 
   async refresh(
@@ -169,6 +186,14 @@ export class AuthService {
     }
     await this.refreshSessions.update(session.id, { revokedAt: new Date() });
     await this.bumpTokenVersion(actor.userType, actor.sub);
+    await this.recordAuthAudit(
+      actor.userType,
+      actor.sub,
+      'auth.logout',
+      'success',
+      {},
+      actor.account,
+    );
   }
 
   async logoutAll(actor: JwtTeacherPayload): Promise<void> {
@@ -269,5 +294,42 @@ export class AuthService {
 
   private hashToken(value: string): string {
     return createHash('sha256').update(value).digest('hex');
+  }
+
+  private async recordAuthAudit(
+    userType: AuthUserType,
+    userId: number,
+    action: string,
+    result: 'success' | 'failure',
+    options: LoginOptions,
+    account: string,
+  ): Promise<void> {
+    const runner = this.dataSource.createQueryRunner();
+    try {
+      if (!(await runner.hasTable('audit_log'))) return;
+      const normalized = account.trim();
+      const accountHint = normalized
+        ? `${normalized.slice(0, 2)}***`
+        : '***';
+      await runner.query(
+        `INSERT INTO "audit_log"
+          ("actor_type", "actor_id", "action", "target_type", "target_id", "result", "ip_address", "metadata", "created_at")
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          userType,
+          userId,
+          action,
+          'account',
+          userId ? String(userId) : null,
+          result,
+          options.ipAddress ?? null,
+          JSON.stringify({ accountHint, deviceInfo: options.deviceInfo ?? null }),
+        ],
+      );
+    } catch {
+      // 审计不可用不能阻断认证主流程；部署健康检查会单独报告。
+    } finally {
+      await runner.release();
+    }
   }
 }

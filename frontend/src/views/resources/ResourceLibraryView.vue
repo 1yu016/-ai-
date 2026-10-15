@@ -1,14 +1,27 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
+import LoadingState from '@/components/LoadingState.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import ErrorState from '@/components/ErrorState.vue'
+import ForbiddenState from '@/components/ForbiddenState.vue'
 import ResourceCard from '@/components/resources/ResourceCard.vue'
 import FilterBar from '@/components/resources/FilterBar.vue'
-import { resourceApi, type ListResourcesParams, type ResourceAgeGroup, type ResourceResponse, type ResourceReviewStatus, type ResourceType } from '@/api/resources'
+import {
+  AGE_GROUPS,
+  RESOURCE_TYPES,
+  REVIEW_STATUSES,
+  resourceApi,
+  type ListResourcesParams,
+  type ResourceReferenceUsage,
+  type ResourceResponse,
+} from '@/api/resources'
 import { useCourseLibraryStore } from '@/stores/library'
 import { useUserStore } from '@/stores/user'
 import { apiErrorMessage } from '@/api/http'
+import { withNavigationSource } from '@/router/navigation'
 
 const store = useCourseLibraryStore()
 const user = useUserStore()
@@ -20,36 +33,51 @@ const isAdmin = computed(() => user.isAdmin)
 const totalPages = computed(() =>
   store.pageSize > 0 ? Math.ceil(store.total / store.pageSize) : 0,
 )
-const firstPending = computed(() => store.resources.find((r) => r.reviewStatus === 'pending'))
+let ignoreNextRouteChange = false
+
+function firstQueryValue(value: unknown): string {
+  return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
+}
 
 function readQueryIntoFilter(): void {
   const q = route.query as Record<string, unknown>
   const f: ListResourcesParams = {}
-  if (q.keyword) f.keyword = String(q.keyword)
-  if (q.resourceType) f.resourceType = String(q.resourceType) as ResourceType
-  if (q.reviewStatus) f.reviewStatus = String(q.reviewStatus) as ResourceReviewStatus
-  if (q.ageGroup) f.ageGroup = String(q.ageGroup) as ResourceAgeGroup
-  if (q.domain) f.domain = String(q.domain)
-  if (q.tag) f.tag = String(q.tag)
-  if (q.categoryId) f.categoryId = Number(q.categoryId)
+  const resourceType = firstQueryValue(q.resourceType)
+  const reviewStatus = firstQueryValue(q.reviewStatus)
+  const ageGroup = firstQueryValue(q.ageGroup)
+  if (q.keyword) f.keyword = firstQueryValue(q.keyword)
+  if ((RESOURCE_TYPES as readonly string[]).includes(resourceType)) f.resourceType = resourceType as ListResourcesParams['resourceType']
+  if ((REVIEW_STATUSES as readonly string[]).includes(reviewStatus)) f.reviewStatus = reviewStatus as ListResourcesParams['reviewStatus']
+  if ((AGE_GROUPS as readonly string[]).includes(ageGroup)) f.ageGroup = ageGroup as ListResourcesParams['ageGroup']
+  if (q.domain) f.domain = firstQueryValue(q.domain)
+  if (q.tag) f.tag = firstQueryValue(q.tag)
+  if (q.ownerId) f.ownerId = firstQueryValue(q.ownerId)
+  const favorite = firstQueryValue(q.isFavorite)
+  if (favorite === 'true' || favorite === 'false') f.isFavorite = favorite === 'true'
+  if (q.categoryId && Number(q.categoryId) > 0) f.categoryId = Number(q.categoryId)
   query.value = { ...f }
   store.filters = { ...f }
-  if (q.page) store.page = Math.max(1, Number(q.page))
+  const requestedPage = Number(firstQueryValue(q.page))
+  store.page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
 }
 
 function buildURLQuery(): Record<string, string> {
   const f = store.filters
   const out: Record<string, string> = {}
-  for (const key of ['keyword', 'resourceType', 'reviewStatus', 'ageGroup', 'domain', 'tag'] as const) {
+  for (const key of ['keyword', 'resourceType', 'reviewStatus', 'ageGroup', 'domain', 'tag', 'ownerId'] as const) {
     if (f[key]) out[key] = String(f[key])
   }
+  if (f.isFavorite !== undefined) out.isFavorite = String(f.isFavorite)
   if (f.categoryId) out.categoryId = String(f.categoryId)
   if (store.page > 1) out.page = String(store.page)
   return out
 }
 
 function syncQuery(): void {
-  void router.replace({ query: buildURLQuery() })
+  ignoreNextRouteChange = true
+  void router.replace({ query: buildURLQuery() }).finally(() => {
+    ignoreNextRouteChange = false
+  })
 }
 
 async function search(): Promise<void> {
@@ -96,12 +124,13 @@ onMounted(async () => {
 })
 
 function openDetail(r: ResourceResponse): void {
-  void router.push({ name: 'resource-detail', params: { id: r.id } })
+  void router.push(withNavigationSource({ name: 'resource-detail', params: { id: r.id } }, route))
 }
 function openPreview(r: ResourceResponse): void {
-  void router.push({ name: 'resource-preview', params: { id: r.id } })
+  void router.push(withNavigationSource({ name: 'resource-preview', params: { id: r.id } }, route))
 }
 async function onToggleFavorite(r: ResourceResponse): Promise<void> {
+  if (store.favoritePendingIds.includes(r.id)) return
   try {
     const next = await store.toggleFavorite(r.id)
     ElMessage.success(next ? '已收藏' : '已取消收藏')
@@ -110,6 +139,20 @@ async function onToggleFavorite(r: ResourceResponse): Promise<void> {
   }
 }
 async function onDelete(r: ResourceResponse): Promise<void> {
+  let references: ResourceReferenceUsage[]
+  try {
+    references = (await resourceApi.listReferences(r.id)).data
+  } catch (e) {
+    ElMessage.error(apiErrorMessage(e, '无法检查资源引用，已取消删除'))
+    return
+  }
+  if (references.length) {
+    await ElMessageBox.alert(referenceMessage(references), '资源正在使用中', {
+      type: 'warning',
+      confirmButtonText: '知道了',
+    })
+    return
+  }
   try {
     await ElMessageBox.confirm(`确认删除「${r.title}」？删除后不可恢复。`, '删除资源', {
       type: 'warning',
@@ -124,13 +167,40 @@ async function onDelete(r: ResourceResponse): Promise<void> {
     store.removeCached(r.id)
     ElMessage.success('删除成功')
   } catch (e) {
-    ElMessage.error(apiErrorMessage(e, '删除失败'))
+    ElMessage.error(deleteErrorMessage(e))
   }
 }
-function goReview(): void {
-  const target = firstPending.value
-  if (target) void router.push({ name: 'resource-review', params: { id: target.id } })
+function referenceMessage(references: ResourceReferenceUsage[]): string {
+  const items = references.slice(0, 3).map((reference) => {
+    const plan = reference.lessonPlanTitle || `引用 ${reference.referenceId}`
+    const steps = reference.steps.length
+      ? `（步骤：${reference.steps.map((step) => `${step.sortOrder}.${step.title}`).join('、')}）`
+      : ''
+    return `${plan}${steps}`
+  })
+  const more = references.length > 3 ? `，另有 ${references.length - 3} 处引用` : ''
+  return `该资源被 ${references.length} 个教案或业务记录引用：${items.join('；')}${more}。请先在对应业务中移除引用。`
 }
+function deleteErrorMessage(error: unknown): string {
+  const payload = (error as { response?: { data?: { references?: ResourceReferenceUsage[] } } })
+    ?.response?.data
+  return payload?.references?.length
+    ? referenceMessage(payload.references)
+    : apiErrorMessage(error, '删除失败')
+}
+function goReview(): void {
+  query.value = { ...query.value, reviewStatus: 'pending_review' }
+  void search()
+}
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (ignoreNextRouteChange || route.name !== 'resources') return
+    readQueryIntoFilter()
+    void store.fetch().catch(() => undefined)
+  },
+)
 </script>
 <template>
   <ManagementLayout>
@@ -141,10 +211,10 @@ function goReview(): void {
         <p class="muted">检索、预览与维护课程资源</p>
       </div>
       <div class="head-actions">
-        <button v-if="isAdmin" class="ghost" :disabled="!firstPending" @click="goReview">
-          审核资源{{ firstPending ? `（${firstPending.id}）` : '' }}
+        <button v-if="isAdmin" class="ghost" @click="goReview">
+          查看待审核资源
         </button>
-        <button class="button" @click="router.push({ name: 'resource-upload' })">上传资源</button>
+        <button class="button" @click="router.push(withNavigationSource({ name: 'resource-upload' }, route))">上传资源</button>
       </div>
     </div>
 
@@ -157,22 +227,37 @@ function goReview(): void {
     <FilterBar v-model="query" @search="search" @reset="reset" />
 
     <div class="grid-wrap">
-      <p v-if="store.loading" class="muted">加载中…</p>
-      <p v-else-if="store.error" class="bad">
-        {{ store.error }}
-        <button class="retry" @click="search">重试</button>
-      </p>
-      <p v-else-if="!store.resources.length" class="muted">暂无资源</p>
-      <div v-else class="grid">
+      <LoadingState v-if="store.loading && !store.resources.length" compact title="正在加载资源" description="正在读取资源列表和筛选结果。" />
+      <ForbiddenState v-else-if="store.listState === 'forbidden'" compact description="当前账号不能查看资源库。" />
+      <ErrorState v-else-if="store.error && !store.resources.length" compact :description="store.error" @retry="search" />
+      <EmptyState
+        v-else-if="!store.resources.length"
+        compact
+        title="没有找到资源"
+        description="当前筛选条件下没有可访问的资源，可以清除筛选后重试。"
+        action-label="清除筛选"
+        @action="reset"
+      />
+      <template v-else>
+        <ErrorState
+          v-if="store.listState === 'stale'"
+          compact
+          title="刷新失败，正在显示上次结果"
+          :description="store.error"
+          @retry="search"
+        />
+      <div class="grid">
         <ResourceCard
           v-for="r in store.resources"
           :key="r.id"
           :resource="r"
+          :favorite-pending="store.favoritePendingIds.includes(r.id)"
           @open-detail="openDetail"
           @preview="openPreview"
           @toggle-favorite="onToggleFavorite"
         />
       </div>
+      </template>
     </div>
 
     <div v-if="isAdmin && !store.loading && !store.error && store.resources.length" class="admin-panel panel">

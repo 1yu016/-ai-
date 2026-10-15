@@ -8,12 +8,14 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 import {
+  AuditResult,
   ConsentStatus,
   ConsentType,
   DeviceStatus,
@@ -22,15 +24,29 @@ import {
   TeacherClassRole,
 } from '../platform.types';
 import { AccountStatus, TeacherRole } from '../../auth/entities/teacher.entity';
+import { AuthUserType } from '../../auth/entities/refresh-token-session.entity';
 
 export class PageQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 20;
 }
 
+export class AuditLogQueryDto extends PageQueryDto {
+  @IsOptional() @IsString() @MaxLength(100) action?: string;
+  @IsOptional() @IsEnum(AuthUserType) actorType?: AuthUserType;
+  @IsOptional() @IsEnum(AuditResult) result?: AuditResult;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
+}
+
 /** Stage 7.3：班级成长奖励历史查询，支持按幼儿筛选。 */
 export class ClassRewardQueryDto extends PageQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) studentId?: number;
+}
+
+/** 班级成长榜只返回有限条聚合结果，避免一次查询暴露完整幼儿名单。 */
+export class RewardLeaderboardQueryDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(20) limit = 5;
 }
 
 export class DeviceCodeParamDto {
@@ -41,6 +57,11 @@ export class DeviceCodeParamDto {
 }
 
 export class ClassQueryDto extends PageQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  keyword?: string;
+
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
 }
 
@@ -67,6 +88,12 @@ export class BindTeacherDto {
 
 export class StudentQueryDto extends PageQueryDto {
   @Type(() => Number) @IsInt() @Min(1) classId: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  keyword?: string;
+
   @IsOptional() @IsEnum(RecordStatus) status?: RecordStatus;
 }
 
@@ -103,6 +130,10 @@ export class SyncStudentsDto {
   @ValidateNested({ each: true })
   @Type(() => SyncStudentItemDto)
   students: SyncStudentItemDto[];
+}
+
+export class ConfirmStudentImportDto {
+  @IsUUID() requestId: string;
 }
 
 export class CreateClassroomDto {
@@ -151,6 +182,10 @@ export class CreateTicketDto {
 
 export class ConsumeTicketDto {
   @IsString() @IsNotEmpty() @MaxLength(512) ticket: string;
+  @IsString() @IsNotEmpty() @MaxLength(100) deviceCode: string;
+}
+
+export class DeviceHeartbeatDto {
   @IsString() @IsNotEmpty() @MaxLength(100) deviceCode: string;
 }
 

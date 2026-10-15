@@ -18,10 +18,19 @@ const videoResource: ServerResource = {
 }
 const secondVideo: ServerResource = { ...videoResource, id: 3, title: '第二段', fileUrl: '/resources/3/download' }
 
-const mocks = vi.hoisted(() => ({ fetchBlob: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  fetchBlob: vi.fn(),
+  fetchPreview: vi.fn(),
+  fetchManifest: vi.fn(),
+}))
 vi.mock('@/api/resources', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/api/resources')>()
-  return { ...original, fetchAuthedBlob: mocks.fetchBlob }
+  return {
+    ...original,
+    fetchAuthedBlob: mocks.fetchBlob,
+    fetchAuthedPreviewAsset: mocks.fetchPreview,
+    getResourcePreviewManifest: mocks.fetchManifest,
+  }
 })
 
 const originalCreate = URL.createObjectURL
@@ -64,6 +73,8 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     setupBlobGlobals()
     stubMediaElement()
     mocks.fetchBlob.mockReset()
+    mocks.fetchPreview.mockReset()
+    mocks.fetchManifest.mockReset()
   })
   afterEach(() => {
     URL.createObjectURL = originalCreate
@@ -249,7 +260,7 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     expect(revokeA).toHaveBeenCalled() // stale → 回收自身 blob，无 object URL 泄漏
   })
 
-  it('treats a pending video fetch as stale when switching to a non-media resource', async () => {
+  it('treats a pending video fetch as stale when switching to a protected image', async () => {
     const imageResource: ServerResource = {
       id: 4, title: '插图', aliases: [], description: '认识忍者',
       resourceType: 'image', category: '视频动画', ageGroup: 'all', tags: [],
@@ -258,8 +269,13 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
       reviewStatus: 'approved', createdAt: '2026-01-01T00:00:00.000Z',
     }
     let resolveA!: (v: { url: string; revoke: () => void }) => void
+    let resolveImage!: (v: { url: string; revoke: () => void }) => void
     const revokeA = vi.fn()
-    mocks.fetchBlob.mockImplementation(() => new Promise((res) => { resolveA = res }))
+    const revokeImage = vi.fn()
+    mocks.fetchBlob.mockImplementation((id: number) => new Promise((res) => {
+      if (id === 2) resolveA = res
+      else resolveImage = res
+    }))
 
     const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
     const store = useResourcePlayerStore()
@@ -267,13 +283,103 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     await flushPromises() // video A 的 fetch 仍 pending
 
     store.openResource(normalizeServerResource(imageResource)!, false)
-    await flushPromises() // 切到 image：loadMediaSource 的 ++mediaLoadSeq 使 A 失效
+    await flushPromises() // 切到 image：新的鉴权请求使 A 失效
+
+    resolveImage({ url: 'blob:image-4', revoke: revokeImage })
+    await flushPromises()
 
     resolveA({ url: 'blob:media-2', revoke: revokeA })
     await flushPromises()
     expect(revokeA).toHaveBeenCalled() // A stale → 只 revoke 自己
     expect(store.currentResource?.id).toBe(4) // 当前仍是 image
     expect(wrapper.find('video.stage-video').exists()).toBe(false) // video 已卸载
-    expect((wrapper.vm as unknown as { mediaSource?: string }).mediaSource ?? '').toBe('') // 不被 A 覆盖
+    expect(wrapper.get('img.stage-image').attributes('src')).toBe('blob:image-4')
+    expect(revokeImage).not.toHaveBeenCalled()
+  })
+
+  it('renders a protected PDF through an authenticated blob URL', async () => {
+    const pdf: ServerResource = {
+      ...videoResource,
+      id: 21,
+      title: '绘画说明',
+      resourceType: 'pdf',
+      fileName: 'guide.pdf',
+      mimeType: 'application/pdf',
+    }
+    mocks.fetchBlob.mockResolvedValue({ url: 'blob:pdf-21', revoke: vi.fn() })
+    const wrapper = mount(ResourcePlayer, {
+      props: { resources: [] },
+      global: { plugins: [ElementPlus] },
+    })
+    useResourcePlayerStore().openResource(normalizeServerResource(pdf)!, false)
+    await flushPromises()
+    expect(mocks.fetchBlob).toHaveBeenCalledWith(21)
+    expect(wrapper.get('iframe.stage-document').attributes('src')).toContain('blob:pdf-21#page=1')
+  })
+
+  it('loads converted PPT pages through protected preview assets and revokes on page switch', async () => {
+    const presentation: ServerResource = {
+      ...videoResource,
+      id: 22,
+      title: '数学课件',
+      resourceType: 'ppt',
+      fileName: 'math.pptx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    }
+    const revokeFirst = vi.fn()
+    const revokeSecond = vi.fn()
+    mocks.fetchManifest.mockResolvedValue({
+      status: 'ready',
+      mode: 'images',
+      assets: [
+        { name: 'page-1.png', mimeType: 'image/png', pageNumber: 1 },
+        { name: 'page-2.png', mimeType: 'image/png', pageNumber: 2 },
+      ],
+      message: null,
+    })
+    mocks.fetchPreview
+      .mockResolvedValueOnce({ url: 'blob:ppt-page-1', revoke: revokeFirst })
+      .mockResolvedValueOnce({ url: 'blob:ppt-page-2', revoke: revokeSecond })
+    const wrapper = mount(ResourcePlayer, {
+      props: { resources: [] },
+      global: { plugins: [ElementPlus] },
+    })
+    const store = useResourcePlayerStore()
+    store.openResource(normalizeServerResource(presentation)!, false)
+    await flushPromises()
+    expect(mocks.fetchBlob).not.toHaveBeenCalled()
+    expect(wrapper.get('img.stage-image').attributes('src')).toBe('blob:ppt-page-1')
+    expect(store.pageCount).toBe(2)
+
+    await (wrapper.vm as unknown as { nextPage: () => void }).nextPage()
+    await flushPromises()
+    expect(mocks.fetchPreview).toHaveBeenLastCalledWith(22, 'page-2.png')
+    expect(wrapper.get('img.stage-image').attributes('src')).toBe('blob:ppt-page-2')
+    expect(revokeFirst).toHaveBeenCalled()
+  })
+
+  it('never opens an unconverted PPT source in an iframe', async () => {
+    const presentation: ServerResource = {
+      ...videoResource,
+      id: 23,
+      resourceType: 'ppt',
+      fileName: 'unconverted.pptx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    }
+    mocks.fetchManifest.mockResolvedValue({
+      status: 'unavailable',
+      mode: 'unsupported',
+      assets: [],
+      message: '课件尚未转换',
+    })
+    const wrapper = mount(ResourcePlayer, {
+      props: { resources: [] },
+      global: { plugins: [ElementPlus] },
+    })
+    useResourcePlayerStore().openResource(normalizeServerResource(presentation)!, false)
+    await flushPromises()
+    expect(mocks.fetchBlob).not.toHaveBeenCalled()
+    expect(wrapper.find('iframe').exists()).toBe(false)
+    expect(wrapper.text()).toContain('课件尚未转换')
   })
 })

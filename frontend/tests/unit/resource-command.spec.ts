@@ -214,6 +214,13 @@ describe('evaluateResourceCommand：安全句守卫', () => {
     })
   })
 
+  it('显式打开语句覆盖错误的模型播放分类', () => {
+    expect(evaluateResourceCommand('play_resource', '打开数字1的视频')).toEqual({
+      allowed: true,
+      intent: 'open_resource',
+    })
+  })
+
   it('“不要播放视频”→ 拒绝（否定）', () => {
     const verdict = evaluateResourceCommand('play_resource', '不要播放视频')
     expect(verdict.allowed).toBe(false)
