@@ -687,7 +687,8 @@ describe('Task four classroom run state machine (e2e)', () => {
     });
     expect(started.body.steps).toHaveLength(2);
     expect(started.body.steps[0]).toMatchObject({
-      content: '观察第一张图片',
+      // Legacy steps have no teacher-reviewed student content boundary.
+      content: '',
       resourceId: approvedResourceId,
       actionConfig: [expect.objectContaining({ actionName: 'wave' })],
     });
@@ -711,7 +712,8 @@ describe('Task four classroom run state machine (e2e)', () => {
       .set(auth())
       .expect(200);
     expect(frozen.body.steps).toHaveLength(2);
-    expect(frozen.body.steps[0].content).toBe('观察第一张图片');
+    // Editing the source must not change the Run's frozen, safely blank content.
+    expect(frozen.body.steps[0].content).toBe('');
     await request(app.getHttpServer())
       .get(`/classroom-runs/${started.body.id}`)
       .set('Authorization', `Bearer ${otherToken}`)
