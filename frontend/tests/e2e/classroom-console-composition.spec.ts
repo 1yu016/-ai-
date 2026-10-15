@@ -40,6 +40,10 @@ test('teacher console visual composition at both teaching resolutions', async ({
   for (const [width, height] of [[1440, 900], [1366, 768]]) {
     await page.setViewportSize({ width: width!, height: height! })
     await page.goto(`/classroom/lesson/${run.id}`)
+    if (width === 1440) {
+      await page.locator('[data-test="opening-skip"]').click({ timeout: 15000 })
+      await expect(page.locator('[data-test="opening-overlay"]')).toHaveCount(0)
+    }
     await expect(page.locator('.live-preview')).toBeVisible()
     await page.waitForTimeout(1800)
     await page.screenshot({ path: resolve(folder, `${phase}-${width}x${height}.png`) })

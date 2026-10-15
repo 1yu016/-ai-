@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 
 test.describe.serial('正式冻结核心流程', () => {
   test('教师从登录、备课到完成课堂并清理测试教案', async ({ page, request }) => {
+    test.setTimeout(90000)
     await expect((await request.get('/auth/profile')).status()).toBe(401)
 
     await page.goto('/login')
@@ -128,34 +129,40 @@ test.describe.serial('正式冻结核心流程', () => {
     const card = page.locator('.el-card').filter({ hasText: 'E2E冻结教案' })
     await card.getByRole('button', { name: '开始上课' }).click()
     // 新版「开始上课」先进入 preflight（选择班级/教室/设备），再启动课堂。
-    await expect(page).toHaveURL(/\/classroom\/preflight\/\d+$/)
+    await expect(page).toHaveURL(/\/classroom\/preflight\/\d+(?:\?.*)?$/)
     await page.locator('.selectors label').filter({ hasText: '班级' }).locator('.el-select').click()
     await page.getByRole('option', { name: 'E2E冻结班' }).click()
     // 选择班级后自动填充已绑定教室/设备（classDeviceBindings）。
     await expect(page.getByText('已完成')).toBeVisible()
-    await page.getByRole('button', { name: '进入课堂' }).click()
+    const screen = await page.context().newPage()
+    await screen.goto(`/classroom/screen/${deviceBody.id}`)
+    await expect(screen.locator('.status-dot.online')).toBeVisible()
+    await page.getByRole('button', { name: '准备到大屏', exact: true }).click()
+    await expect(screen.getByText('等待老师开始', { exact: false })).toBeVisible()
+    await page.getByRole('button', { name: '开始课堂', exact: true }).click()
     await expect(page).toHaveURL(/\/classroom\/lesson\/\d+$/)
     await page.getByRole('button', { name: '跳过开场' }).click()
-    await expect(page.getByRole('heading', { name: '观察图片' })).toBeVisible()
+    await expect(page.locator('.header-center')).toContainText('观察图片')
 
-    await page.getByRole('button', { name: '下一步' }).click()
-    await expect(page.getByRole('heading', { name: '说说发现' })).toBeVisible()
+    await page.getByRole('button', { name: '进入下一环节' }).click()
+    await expect(page.locator('.header-center')).toContainText('说说发现')
     await page.getByRole('button', { name: '暂停课堂' }).click()
-    await expect(page.getByRole('button', { name: '继续课堂' })).toBeVisible()
-    await expect(page.getByRole('button', { name: '下一步' })).toBeDisabled()
-    await page.getByRole('button', { name: '继续课堂' }).click()
+    await expect(page.getByRole('button', { name: '恢复课堂' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '进入下一环节' })).toBeDisabled()
+    await page.getByRole('button', { name: '恢复课堂' }).click()
 
     await page.reload()
-    await expect(page.getByRole('heading', { name: '说说发现' })).toBeVisible()
+    await expect(page.locator('.header-center')).toContainText('说说发现')
     await page.getByRole('button', { name: '结束课堂' }).click()
     await page.getByRole('button', { name: '确认结束', exact: true }).click()
-    await expect(page).toHaveURL(/\/classroom\/lesson\/\d+\/summary$/)
+    // Complete may wait for the existing summary service to degrade gracefully.
+    await expect(page).toHaveURL(/\/classroom\/lesson\/\d+\/summary$/, { timeout: 30000 })
     await page.getByRole('button', { name: '查看课堂记录与 AI 总结' }).click()
     await expect(page).toHaveURL(/\/classroom\/records\/\d+$/)
     await expect(page.getByRole('heading', { name: '星星探索课' }).or(page.getByRole('heading', { name: 'E2E冻结教案' }))).toBeVisible()
     await expect(page.getByText('课堂时间线', { exact: true })).toBeVisible()
     await expect(page.getByText(/总结草稿/)).toBeVisible()
-    await page.getByRole('button', { name: '返回备课中心' }).click()
+    await page.getByRole('button', { name: '备课中心', exact: true }).click()
     await expect(page).toHaveURL(/\/lesson-plans$/)
 
     const savedCard = page.locator('.el-card').filter({ hasText: 'E2E冻结教案' })

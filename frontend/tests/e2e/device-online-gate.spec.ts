@@ -178,8 +178,15 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     await pageB.locator('.selectors label').filter({ hasText: '班级' }).locator('.el-select').click()
     await pageB.getByRole('option', { name: 'Gate验收班' }).click()
     await expect(pageB.getByText('已完成')).toBeVisible({ timeout: 15_000 })
-    await pageB.getByRole('button', { name: '进入课堂' }).click()
+    await pageB.getByRole('button', { name: '准备到大屏', exact: true }).click({ timeout: 15000 })
+    await pageB.getByRole('button', { name: '开始课堂', exact: true }).click({ timeout: 15000 })
     await expect(pageB).toHaveURL(/\/classroom\/lesson\/\d+$/, { timeout: 20_000 })
+    // Finish only this isolated test Run before testing an offline fresh start.
+    const runId = Number(new URL(pageB.url()).pathname.split('/').pop())
+    const state = await (await request.get(`/classroom-runs/${runId}`, { headers: teacherAuth })).json()
+    const finished = await request.post(`/classroom-runs/${runId}/complete`, { headers: teacherAuth,
+      data: { version: state.version, deviceId: device.id, requestId: `gate-complete-${runId}` } })
+    expect(finished.ok()).toBeTruthy()
 
     // 6-7) 关闭 A → 不再有 heartbeat
     const heartbeatBeforeClose = seenHeartbeat.length
@@ -238,7 +245,7 @@ test.describe.serial('P0 Device Online Final Gate', () => {
       return (await response.json()).find((entry: { id: number }) => entry.id === device.id)?.status
     }).toBe('online')
     // Preflight refreshes the authoritative backend status without requiring another login.
-    await expect(pageB.getByRole('button', { name: '进入课堂' })).toBeEnabled({ timeout: 20_000 })
+    await expect(pageB.getByRole('button', { name: '准备到大屏', exact: true })).toBeEnabled({ timeout: 20_000 })
     evidence('screen reopened')
     await reopened.close()
 
