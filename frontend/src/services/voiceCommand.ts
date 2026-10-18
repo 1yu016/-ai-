@@ -57,6 +57,7 @@ export async function runAsrTextThroughCommand(
     deps,
     timeoutMs,
     customSynonyms,
+    requireTeacherConfirmation: true,
   })
 }
 
@@ -89,6 +90,7 @@ export function createClassroomVoiceRecorder(
   let recorder: MediaRecorder | null = null
   let chunks: Blob[] = []
   let completed = false
+  let generation = 0
 
   const releaseTracks = () => {
     stream?.getTracks().forEach((track) => track.stop())
@@ -105,12 +107,31 @@ export function createClassroomVoiceRecorder(
           '当前浏览器不支持麦克风录音，请使用最新版 Chrome 或 Edge。',
         )
       }
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      })
-      const mediaRecorder = new MediaRecorder(mediaStream, {
-        mimeType: RECORDING_MIME_TYPE,
-      })
+      const currentGeneration = ++generation
+      let mediaStream: MediaStream
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+        })
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'NotAllowedError') {
+          throw new Error('麦克风权限被拒绝，请在浏览器设置中允许使用麦克风。', { cause: error })
+        }
+        throw error
+      }
+      if (currentGeneration !== generation) {
+        mediaStream.getTracks().forEach((track) => track.stop())
+        return
+      }
+      let mediaRecorder: MediaRecorder
+      try {
+        mediaRecorder = new MediaRecorder(mediaStream, {
+          mimeType: RECORDING_MIME_TYPE,
+        })
+      } catch (error) {
+        mediaStream.getTracks().forEach((track) => track.stop())
+        throw error
+      }
       stream = mediaStream
       recorder = mediaRecorder
       chunks = []
@@ -151,6 +172,7 @@ export function createClassroomVoiceRecorder(
       recorder.stop()
     },
     cancel() {
+      generation += 1
       completed = true
       if (recorder && recorder.state !== 'inactive') {
         recorder.stop()

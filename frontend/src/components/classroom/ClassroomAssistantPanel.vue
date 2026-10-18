@@ -13,6 +13,7 @@ defineProps<{
   requiresTeacherConfirmation: boolean
   assistantSpeechLoading: boolean
   assistantSpeaking: boolean
+  assistantSpeechPaused: boolean
   draftAccepted: boolean
   attemptCount: number
 }>()
@@ -27,6 +28,8 @@ const emit = defineEmits<{
   (e: 'toggleChildRecording'): void
   (e: 'playDraft'): void
   (e: 'stopSpeech'): void
+  (e: 'pauseSpeech'): void
+  (e: 'resumeSpeech'): void
   (e: 'acceptDraft'): void
   (e: 'discardDraft'): void
 }>()
@@ -67,10 +70,13 @@ const emit = defineEmits<{
         <ElInput v-model="draftReply" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" maxlength="500" aria-label="编辑AI草稿" />
         <em>{{ teacherTip }}</em>
         <div class="assistant-draft-actions">
-          <ElButton type="primary" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation || assistantSpeaking" @click="emit('playDraft')">
+          <ElButton type="primary" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation || assistantSpeaking || assistantSpeechPaused" @click="emit('playDraft')">
             {{ assistantSpeaking ? '正在播放' : '教师确认并播放' }}
           </ElButton>
           <ElButton v-if="assistantSpeaking" type="warning" plain @click="emit('stopSpeech')">停止播放</ElButton>
+          <ElButton v-if="assistantSpeaking" plain @click="emit('pauseSpeech')">暂停播放</ElButton>
+          <ElButton v-if="assistantSpeechPaused" type="primary" plain @click="emit('resumeSpeech')">继续播放</ElButton>
+          <ElButton v-if="assistantSpeechPaused" type="warning" plain @click="emit('stopSpeech')">取消播放</ElButton>
           <ElButton type="success" plain :disabled="draftAccepted" @click="emit('acceptDraft')">{{ draftAccepted ? '已确认文字' : '教师自行讲述' }}</ElButton>
           <ElButton @click="emit('discardDraft')">暂不采用</ElButton>
         </div>

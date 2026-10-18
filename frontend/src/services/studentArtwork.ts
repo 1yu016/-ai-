@@ -107,12 +107,13 @@ export async function deliverArtworkReview(payload: {
   deviceId: number
   targetDeviceId: number
   expectedVersion: number
-}): Promise<void> {
-  await http.post(`/artworks/${payload.artworkId}/deliver`, {
+}): Promise<{ display?: unknown; speech?: unknown }> {
+  const { data } = await http.post<{ display?: unknown; speech?: unknown }>(`/artworks/${payload.artworkId}/deliver`, {
     requestId: payload.requestId,
     deviceId: payload.deviceId,
     targetDeviceId: payload.targetDeviceId,
     expectedVersion: payload.expectedVersion,
     source: 'teacher_panel',
   })
+  return data
 }

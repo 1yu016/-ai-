@@ -114,4 +114,22 @@ describe('ClassQuestionHistoryView 班级问题记录页', () => {
     expect(wrapper.text()).toContain('N/A')
     expect(wrapper.text()).not.toContain('还没有正式问题记录')
   })
+
+  it('问题地图接口失败时保留问题列表并显示独立错误', async () => {
+    vi.spyOn(questionsService, 'listClassQuestions').mockResolvedValue(pageData as never)
+    vi.spyOn(questionsService, 'getQuestionMap').mockRejectedValue(new Error('地图暂不可用'))
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('为什么天空是蓝色的？')
+    expect(wrapper.text()).toContain('地图暂不可用')
+  })
+
+  it('问题地图无数据时显示空状态而不是虚构统计', async () => {
+    vi.spyOn(questionsService, 'listClassQuestions').mockResolvedValue({ ...pageData, items: [], total: 0 } as never)
+    vi.spyOn(questionsService, 'getQuestionMap').mockResolvedValue({ ...mapData, summary: { ...mapData.summary, total: 0 }, topics: [], domains: [], frequentQuestions: [], studentClusters: [] } as never)
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('暂无问题地图数据')
+    expect(wrapper.text()).not.toContain('能力排名')
+  })
 })

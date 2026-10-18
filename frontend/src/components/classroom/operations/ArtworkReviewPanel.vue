@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiErrorMessage } from '@/api/http'
-import type { Student } from '@/api/platform'
+import { platformApi, type Consent, type Student } from '@/api/platform'
 import {
   confirmArtworkReview,
   deliverArtworkReview,
@@ -43,13 +43,50 @@ const teacherComment = ref('')
 const confirmSaving = ref(false)
 const delivering = ref(false)
 const delivered = ref(false)
+const deliveryMessage = ref('')
+const consentLoading = ref(false)
+const consentError = ref('')
+const consents = ref<Consent[]>([])
 const cameraActive = ref(false)
 const cameraVideo = ref<HTMLVideoElement | null>(null)
 let cameraStream: MediaStream | null = null
+let authorizationRequest = 0
 
 if (props.backendReady === false) {
   stage.value = 'backend_not_ready'
 }
+
+const artworkAuthorized = ref(false)
+const authorizationLabel = ref('待选择幼儿')
+
+async function loadAuthorization(studentId: number | null) {
+  const requestId = ++authorizationRequest
+  consents.value = []
+  consentError.value = ''
+  artworkAuthorized.value = false
+  consentLoading.value = false
+  authorizationLabel.value = studentId == null ? '待选择幼儿' : '正在读取照片和作品授权…'
+  if (studentId == null || stage.value === 'backend_not_ready') return
+  consentLoading.value = true
+  try {
+    const response = await platformApi.consents(studentId)
+    if (requestId !== authorizationRequest) return
+    consents.value = response.data
+    const granted = new Set(response.data.filter((item) => item.status === 'granted').map((item) => item.consentType))
+    artworkAuthorized.value = granted.has('photo') && granted.has('artwork')
+    authorizationLabel.value = artworkAuthorized.value
+      ? '已获得照片和作品授权'
+      : '未同时获得照片和作品授权'
+  } catch (error) {
+    if (requestId !== authorizationRequest) return
+    authorizationLabel.value = '授权状态读取失败'
+    consentError.value = apiErrorMessage(error, '无法读取授权状态，请稍后重试。')
+  } finally {
+    if (requestId === authorizationRequest) consentLoading.value = false
+  }
+}
+
+watch(selectedStudentId, (studentId) => { void loadAuthorization(studentId) }, { immediate: true })
 
 async function startCamera() {
   try {
@@ -125,6 +162,10 @@ async function upload() {
     ElMessage.warning('请先选择幼儿，以核验照片和作品授权。')
     return
   }
+  if (consentLoading.value || !artworkAuthorized.value) {
+    ElMessage.warning('当前幼儿尚未同时获得照片和作品授权，不能上传。')
+    return
+  }
   stage.value = 'uploading'
   errorText.value = ''
   try {
@@ -188,8 +229,9 @@ async function confirmComment() {
 async function deliver() {
   if (!artwork.value || !props.deviceId || !props.runVersion) return
   delivering.value = true
+  deliveryMessage.value = ''
   try {
-    await deliverArtworkReview({
+    const result = await deliverArtworkReview({
       artworkId: artwork.value.id,
       requestId: globalThis.crypto?.randomUUID?.() ?? `artwork-${Date.now()}`,
       deviceId: props.deviceId,
@@ -197,6 +239,9 @@ async function deliver() {
       expectedVersion: props.runVersion,
     })
     delivered.value = true
+    deliveryMessage.value = result.display && result.speech
+      ? '服务端已确认：作品展示和教师评价朗读均已送达大屏。'
+      : '服务端已确认投递结果，请查看大屏状态。'
     ElMessage.success('作品和教师评价已投递到课堂大屏。')
   } catch (e) {
     ElMessage.error(apiErrorMessage(e, '投递失败，请刷新课堂状态后重试。'))
@@ -216,6 +261,7 @@ function startOver() {
   stage.value = 'file_pick'
   errorText.value = ''
   delivered.value = false
+  deliveryMessage.value = ''
 }
 
 function onUnmount() {
@@ -259,6 +305,13 @@ onBeforeUnmount(onUnmount)
             {{ student.nickname || student.name }}
           </option>
         </select>
+        <div class="authorization" :class="{ granted: artworkAuthorized, denied: !artworkAuthorized }" role="status">
+          <strong>授权状态</strong>
+          <span v-if="consentLoading">正在读取…</span>
+          <span v-else>{{ authorizationLabel }}</span>
+          <small v-if="consentError">{{ consentError }}</small>
+          <small v-else-if="!artworkAuthorized && selectedStudentId != null">上传前必须同时获得照片和作品授权，服务端会再次校验。</small>
+        </div>
         <div class="camera-actions">
           <button v-if="!cameraActive" class="ghost" type="button" @click="startCamera">📷 使用大屏摄像头</button>
           <template v-else>
@@ -274,7 +327,7 @@ onBeforeUnmount(onUnmount)
           <input type="file" accept="image/jpeg,image/png" @change="pickFile">
         </label>
         <img v-if="previewUrl" :src="previewUrl" alt="作品预览" class="preview">
-        <button class="button" :disabled="!file || selectedStudentId == null" @click="upload">
+        <button class="button" :disabled="!file || selectedStudentId == null || consentLoading || !artworkAuthorized" @click="upload">
           上传作品
         </button>
       </div>
@@ -312,6 +365,7 @@ onBeforeUnmount(onUnmount)
         >
           {{ delivered ? '已投递到大屏' : delivering ? '投递中…' : '在大屏展示并朗读' }}
         </button>
+        <p v-if="deliveryMessage" class="delivery-result">{{ deliveryMessage }}</p>
         <button class="ghost" @click="startOver">再评价一件作品</button>
       </div>
     </template>
@@ -328,6 +382,10 @@ onBeforeUnmount(onUnmount)
 .blocked { padding: 14px 16px; border: 1px dashed #d9a77e; border-radius: 12px; background: #fff6ec; color: #876b5d; }
 .bad { color: #c64e4e; padding: 10px 12px; border: 1px solid #efc6bf; border-radius: 10px; background: #fff4f1; }
 .pick { display: grid; gap: 12px; }
+.authorization { display: grid; gap: 3px; padding: 10px 12px; border-radius: 10px; border: 1px solid #efd9c8; background: #fff8f0; color: #876b5d; }
+.authorization.granted { border-color: #c7e5ce; background: #f1fbf3; color: #3f7f50; }
+.authorization.denied { border-color: #f0c8bc; background: #fff4f1; color: #a64e42; }
+.authorization small { color: inherit; opacity: .82; }
 .camera-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .camera-preview { width: 100%; max-height: 280px; border-radius: 12px; background: #2b2927; object-fit: contain; }
 .pick select { height: 40px; border: 1px solid #efd9c8; border-radius: 10px; padding: 0 11px; background: #fff; color: #60483e; }
@@ -342,4 +400,5 @@ onBeforeUnmount(onUnmount)
 .draft div, .confirmed { display: flex; gap: 8px; align-items: center; }
 .confirmed { flex-direction: column; gap: 10px; align-items: flex-start; }
 .review { font-size: 15px; color: #6b584c; border: 1px solid #e4d5c8; border-radius: 10px; padding: 12px; background: #fff8f0; }
+.delivery-result { margin: 0; color: #47713d; font-weight: 700; }
 </style>

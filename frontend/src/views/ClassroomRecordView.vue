@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import {
   ElAlert,
@@ -12,7 +12,7 @@ import {
   ElTimeline,
   ElTimelineItem,
 } from 'element-plus'
-import { apiErrorMessage } from '@/api/http'
+import { apiErrorMessage, apiErrorStatus } from '@/api/http'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import BackButton from '@/components/BackButton.vue'
 import {
@@ -33,6 +33,7 @@ const runId = computed(() => Number(route.params.runId))
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const forbidden = ref(false)
 const run = ref<{ title: string; status: string; startedAt: string | null; endedAt: string | null } | null>(null)
 const timeline = ref<ClassroomTimelineItem[]>([])
 const draft = ref<ClassroomSummaryDraft | null>(null)
@@ -44,11 +45,34 @@ const form = reactive<ClassroomSummaryContent>({
   commonQuestions: [],
   teachingStrategies: [],
 })
+const timelineCategory = ref<'all' | 'objective' | 'teacher' | 'ai'>('all')
+const timelinePage = ref(1)
+const timelinePageSize = 12
 
 const isFormal = computed(() => Boolean(formal.value))
 const canEdit = computed(() => run.value?.status === 'completed' && Boolean(draft.value || formal.value) && draft.value?.status !== 'discarded')
 const savedContent = ref('')
 const dirty = computed(() => canEdit.value && savedContent.value !== JSON.stringify(form))
+
+const timelineCategoryLabels = {
+  all: '全部',
+  objective: '课堂事实',
+  teacher: '教师操作',
+  ai: 'AI建议与决策',
+} as const
+const timelineCategoryOf = (item: ClassroomTimelineItem) => {
+  if (item.source === 'ai_director' || item.type.startsWith('ai_')) return 'ai'
+  if (item.source === 'teacher') return 'teacher'
+  return 'objective'
+}
+const filteredTimeline = computed(() => timeline.value.filter((item) =>
+  timelineCategory.value === 'all' || timelineCategoryOf(item) === timelineCategory.value,
+))
+const timelinePageCount = computed(() => Math.max(1, Math.ceil(filteredTimeline.value.length / timelinePageSize)))
+const pagedTimeline = computed(() => {
+  const start = (timelinePage.value - 1) * timelinePageSize
+  return filteredTimeline.value.slice(start, start + timelinePageSize)
+})
 
 function applyContent(content: ClassroomSummaryContent | null) {
   form.classroomSummary = content?.classroomSummary ?? ''
@@ -63,6 +87,7 @@ async function load() {
   if (!Number.isInteger(runId.value) || runId.value <= 0) return
   loading.value = true
   error.value = ''
+  forbidden.value = false
   try {
     const [timelineData, summaryData] = await Promise.all([
       getClassroomTimeline(runId.value),
@@ -78,6 +103,7 @@ async function load() {
     applyContent(formal.value ?? draft.value)
   } catch (cause) {
     error.value = apiErrorMessage(cause, '课堂记录加载失败')
+    forbidden.value = apiErrorStatus(cause) === 403
   } finally {
     loading.value = false
   }
@@ -94,13 +120,14 @@ async function confirm() {
   }
   saving.value = true
   try {
-    formal.value = await confirmClassroomSummary(runId.value, {
+    const confirmed = await confirmClassroomSummary(runId.value, {
       classroomSummary: form.classroomSummary.trim(),
       participation: form.participation.trim(),
       interestPoints: form.interestPoints,
       commonQuestions: form.commonQuestions,
       teachingStrategies: form.teachingStrategies,
     })
+    formal.value = confirmed
     if (draft.value) draft.value.status = 'confirmed'
     savedContent.value = JSON.stringify(form)
     ElMessage.success(isFormal.value ? '正式课堂总结已保存' : '课堂总结已确认')
@@ -120,6 +147,7 @@ async function discard() {
     })
     await discardClassroomSummary(runId.value)
     if (draft.value) draft.value.status = 'discarded'
+    savedContent.value = JSON.stringify(form)
     ElMessage.success('已放弃总结草稿')
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
@@ -157,6 +185,15 @@ function beforeUnload(event: BeforeUnloadEvent) {
 onBeforeRouteLeave(() => !dirty.value || window.confirm('课堂总结有未保存的修改，确定离开吗？'))
 onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load() })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+function changeTimelineCategory(category: 'all' | 'objective' | 'teacher' | 'ai') {
+  timelineCategory.value = category
+  timelinePage.value = 1
+}
+
+function changeTimelinePage(next: number) {
+  timelinePage.value = Math.min(Math.max(1, next), timelinePageCount.value)
+}
+
 </script>
 
 <template>
@@ -174,7 +211,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
       </div>
     </header>
 
-    <ElAlert v-if="error" :title="error" type="error" show-icon :closable="false" />
+    <ElAlert v-if="forbidden" title="你没有权限查看这节课堂记录。" type="warning" show-icon :closable="false" />
+    <ElAlert v-else-if="error" :title="error" type="error" show-icon :closable="false" />
     <div v-if="loading" class="state">正在汇总课堂记录…</div>
     <section v-else-if="!error && run" class="record-grid">
       <ElCard class="summary-card" shadow="never">
@@ -208,10 +246,23 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
       </ElCard>
 
       <ElCard class="timeline-card" shadow="never">
-        <template #header><strong>课堂时间线</strong></template>
-        <ElTimeline v-if="timeline.length">
+        <template #header>
+          <div class="timeline-header">
+            <strong>课堂时间线</strong>
+            <div class="timeline-filters" role="tablist" aria-label="时间线分类">
+              <button
+                v-for="(label, key) in timelineCategoryLabels"
+                :key="key"
+                type="button"
+                :class="{ active: timelineCategory === key }"
+                @click="changeTimelineCategory(key)"
+              >{{ label }}</button>
+            </div>
+          </div>
+        </template>
+        <ElTimeline v-if="pagedTimeline.length">
           <ElTimelineItem
-            v-for="item in timeline"
+            v-for="item in pagedTimeline"
             :key="item.key"
             :timestamp="new Date(item.occurredAt).toLocaleString()"
             :type="timelineType(item.type)"
@@ -223,7 +274,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
             </div>
           </ElTimelineItem>
         </ElTimeline>
-        <div v-else class="state">暂无课堂事件</div>
+        <div v-else class="state">{{ timeline.length ? '当前分类暂无课堂事件' : '暂无课堂事件' }}</div>
+        <div v-if="timelinePageCount > 1" class="timeline-pager">
+          <ElButton size="small" :disabled="timelinePage <= 1" @click="changeTimelinePage(timelinePage - 1)">上一页</ElButton>
+          <span>第 {{ timelinePage }} / {{ timelinePageCount }} 页 · 共 {{ filteredTimeline.length }} 条</span>
+          <ElButton size="small" :disabled="timelinePage >= timelinePageCount" @click="changeTimelinePage(timelinePage + 1)">下一页</ElButton>
+        </div>
       </ElCard>
     </section>
   </main>
@@ -232,4 +288,5 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 
 <style scoped>
 .record-page{box-sizing:border-box;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions{display:flex;align-items:center;gap:10px}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.state{padding:32px;text-align:center;color:#967f70}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.timeline-card{max-height:none}}
+.timeline-header{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap}.timeline-filters{display:flex;gap:6px;flex-wrap:wrap}.timeline-filters button{border:1px solid #efd9c8;border-radius:999px;padding:5px 10px;background:#fffdf9;color:#8e6e5d;cursor:pointer}.timeline-filters button.active{background:#e99168;color:#fff;border-color:#e99168}.timeline-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:18px;color:#9a7e6e;font-size:13px}
 </style>

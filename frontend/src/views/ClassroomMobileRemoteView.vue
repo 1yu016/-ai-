@@ -4,15 +4,17 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { platformApi, type Student } from '@/api/platform'
+import { resourceApi } from '@/api/resources'
 import { useClassroomMobileStore } from '@/stores/classroomMobile'
 import type { ClassroomCommandOperation } from '@/services/classroomCommandBus'
 
 const router = useRouter()
 const mobile = useClassroomMobileStore()
-const { session, state, connection, canControl, lastError, lastConfirmedAt } = storeToRefs(mobile)
+const { session, state, connection, canControl, lastError, lastConfirmedAt, commands } = storeToRefs(mobile)
 const students = ref<Student[]>([])
 const selectedStudentId = ref(0)
 const busy = ref(false)
+const preloadedResourceIds = new Set<number>()
 
 const classroom = computed(() => state.value?.classroom ?? null)
 const currentStep = computed(() => classroom.value?.steps?.[classroom.value.currentStepIndex] ?? null)
@@ -38,6 +40,17 @@ const interactionSummary = computed(() => {
   const count = Object.keys(value).length
   return count ? `已同步 ${count} 项课堂互动状态` : '暂无新的幼儿互动'
 })
+const commandStatusLabel = (status: string) => ({
+  queued: '待发送', sending: '发送中', received: '已接收，等待执行', executed: '已执行',
+  failed: '执行失败', expired: '已过期',
+}[status] || status)
+const operationLabel = (operation: string) => ({
+  previous_step: '上一步', next_step: '下一步', switch_step: '切换步骤',
+  open_resource: '打开资源', play_resource: '播放资源', pause_media: '暂停媒体',
+  resume_media: '继续媒体', stop_media: '停止媒体', previous_page: '上一页', next_page: '下一页',
+  mute: '静音', unmute: '取消静音', start_break: '开始课间', end_break: '结束课间',
+  complete_class: '结束课堂', attendance_update: '更新考勤', random_roll_call: '随机点名', reward_student: '奖励幼儿',
+}[operation] || operation)
 
 async function loadStudents(classId: number) {
   try {
@@ -46,6 +59,17 @@ async function loadStudents(classId: number) {
     if (!selectedStudentId.value && students.value[0]) selectedStudentId.value = students.value[0].id
   } catch {
     students.value = []
+  }
+}
+
+function preloadUpcomingResources() {
+  const steps = classroom.value?.steps ?? []
+  const index = classroom.value?.currentStepIndex ?? 0
+  const ids = [currentResourceId.value, Number(steps[index + 1]?.resourceId || 0)]
+  for (const id of ids) {
+    if (!Number.isInteger(id) || id <= 0 || preloadedResourceIds.has(id)) continue
+    preloadedResourceIds.add(id)
+    void resourceApi.get(id).catch(() => { preloadedResourceIds.delete(id) })
   }
 }
 
@@ -97,6 +121,8 @@ async function leaveRemote() {
 watch(() => state.value?.attendance.classId, (classId) => {
   if (classId) void loadStudents(classId)
 }, { immediate: true })
+
+watch(() => [currentResourceId.value, classroom.value?.currentStepIndex, classroom.value?.steps?.length], preloadUpcomingResources, { immediate: true })
 
 watch(connection, (value) => {
   if (value === 'expired') ElMessage.warning(lastError.value || '课堂控制会话已失效，请重新扫码')
@@ -200,6 +226,16 @@ onBeforeUnmount(() => mobile.stop(false))
         <article><span>幼儿互动</span><strong>{{ interactionSummary }}</strong></article>
         <article><span>送达状态</span><strong>{{ lastConfirmedAt ? '服务端已确认' : '暂无操作' }}</strong></article>
       </section>
+      <section v-if="commands.length" class="control-card command-history">
+        <div class="command-history-head"><h2>最近指令</h2><span>以服务端回执为准</span></div>
+        <ul>
+          <li v-for="command in commands.slice(0, 6)" :key="command.commandId">
+            <span>{{ operationLabel(command.operation) }}</span>
+            <strong :class="`status-${command.executionStatus}`">{{ commandStatusLabel(command.executionStatus) }}</strong>
+            <small v-if="command.errorCode">{{ command.errorCode }}</small>
+          </li>
+        </ul>
+      </section>
       <p class="privacy-note">局域网实时通道只传递当前课堂状态，不在二维码中包含教师 Token 或幼儿信息。</p>
     </template>
 
@@ -209,4 +245,5 @@ onBeforeUnmount(() => mobile.stop(false))
 
 <style scoped>
 .mobile-remote{min-height:100dvh;box-sizing:border-box;padding:18px;background:linear-gradient(150deg,#fff8ee,#edf8f3);color:#50443d}.remote-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;max-width:780px;margin:auto}.eyebrow{color:#d87959;font-size:12px;font-weight:900;letter-spacing:.12em}.remote-head h1{margin:5px 0 0;font-size:26px}.leave{border:0;border-radius:12px;padding:10px 14px;background:#fff;color:#8c6b5c;box-shadow:0 8px 22px #76543812}.connection-card,.now-card,.control-card,.empty-card,.status-grid{max-width:780px;margin:14px auto 0;box-sizing:border-box;border:1px solid #eadccf;border-radius:20px;background:#fffefa;box-shadow:0 12px 36px #76543810}.connection-card{display:flex;align-items:center;gap:16px;padding:13px 16px;color:#61786d;font-size:13px}.connection-title{display:flex;align-items:center;gap:8px;margin-right:auto}.connection-title i{width:10px;height:10px;border-radius:50%;background:#56b886;box-shadow:0 0 0 5px #56b8861c}.connection-card.reconnecting i,.connection-card.connecting i{background:#e2a24b}.connection-card.offline i,.connection-card.expired i{background:#d75d57}.connection-card button{border:0;background:#e9f5ef;color:#37775c;border-radius:9px;padding:7px 10px}.network-error{max-width:750px;margin:10px auto 0;padding:10px 14px;border-radius:11px;background:#fff0ed;color:#a64c46}.now-card{padding:20px}.now-card>div:first-child{display:flex;justify-content:space-between;color:#8f7c70;font-size:13px}.now-card h2{margin:12px 0 7px;font-size:24px}.now-card p{margin:0;color:#85766d;line-height:1.55}.resource-line{display:flex;align-items:center;gap:10px;margin-top:15px;padding:12px;border-radius:13px;background:#f0f8f4}.resource-line span{color:#678072;font-size:12px}.resource-line b{flex:1}.resource-line em{font-size:11px;font-style:normal;color:#d27858}.control-card{padding:18px}.control-card h2{margin:0 0 14px;font-size:18px}.button-grid{display:grid;gap:9px;margin-top:10px}.cols-2{grid-template-columns:repeat(2,1fr)}.cols-3{grid-template-columns:repeat(3,1fr)}.cols-4{grid-template-columns:repeat(4,1fr)}.button-grid button,.control-card select,.empty-card button{min-height:44px;border:1px solid #ecd9cb;border-radius:12px;background:#fff;color:#68554b;font:inherit;font-weight:750}.button-grid button:active{transform:scale(.98)}.button-grid button:disabled{opacity:.42}.control-card select{width:100%;padding:0 12px}.button-grid .accent{background:#eaf7f1;color:#36785d}.button-grid .reward{background:#fff2cd;color:#96671f}.button-grid .danger{grid-column:1/-1;background:#fff0ed;color:#ad4e47}.status-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;overflow:hidden}.status-grid article{display:grid;gap:7px;padding:17px;background:#fff}.status-grid span{color:#937f72;font-size:12px}.status-grid strong{font-size:15px}.privacy-note{max-width:760px;margin:14px auto;color:#8b7d74;font-size:12px;line-height:1.6;text-align:center}.empty-card{display:grid;justify-items:center;gap:10px;padding:50px 24px;text-align:center}.empty-card>div:first-child{font-size:52px}.empty-card h2,.empty-card p{margin:0}.empty-card p{color:#8a796e}.empty-card button{padding:0 18px;background:#e9f6f0;color:#3b765e}.spinner{width:36px;height:36px;border:4px solid #eaded5;border-top-color:#dd825f;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:560px){.connection-card{display:grid;grid-template-columns:1fr 1fr}.connection-title{grid-column:1/-1}.cols-3{grid-template-columns:repeat(2,1fr)}.cols-4{grid-template-columns:repeat(2,1fr)}.status-grid{grid-template-columns:1fr}.remote-head h1{font-size:22px}}
+.command-history-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.command-history-head h2{margin:0}.command-history-head span,.command-history li small{color:#9a7e70;font-size:12px}.command-history ul{display:grid;gap:8px;margin:12px 0 0;padding:0;list-style:none}.command-history li{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;background:#fff8f0}.command-history li span{flex:1}.command-history li strong{font-size:12px}.status-executed{color:#3f835b}.status-sending,.status-received,.status-queued{color:#aa7527}.status-failed,.status-expired{color:#b5514b}
 </style>

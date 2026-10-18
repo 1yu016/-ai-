@@ -8,7 +8,7 @@ import {
   type ClassroomControlSession,
   type MobileClassroomState,
 } from '@/api/classroomMobile'
-import { apiErrorMessage } from '@/api/http'
+import { apiErrorMessage, apiErrorStatus } from '@/api/http'
 import { useUserStore } from '@/stores/user'
 import {
   classroomRequestId,
@@ -16,7 +16,18 @@ import {
 } from '@/services/classroomCommandBus'
 
 type ConnectionState = 'idle' | 'connecting' | 'online' | 'reconnecting' | 'offline' | 'expired'
-type DeliveryState = 'sending' | 'confirmed' | 'failed' | 'expired'
+type DeliveryState = 'queued' | 'sending' | 'received' | 'executed' | 'failed' | 'expired'
+export type MobileCommandStatus = {
+  commandId: string
+  operation: ClassroomCommandOperation
+  expectedVersion: number
+  targetDeviceId: number
+  executionStatus: DeliveryState
+  issuedAt: string
+  expiresAt: string
+  confirmedAt?: string
+  errorCode?: string
+}
 
 function readSession(): ClassroomControlSession | null {
   try {
@@ -37,12 +48,15 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   const connection = ref<ConnectionState>('idle')
   const lastError = ref('')
   const delivery = ref<Record<string, DeliveryState>>({})
+  const commands = ref<MobileCommandStatus[]>([])
   const lastConfirmedAt = ref<string | null>(null)
   let streamAbort: AbortController | null = null
   let heartbeatTimer: number | null = null
   let reconnectTimer: number | null = null
   let reconnectAttempt = 0
   let stopped = true
+  let serverClockOffsetMs = 0
+  let requireFullRefresh = true
 
   const connected = computed(() => connection.value === 'online')
   const canControl = computed(() => connected.value && !!state.value?.screen.online)
@@ -52,11 +66,40 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     sessionStorage.setItem(CLASSROOM_CONTROL_SESSION_KEY, JSON.stringify(value))
   }
 
+  function serverNowMs() {
+    return Date.now() + serverClockOffsetMs
+  }
+
+  function isSessionExpired() {
+    return !session.value || Date.parse(session.value.expiresAt) <= serverNowMs()
+  }
+
+  function updateAuthoritativeState(next: MobileClassroomState) {
+    const serverNow = Date.parse(next.serverNow)
+    if (Number.isFinite(serverNow)) serverClockOffsetMs = serverNow - Date.now()
+    state.value = next
+    if (!next.controlActive || ['completed', 'cancelled', 'failed'].includes(next.classroom.status)) {
+      lastError.value = '课堂已结束，手机控制权限已失效。'
+      connection.value = 'expired'
+      stop(true)
+    }
+  }
+
   async function refreshState() {
     if (!session.value) throw new Error('请先扫码连接课堂')
-    const response = await classroomMobileApi.state(session.value.token)
-    state.value = response.data
-    return response.data
+    try {
+      const response = await classroomMobileApi.state(session.value.token)
+      updateAuthoritativeState(response.data)
+      return response.data
+    } catch (error) {
+      const status = apiErrorStatus(error)
+      if (status === 401 || status === 403 || status === 410) {
+        lastError.value = apiErrorMessage(error, '手机课堂控制会话已失效，请重新扫码。')
+        connection.value = 'expired'
+        stop(true)
+      }
+      throw error
+    }
   }
 
   function start() {
@@ -64,13 +107,14 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       connection.value = 'expired'
       return
     }
-    if (Date.parse(session.value.expiresAt) <= Date.now()) {
+    if (isSessionExpired()) {
       clearLocalSession()
       connection.value = 'expired'
       return
     }
     stopped = false
     connection.value = state.value ? 'reconnecting' : 'connecting'
+    requireFullRefresh = true
     startHeartbeat()
     void connectStream()
   }
@@ -79,9 +123,20 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     const current = session.value
     const user = useUserStore()
     if (stopped || !current || !user.accessToken) return
+    if (isSessionExpired()) {
+      lastError.value = '手机课堂控制会话已过期，请重新扫码。'
+      connection.value = 'expired'
+      stop(true)
+      return
+    }
     streamAbort?.abort()
     streamAbort = new AbortController()
     try {
+      if (requireFullRefresh) {
+        await refreshState()
+        if (stopped || !session.value) return
+        requireFullRefresh = false
+      }
       const response = await fetch(apiUrl('/classroom-mobile/events'), {
         headers: {
           Authorization: `Bearer ${user.accessToken}`,
@@ -91,7 +146,11 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
         cache: 'no-store',
         signal: streamAbort.signal,
       })
-      if (!response.ok || !response.body) throw new Error(`实时通道连接失败（${response.status}）`)
+      if (!response.ok || !response.body) {
+        const error = new Error(`实时通道连接失败（${response.status}）`)
+        ;(error as Error & { status?: number }).status = response.status
+        throw error
+      }
       connection.value = 'online'
       reconnectAttempt = 0
       lastError.value = ''
@@ -99,6 +158,13 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       if (!stopped) scheduleReconnect('实时通道已断开')
     } catch (error) {
       if (streamAbort?.signal.aborted || stopped) return
+      const status = apiErrorStatus(error) || (error as Error & { status?: number }).status
+      if (status === 401 || status === 403 || status === 410) {
+        lastError.value = error instanceof Error ? error.message : '手机课堂控制会话已失效'
+        connection.value = 'expired'
+        stop(true)
+        return
+      }
       scheduleReconnect(error instanceof Error ? error.message : '实时通道连接失败')
     }
   }
@@ -124,12 +190,12 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
         if (!data) continue
         const parsed = JSON.parse(data) as unknown
         if (eventType === 'state') {
-          state.value = parsed as MobileClassroomState
-          connection.value = 'online'
+          updateAuthoritativeState(parsed as MobileClassroomState)
+          if (connection.value !== 'expired') connection.value = 'online'
         } else if (eventType === 'session_invalid') {
           lastError.value = String((parsed as { message?: unknown }).message || '课堂控制会话已失效')
           connection.value = 'expired'
-          stop(false)
+          stop(true)
           return
         }
       }
@@ -140,11 +206,12 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     if (stopped) return
     connection.value = navigator.onLine ? 'reconnecting' : 'offline'
     lastError.value = message
+    requireFullRefresh = true
     if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
     const waitMs = Math.min(15_000, 1000 * 2 ** reconnectAttempt++)
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null
-      void refreshState().catch(() => undefined).finally(() => void connectStream())
+      void connectStream()
     }, waitMs)
   }
 
@@ -152,8 +219,15 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer)
     heartbeatTimer = window.setInterval(() => {
       if (!session.value || stopped) return
-      void classroomMobileApi.heartbeat(session.value.token).catch(() => {
-        if (connection.value === 'online') connection.value = 'reconnecting'
+      void classroomMobileApi.heartbeat(session.value.token).catch((error) => {
+        const status = apiErrorStatus(error)
+        if (status === 401 || status === 403 || status === 410) {
+          lastError.value = apiErrorMessage(error, '手机课堂控制会话已失效，请重新扫码。')
+          connection.value = 'expired'
+          stop(true)
+        } else if (connection.value === 'online') {
+          connection.value = 'reconnecting'
+        }
       })
     }, 15_000)
   }
@@ -169,7 +243,18 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     const requestId = classroomRequestId(`mobile-${operation}`)
     const issuedAt = new Date().toISOString()
     const ttlMs = 30_000
-    delivery.value[requestId] = 'sending'
+    const expiresAtMs = Date.parse(issuedAt) + ttlMs
+    const entry: MobileCommandStatus = {
+      commandId: requestId,
+      operation,
+      expectedVersion: currentState.classroom.version,
+      targetDeviceId: currentSession.targetDeviceId,
+      executionStatus: 'queued',
+      issuedAt,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    }
+    commands.value = [entry, ...commands.value.filter((item) => item.commandId !== requestId)].slice(0, 20)
+    delivery.value[requestId] = 'queued'
     const payload = {
       requestId,
       expectedVersion: currentState.classroom.version,
@@ -180,12 +265,29 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       ...(parameters ? { parameters } : {}),
     }
     let firstError: unknown
+    let terminalStatus: DeliveryState | null = null
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const connectionClosed = stopped && connection.value !== 'idle'
+      if (serverNowMs() >= expiresAtMs || connectionClosed) {
+        entry.executionStatus = 'expired'
+        delivery.value[requestId] = 'expired'
+        throw new Error('指令已过期，未执行')
+      }
+      entry.executionStatus = 'sending'
+      delivery.value[requestId] = 'sending'
       try {
         const response = await classroomMobileApi.command(currentSession.token, payload)
-        if (response.data.deliveryStatus !== 'confirmed') throw new Error('服务端尚未确认指令')
-        delivery.value[requestId] = 'confirmed'
-        lastConfirmedAt.value = response.data.confirmedAt
+        const executionStatus = response.data.executionStatus
+          ?? (response.data.deliveryStatus === 'confirmed' ? 'executed' : response.data.deliveryStatus === 'received' ? 'received' : 'failed')
+        entry.executionStatus = executionStatus
+        entry.errorCode = response.data.errorCode ?? undefined
+        delivery.value[requestId] = executionStatus
+        if (executionStatus !== 'executed') {
+          terminalStatus = executionStatus
+          throw new Error(response.data.errorCode || '服务端尚未确认指令执行')
+        }
+        entry.confirmedAt = response.data.confirmedAt
+        lastConfirmedAt.value = response.data.confirmedAt ?? null
         try {
           await refreshState()
         } catch (refreshError) {
@@ -199,16 +301,31 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
         return response.data
       } catch (error) {
         firstError ??= error
+        if (apiErrorStatus(error) === 409) {
+          entry.executionStatus = 'failed'
+          entry.errorCode = 'VERSION_CONFLICT'
+          delivery.value[requestId] = 'failed'
+          for (const pending of commands.value) {
+            if (pending.commandId !== requestId && (pending.executionStatus === 'queued' || pending.executionStatus === 'sending')) {
+              pending.executionStatus = 'failed'
+              pending.errorCode = 'VERSION_CONFLICT'
+              delivery.value[pending.commandId] = 'failed'
+            }
+          }
+          await refreshState().catch(() => undefined)
+          break
+        }
         const hasServerResponse = !!(error && typeof error === 'object' && 'response' in error && (error as { response?: unknown }).response)
-        if (attempt === 0 && !hasServerResponse) {
+        if (attempt === 0 && !hasServerResponse && serverNowMs() < expiresAtMs && !(stopped && connection.value !== 'idle')) {
           await new Promise((resolve) => window.setTimeout(resolve, 900))
           continue
         }
         break
       }
     }
-    const expired = Date.now() - Date.parse(issuedAt) > ttlMs
-    delivery.value[requestId] = expired ? 'expired' : 'failed'
+    const expired = serverNowMs() >= expiresAtMs
+    entry.executionStatus = terminalStatus ?? (expired ? 'expired' : 'failed')
+    delivery.value[requestId] = entry.executionStatus
     throw new Error(apiErrorMessage(firstError, expired ? '指令已过期，未执行' : '指令发送失败'))
   }
 
@@ -224,6 +341,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   }
 
   function stop(clear = false) {
+    const preserveExpired = connection.value === 'expired'
     stopped = true
     streamAbort?.abort()
     streamAbort = null
@@ -231,7 +349,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     if (reconnectTimer !== null) window.clearTimeout(reconnectTimer)
     heartbeatTimer = null
     reconnectTimer = null
-    connection.value = clear ? 'idle' : connection.value
+    connection.value = clear ? (preserveExpired ? 'expired' : 'idle') : connection.value
     if (clear) clearLocalSession()
   }
 
@@ -245,6 +363,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     window.addEventListener('online', () => {
       if (!stopped) {
         connection.value = 'reconnecting'
+        requireFullRefresh = true
         void connectStream()
       }
     })
@@ -261,6 +380,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     lastError,
     delivery,
     lastConfirmedAt,
+    commands,
     setSession,
     start,
     stop,

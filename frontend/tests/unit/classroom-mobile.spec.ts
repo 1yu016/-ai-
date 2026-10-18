@@ -91,4 +91,32 @@ describe('classroom mobile realtime store', () => {
     expect(command.mock.calls[0]?.[1].requestId).toBe(command.mock.calls[1]?.[1].requestId)
     expect(command.mock.calls[0]?.[1].issuedAt).toBe(command.mock.calls[1]?.[1].issuedAt)
   })
+
+  it('records server execution status and does not treat received as success', async () => {
+    const store = useClassroomMobileStore()
+    store.setSession(session)
+    store.state = state(true)
+    vi.spyOn(classroomMobileApi, 'command').mockResolvedValue({
+      data: { deliveryStatus: 'received', executionStatus: 'received', errorCode: null },
+    } as never)
+    await expect(store.execute('next_step')).rejects.toThrow('服务端尚未确认指令执行')
+    expect(store.commands[0]?.executionStatus).toBe('received')
+  })
+
+  it('版本冲突时刷新权威状态并清理待发送操作', async () => {
+    const store = useClassroomMobileStore()
+    store.setSession(session)
+    store.state = state(true)
+    vi.spyOn(classroomMobileApi, 'command').mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 409, data: { message: '课堂版本已变化' } },
+    })
+    const refreshed = state(true)
+    refreshed.classroom.version = 4
+    vi.spyOn(classroomMobileApi, 'state').mockResolvedValue({ data: refreshed } as never)
+    await expect(store.execute('next_step')).rejects.toThrow('课堂版本已变化')
+    expect(store.state?.classroom.version).toBe(4)
+    expect(store.commands[0]?.executionStatus).toBe('failed')
+    expect(store.commands[0]?.errorCode).toBe('VERSION_CONFLICT')
+  })
 })

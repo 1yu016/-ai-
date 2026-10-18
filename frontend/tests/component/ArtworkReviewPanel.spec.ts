@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as artworkService from '@/services/studentArtwork'
+import { platformApi } from '@/api/platform'
 import ArtworkReviewPanel from '@/components/classroom/operations/ArtworkReviewPanel.vue'
 
 const students = [
@@ -22,6 +23,12 @@ describe('ArtworkReviewPanel 绘画作品评价', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     localStorage.clear()
+    vi.spyOn(platformApi, 'consents').mockResolvedValue({
+      data: [
+        { id: 1, studentId: 1, consentType: 'photo', status: 'granted' },
+        { id: 2, studentId: 1, consentType: 'artwork', status: 'granted' },
+      ],
+    } as never)
   })
 
   it('显式关闭后端能力时进入 blocking 状态，不使用硬编码评价', async () => {
@@ -136,7 +143,7 @@ describe('ArtworkReviewPanel 绘画作品评价', () => {
     vi.spyOn(artworkService, 'uploadStudentArtwork').mockResolvedValue(artwork as never)
     vi.spyOn(artworkService, 'generateArtworkAiDraft').mockResolvedValue({ aiDraft: '可编辑草稿' })
     vi.spyOn(artworkService, 'confirmArtworkReview').mockResolvedValue({ teacherComment: '教师确认评价', confirmedAt: '2026-10-02T15:10:00.000Z' })
-    const deliver = vi.spyOn(artworkService, 'deliverArtworkReview').mockResolvedValue()
+    const deliver = vi.spyOn(artworkService, 'deliverArtworkReview').mockResolvedValue({ display: {}, speech: {} })
     const wrapper = mount(ArtworkReviewPanel, {
       props: { runId: 9, lessonStepIndex: 0, students, backendReady: true, deviceId: 3, runVersion: 7 },
       global: { plugins: [ElementPlus, createPinia()] },
@@ -174,6 +181,28 @@ describe('ArtworkReviewPanel 绘画作品评价', () => {
     await flushPromises()
     expect(wrapper.find('.confirmed').exists()).toBe(false)
     expect(wrapper.find('.draft').exists()).toBe(true)
+  })
+
+  it('未获得照片和作品授权时禁止上传', async () => {
+    vi.mocked(platformApi.consents).mockResolvedValue({
+      data: [
+        { id: 1, studentId: 1, consentType: 'photo', status: 'revoked' },
+        { id: 2, studentId: 1, consentType: 'artwork', status: 'pending' },
+      ],
+    } as never)
+    const upload = vi.spyOn(artworkService, 'uploadStudentArtwork')
+    const wrapper = mount(ArtworkReviewPanel, {
+      props: { runId: 9, lessonStepIndex: 0, students, backendReady: true },
+      global: { plugins: [ElementPlus, createPinia()] },
+    })
+    await flushPromises()
+    const input = wrapper.find('input[type=file]')
+    Object.defineProperty(input.element, 'files', { value: [fileOf()] })
+    await input.trigger('change')
+    await flushPromises()
+    expect(wrapper.text()).toContain('未同时获得照片和作品授权')
+    expect(wrapper.find('button.button').attributes('disabled')).toBeDefined()
+    expect(upload).not.toHaveBeenCalled()
   })
 
   it('不出现评分/排行榜/诊断文字', async () => {

@@ -9,6 +9,7 @@ import {
 
 defineProps<{
   playing: boolean
+  paused: boolean
 }>()
 
 const emit = defineEmits<{
@@ -16,6 +17,8 @@ const emit = defineEmits<{
   prompt: [text: string]
   play: []
   stop: []
+  pause: []
+  resume: []
   confirmAction: []
   end: []
 }>()
@@ -173,12 +176,14 @@ const quickTools: Array<{
       <div class="draft-actions">
         <ElButton
           type="primary"
-          :disabled="requiresTeacherConfirmation || playing"
+          :disabled="requiresTeacherConfirmation || playing || paused"
           @click="emit('play')"
         >
           {{ playing ? '正在播放' : '教师确认并播放' }}
         </ElButton>
         <ElButton type="warning" plain @click="emit('stop')">停止回答</ElButton>
+        <ElButton v-if="playing" plain @click="emit('pause')">暂停播放</ElButton>
+        <ElButton v-if="paused" type="primary" plain @click="emit('resume')">继续播放</ElButton>
       </div>
     </div>
   </section>

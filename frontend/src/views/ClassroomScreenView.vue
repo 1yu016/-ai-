@@ -25,6 +25,7 @@ import { resolveScreenDisplayMode, type ScreenDisplayMode } from '@/presentation
 
 // Optional display-only adapter for future opening/voice/director surfaces.
 const props = defineProps<{ displayMode?: ScreenDisplayMode }>()
+import { speakBrowserText, stopBrowserSpeech } from '@/services/browserSpeech'
 
 const route = useRoute()
 const router = useRouter()
@@ -85,6 +86,8 @@ let rewardTimer: number | null = null
 let lastRewardRecordId: number | null = null
 const artworkPresentation = ref<{ id: number; imageUrl: string; comment: string } | null>(null)
 let artworkObjectUrl: string | null = null
+let artworkTimer: number | null = null
+let dismissedArtworkId: number | null = null
 let lastSpokenSnapshot = ''
 let displayGeneration = 0
 let connectionGeneration = 0
@@ -205,6 +208,8 @@ async function hydratePlayer(state: ClassroomScreenState) {
 }
 
 function clearArtworkPresentation() {
+  if (artworkTimer !== null) window.clearTimeout(artworkTimer)
+  artworkTimer = null
   if (artworkObjectUrl) URL.revokeObjectURL(artworkObjectUrl)
   artworkObjectUrl = null
   artworkPresentation.value = null
@@ -217,21 +222,39 @@ async function hydrateArtwork(state: ClassroomScreenState) {
   const fileUrl = typeof snapshot?.artworkFileUrl === 'string' ? snapshot.artworkFileUrl : ''
   const comment = typeof snapshot?.artworkComment === 'string' ? snapshot.artworkComment : ''
   if (!Number.isInteger(artworkId) || artworkId <= 0 || !fileUrl || !comment) {
+    dismissedArtworkId = null
     clearArtworkPresentation()
     return
   }
+  if (dismissedArtworkId === artworkId) return
+  if (dismissedArtworkId !== artworkId) dismissedArtworkId = null
   if (artworkPresentation.value?.id !== artworkId) {
-    const { data } = await http.get<Blob>(fileUrl, { responseType: 'blob' })
-    if (disposed || generation !== displayGeneration) return
-    clearArtworkPresentation()
-    artworkObjectUrl = URL.createObjectURL(data)
-    artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
+    try {
+      const { data } = await http.get<Blob>(fileUrl, { responseType: 'blob' })
+      if (disposed || generation !== displayGeneration) return
+      clearArtworkPresentation()
+      artworkObjectUrl = URL.createObjectURL(data)
+      artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
+      // 大屏展示是一次性课堂插播；展示完成后关闭覆盖层并停止其语音，回到原课堂画面。
+      artworkTimer = window.setTimeout(() => {
+        if (disposed || generation !== displayGeneration) return
+        dismissedArtworkId = artworkId
+        artworkTimer = null
+        clearArtworkPresentation()
+        stopBrowserSpeech()
+      }, 7000)
+    } catch (error) {
+      if (disposed || generation !== displayGeneration) return
+      clearArtworkPresentation()
+      loadError.value = apiErrorMessage(error, '作品展示加载失败，课堂仍可继续。')
+      // Preserve A's recovery boundary; keep B's cleanup and explicit error handling.
+      throw error
+    }
   }
   const speechKey = `${snapshot?.updatedAt || ''}:${snapshot?.ttsText || ''}`
-  if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot && 'speechSynthesis' in window) {
+  if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot) {
     lastSpokenSnapshot = speechKey
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(snapshot.ttsText))
+    if (!speakBrowserText(snapshot.ttsText)) loadError.value = '当前浏览器无法播放语音，课堂内容仍可正常展示。'
   }
 }
 
@@ -364,9 +387,8 @@ async function applyScreenState(state: ClassroomScreenState) {
       rewardPresentation.value = presentation
       if (rewardTimer !== null) window.clearTimeout(rewardTimer)
       rewardTimer = window.setTimeout(() => { rewardPresentation.value = null; rewardTimer = null }, 4200)
-      if (presentation.praiseText && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel()
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(presentation.praiseText))
+      if (presentation.praiseText) {
+        if (!speakBrowserText(presentation.praiseText)) loadError.value = '当前浏览器无法播放表扬语音。'
       }
     }
     await hydratePlayer(state)
@@ -408,7 +430,7 @@ function queueSnapshot() {
   if (restoringPlayer || !run.value || busy.value || page.value === 'idle' || page.value === 'recovery') return
   if (snapshotTimer !== null) window.clearTimeout(snapshotTimer)
   if (rewardTimer !== null) window.clearTimeout(rewardTimer)
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+  stopBrowserSpeech()
   snapshotTimer = window.setTimeout(async () => {
     snapshotTimer = null
     const resourceId = Number(playingResource.value?.id)
@@ -497,6 +519,7 @@ onBeforeUnmount(() => {
   if (snapshotTimer !== null) window.clearTimeout(snapshotTimer)
   deviceSessionStore.stopHeartbeat()
   playerStore.requestControl('stop')
+  stopBrowserSpeech()
   clearArtworkPresentation()
 })
 </script>

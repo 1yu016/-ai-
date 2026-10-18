@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ClassroomIntent } from '@/classroom/command/ClassroomIntent'
 import {
   asrRecognizeWav,
   createClassroomVoiceRecorder,
@@ -42,12 +41,12 @@ function deps(overrides: Partial<{ isCurrent: () => boolean; post: () => Promise
 }
 
 describe('Stage 6.3 语音命令：ASR 文本 → 已有 Command Runtime', () => {
-  it('ASR “下一步”→ Router NEXT_STEP → Executor → lessonRun.next', async () => {
+  it('ASR “下一步”只生成候选，教师确认前不执行', async () => {
     const { executors, next } = buildExecutors()
     const outcome = await runAsrTextThroughCommand('下一步', 1, { currentPage: 'resources', playerStatus: 'idle' }, executors, deps())
-    expect(outcome.kind).toBe('executed')
-    if (outcome.kind === 'executed') expect(outcome.intent).toBe(ClassroomIntent.NEXT_STEP)
-    expect(next).toHaveBeenCalledTimes(1)
+    expect(outcome.kind).toBe('confirmation_required')
+    if (outcome.kind === 'confirmation_required') expect(outcome.match.operation).toBe('next_step')
+    expect(next).not.toHaveBeenCalled()
   })
 
   it('ASR “下一步我们要做什么”→ 疑问守卫 → UNKNOWN → 不执行', async () => {
@@ -166,6 +165,26 @@ describe('Stage 6.3 共享录音编排（createClassroomVoiceRecorder）', () =>
     await recorder.start()
     recorder.stop()
     expect(stopTrack).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('等待麦克风授权期间取消时，迟到的 MediaStream 会立即释放', async () => {
+    let resolveStream!: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void
+    const stopTrack = vi.fn()
+    vi.stubGlobal('navigator', {
+      mediaDevices: {
+        getUserMedia: vi.fn(() => new Promise((resolve) => { resolveStream = resolve })),
+      },
+    })
+    vi.stubGlobal('MediaRecorder', fakeMediaRecorderClass())
+    const onBlob = vi.fn()
+    const recorder = createClassroomVoiceRecorder({ onBlob, onError: vi.fn() })
+    const starting = recorder.start()
+    recorder.cancel()
+    resolveStream({ getTracks: () => [{ stop: stopTrack }] })
+    await starting
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    expect(onBlob).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
   })
 })

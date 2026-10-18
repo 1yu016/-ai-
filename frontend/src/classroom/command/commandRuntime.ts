@@ -42,6 +42,8 @@ export interface CommandRuntimeInput {
   deps: AiCommandFallbackDeps
   timeoutMs?: number
   customSynonyms?: TeacherCommandSynonym[]
+  /** ASR 结果只作为候选：任何课堂或媒体操作都先返回确认态。 */
+  requireTeacherConfirmation?: boolean
 }
 
 /** 未听清/空口令的统一提示（供语音与文本共用）。 */
@@ -61,11 +63,11 @@ export async function orchestrateCommand(
   // 新版教师课堂口令：中英文确定性规则和自定义同义词优先。
   const teacherRoute = routeTeacherVoiceCommand(text, input.customSynonyms)
   if (teacherRoute?.kind === 'command') {
-    if (teacherRoute.match.requiresConfirmation) {
+    if (teacherRoute.match.requiresConfirmation || input.requireTeacherConfirmation) {
       return {
         kind: 'confirmation_required',
         intent: teacherRoute.match.operation,
-        message: '该指令涉及点名、奖励或结束课堂，请教师确认后执行。',
+        message: '语音识别结果仅作为候选，请教师确认后执行。',
         match: teacherRoute.match,
       }
     }
@@ -95,13 +97,22 @@ export async function orchestrateCommand(
       VOLUME_UP: { operation: 'set_volume', parameters: { volumeDelta: 0.1 } },
       VOLUME_DOWN: { operation: 'set_volume', parameters: { volumeDelta: -0.1 } },
     }[deviceMatch.intent] as Pick<import('./TeacherVoiceCommandRouter').TeacherVoiceCommandMatch, 'operation' | 'parameters'>
-    const result = await input.executors.classroom.executeVoice({
+    const match = {
       ...mapped,
       normalized: deviceMatch.normalized,
       label: deviceMatch.intent,
-      requiresConfirmation: false,
+      requiresConfirmation: Boolean(input.requireTeacherConfirmation),
       source: 'builtin',
-    })
+    } as import('./TeacherVoiceCommandRouter').TeacherVoiceCommandMatch
+    if (input.requireTeacherConfirmation) {
+      return {
+        kind: 'confirmation_required',
+        intent: deviceMatch.intent,
+        message: '语音识别结果仅作为候选，请教师确认后执行。',
+        match,
+      }
+    }
+    const result = await input.executors.classroom.executeVoice(match)
     return {
       kind: 'device_executed',
       intent: deviceMatch.intent,
@@ -113,6 +124,30 @@ export async function orchestrateCommand(
   // ② 课堂状态命令 → Classroom → 现有 /classroom-runs 后端。
   const classroomMatch = resolveIntent(text)
   if (classroomMatch.local && classroomMatch.command) {
+    if (input.requireTeacherConfirmation) {
+      const operation = classroomMatch.command === 'next'
+        ? 'next_step'
+        : classroomMatch.command === 'previous'
+          ? 'previous_step'
+          : classroomMatch.command === 'pause'
+            ? 'pause_class'
+            : classroomMatch.command === 'resume'
+              ? 'resume_class'
+              : null
+      if (!operation) return { kind: 'unsupported', intent: classroomMatch.intent, reply: '该语音操作暂不支持。' }
+      return {
+        kind: 'confirmation_required',
+        intent: classroomMatch.intent,
+        message: '语音识别结果仅作为候选，请教师确认后执行。',
+        match: {
+          operation: operation as import('@/services/classroomCommandBus').ClassroomCommandOperation,
+          normalized: classroomMatch.normalized,
+          label: classroomMatch.intent,
+          requiresConfirmation: true,
+          source: 'builtin',
+        },
+      }
+    }
     const result = await input.executors.classroom.execute(classroomMatch)
     return {
       kind: 'executed',
