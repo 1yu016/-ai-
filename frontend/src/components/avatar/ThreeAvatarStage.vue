@@ -13,7 +13,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore, type DigitalHumanAction } from '@/stores/digitalHuman'
-import { loadAvatarModel, type AvatarLoadedModel, type AvatarLoadContext } from '@/avatar/AvatarLoader'
+import { disposeAvatarObject, loadAvatarModel, type AvatarLoadedModel, type AvatarLoadContext } from '@/avatar/AvatarLoader'
 import type { AvatarModelFormat } from '@/avatar/types'
 import { useUserStore } from '@/stores/user'
 
@@ -189,16 +189,28 @@ function playAction(actionName: DigitalHumanAction) {
   // 真实模型：动作名 → AvatarLoader 内 AvatarActionResolver → clip 播放。
   // 表情由 store.expression（状态机快照）单独驱动，组件不判断业务状态。
   const canonicalAction = actionName === 'thinking' ? 'think' : actionName === 'praise' ? 'encourage' : actionName
-  if (currentModel && !currentModel.playAnimation(canonicalAction) && actionName !== 'idle') {
-    currentModel.playAnimation('idle')
-    currentAction = 'idle'
+  if (currentModel) {
+    try {
+      if (!currentModel.playAnimation(canonicalAction) && actionName !== 'idle') {
+        currentModel.playAnimation('idle')
+        currentAction = 'idle'
+        store.setAction('idle')
+      }
+    } catch {
+      currentAction = 'idle'
+      store.setAction('idle')
+      try { currentModel.playAnimation('idle') } catch { /* 动作失败不能中断课堂 */ }
+    }
   }
 }
 
 watch(action, (next) => playAction(next))
 // 表情：只转发状态机输出的 expression 快照，不做任何业务判断。
 watch(expression, (next) => {
-  currentModel?.setExpression(next ?? 'neutral', 1)
+  try { currentModel?.setExpression(next ?? 'neutral', 1) } catch {
+    // 表情或口型失败只回到安全表情，不影响语音播放和课堂资源。
+    try { currentModel?.resetExpressions() } catch { /* 安全降级 */ }
+  }
 })
 
 // 程序化占位角色：按动作施加简单姿态
@@ -245,10 +257,15 @@ function loop(time: number) {
     fpsWindowStart = time
     fpsFrames = 0
   }
-  const dt = lastTime ? (time - lastTime) / 1000 : 0.016
-  currentModel?.update(dt, time / 1000)
-  applyPose(time)
-  if (renderer && scene && camera) renderer.render(scene, camera)
+  const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.1) : 0.016
+  try {
+    currentModel?.update(dt, time / 1000)
+    applyPose(time)
+    if (renderer && scene && camera) renderer.render(scene, camera)
+  } catch {
+    fail('数字人渲染暂时不可用，已切换 2D 形象')
+    return
+  }
   lastTime = time
 }
 
@@ -300,7 +317,7 @@ function frameCamera() {
 
 function startRenderLoop() {
   if (!renderer || !camera || !mountEl.value) return
-  renderer.setAnimationLoop(loop)
+  renderer.setAnimationLoop(document.hidden ? null : loop)
   lastTime = 0
   fpsWindowStart = 0
   fpsFrames = 0
@@ -316,6 +333,20 @@ function startRenderLoop() {
     frameCamera()
   })
   resizeObserver.observe(mountEl.value)
+}
+
+function handleVisibilityChange() {
+  if (!renderer || disposed) return
+  if (document.hidden) {
+    renderer.setAnimationLoop(null)
+    lastTime = 0
+    return
+  }
+  lastTime = 0
+  fpsWindowStart = 0
+  fpsFrames = 0
+  fpsBadCount = 0
+  renderer.setAnimationLoop(loop)
 }
 
 async function init() {
@@ -419,13 +450,7 @@ async function init() {
 }
 
 function disposeScene() {
-  if (scene) scene.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
-      obj.geometry?.dispose?.()
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
-      for (const m of mats) { m.map?.dispose?.(); m.dispose?.() }
-    }
-  })
+  if (scene) disposeAvatarObject(scene)
   scene = null
 }
 
@@ -437,14 +462,18 @@ function disposeAll() {
   resizeObserver = null
   if (renderer) {
     renderer.setAnimationLoop(null)
+    renderer.renderLists.dispose()
     renderer.dispose()
     try { renderer.forceContextLoss?.() } catch { /* 忽略 */ }
   }
-  disposeScene()
-  currentModel?.resetExpressions()
-  currentModel?.dispose()
+  if (currentModel) {
+    scene?.remove(currentModel.root)
+    try { currentModel.resetExpressions() } catch { /* 忽略模型清理异常 */ }
+    try { currentModel.dispose() } catch { /* 忽略模型清理异常 */ }
+  }
   currentModel = null
   root = null
+  disposeScene()
   renderer = null
   camera = null
   if (mountEl.value) mountEl.value.replaceChildren()
@@ -456,8 +485,14 @@ watch([roleId, () => store.runtime?.model?.modelUrl], () => {
   void init()
 })
 
-onMounted(() => { void init() })
-onBeforeUnmount(() => disposeAll())
+onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  void init()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  disposeAll()
+})
 </script>
 
 <template>

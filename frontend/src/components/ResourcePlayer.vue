@@ -18,6 +18,7 @@ import {
 import ModelPreviewStage from '@/components/resources/ModelPreviewStage.vue'
 import type { CourseResource } from '@/stores/courseResource'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
+import { stopBrowserSpeech } from '@/services/browserSpeech'
 
 const props = defineProps<{
   resources: CourseResource[]
@@ -244,6 +245,7 @@ async function openResource(resource: CourseResource) {
 }
 
 async function play() {
+  stopBrowserSpeech()
   const media = activeMedia()
   if (!media) return
   // 受保护媒体源尚未就绪（mediaSource 为空）时不播放，避免空源 NotSupportedError。

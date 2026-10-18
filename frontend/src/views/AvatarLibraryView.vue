@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 import { apiErrorMessage } from '@/api/http'
+import { speakBrowserText, stopBrowserSpeech } from '@/services/browserSpeech'
 import {
   createAvatarCharacter,
   createAvatarVersion,
@@ -176,14 +177,14 @@ function previewVoice() {
     return
   }
   try {
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.lang = voiceForm.language
-    utterance.rate = voiceForm.speed
-    utterance.volume = voiceForm.volume
-    utterance.pitch = Math.max(0, Math.min(2, 1 + voiceForm.pitch / 12))
-    utterance.onerror = () => { message.value = '指定声音不可用，已使用浏览器默认音色。' }
-    window.speechSynthesis.speak(utterance)
+    speakBrowserText(text, {
+      lang: voiceForm.language,
+      rate: voiceForm.speed,
+      volume: voiceForm.volume,
+      pitch: Math.max(0, Math.min(2, 1 + voiceForm.pitch / 12)),
+      onFallback: () => { message.value = '指定声音不可用，已切换浏览器默认音色。' },
+      onError: () => { message.value = '声音试听失败，请检查系统语音设置。' },
+    })
   } catch (cause) { report(cause, '声音试听失败，课堂将使用默认音色。') }
 }
 
@@ -261,7 +262,7 @@ onMounted(async () => {
     lessonPlans.fetchList().then(() => { plans.value = [...lessonPlans.items] }),
   ])
 })
-onBeforeUnmount(() => { revokePreviews(); window.speechSynthesis?.cancel(); digitalHuman.setAction('idle') })
+onBeforeUnmount(() => { revokePreviews(); stopBrowserSpeech(); digitalHuman.setAction('idle') })
 </script>
 
 <template>

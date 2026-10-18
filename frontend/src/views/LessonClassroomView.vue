@@ -4,6 +4,12 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElButton, ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { apiErrorMessage, http } from '@/api/http'
+import {
+  pauseBrowserSpeech,
+  playExclusiveAudio,
+  resumeBrowserSpeech,
+  stopBrowserSpeech,
+} from '@/services/browserSpeech'
 import { platformApi, type Student, type RewardLeaderboardItem } from '@/api/platform'
 import ResourcePlayer from '@/components/ResourcePlayer.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
@@ -72,8 +78,8 @@ const commandInput = ref(''); const commandFeedback = ref(''); const commandRunI
 const resourceCommandResult = ref<ResourceCommandResult | null>(null)
 const voiceRecState = ref<'idle' | 'recording' | 'recognizing'>('idle'); const voiceFeedback = ref('')
 const pendingVoiceCommand = ref<TeacherVoiceCommandMatch | null>(null)
-const assistantSpeechLoading = ref(false); const assistantSpeaking = ref(false); const draftAccepted = ref(false)
-let assistantAudio: HTMLAudioElement | null = null
+const assistantSpeechLoading = ref(false); const assistantSpeaking = ref(false); const assistantSpeechPaused = ref(false); const draftAccepted = ref(false)
+let assistantSpeechSequence = 0
 const childRecording = ref(false); const childRequestingMicrophone = ref(false); const childRecognizing = ref(false)
 let childMediaRecorder: MediaRecorder | null = null; let childMediaStream: MediaStream | null = null; let childAudioChunks: Blob[] = []; let childRecordingGeneration = 0; let componentUnmounted = false
 // 左侧环节导航折叠：纯前端状态，禁止调用 backend / 修改 ClassroomRun / snapshot。较窄屏幕默认收起。
@@ -452,8 +458,10 @@ async function recognizeChildReply(audioBlob: Blob, generation: number) { try { 
 async function startChildRecording() { if (!isRecordingSupported()) throw new Error('当前浏览器不支持麦克风录音，请使用最新版 Chrome 或 Edge。'); childRequestingMicrophone.value = true; const generation = ++childRecordingGeneration; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); if (generation !== childRecordingGeneration || componentUnmounted) { stream.getTracks().forEach((track) => track.stop()); return } const recorder = new MediaRecorder(stream, { mimeType: RECORDING_MIME_TYPE }); childMediaStream = stream; childMediaRecorder = recorder; childAudioChunks = []; recorder.addEventListener('dataavailable', (event: BlobEvent) => { if (event.data.size > 0) childAudioChunks.push(event.data) }); recorder.addEventListener('stop', () => { const audioBlob = new Blob(childAudioChunks, { type: RECORDING_MIME_TYPE }); childAudioChunks = []; childMediaRecorder = null; stopChildMediaTracks(); if (generation === childRecordingGeneration && !componentUnmounted) void recognizeChildReply(audioBlob, generation) }, { once: true }); recorder.addEventListener('error', () => { childRecording.value = false; childMediaRecorder = null; stopChildMediaTracks(); ElMessage.error('录音发生错误，请重新尝试。') }, { once: true }); recorder.start(); childRecording.value = true } catch (e) { stopChildMediaTracks(); if (e instanceof DOMException && e.name === 'NotAllowedError') throw new Error('麦克风权限被拒绝，请在浏览器设置中允许使用麦克风。', { cause: e }); throw e } finally { childRequestingMicrophone.value = false } }
 function stopChildRecording() { if (!childMediaRecorder || childMediaRecorder.state === 'inactive') return; childRecording.value = false; childRecognizing.value = true; childMediaRecorder.stop() }
 async function toggleChildRecording() { if (childRecording.value) return stopChildRecording(); if (childRequestingMicrophone.value || childRecognizing.value || assistantLoading.value) return; try { await startChildRecording() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '无法使用麦克风，请稍后重试。') } }
-function stopAssistantSpeech() { if (assistantAudio) { assistantAudio.pause(); assistantAudio.src = ''; assistantAudio = null } assistantSpeechLoading.value = false; assistantSpeaking.value = false }
-async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value || !run.value) return; stopAssistantSpeech(); assistantSpeechLoading.value = true; digitalHuman.transition({ type: 'tts_start' }); try { await store.command('speak_text', { text }, 'teacher_panel', run.value.deviceId); const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); const audio = new Audio(data.audioUrl.trim()); assistantAudio = audio; const release = () => { if (assistantAudio === audio) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }) } }; audio.addEventListener('ended', release, { once: true }); audio.addEventListener('error', release, { once: true }); await audio.play(); assistantSpeaking.value = true; draftAccepted.value = true } catch (e) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { assistantSpeechLoading.value = false } }
+function stopAssistantSpeech() { assistantSpeechSequence += 1; stopBrowserSpeech(); assistantSpeechLoading.value = false; assistantSpeaking.value = false; assistantSpeechPaused.value = false }
+function pauseAssistantSpeech() { if (!pauseBrowserSpeech()) return; assistantSpeaking.value = false; assistantSpeechPaused.value = true; digitalHuman.transition({ type: 'tts_end' }) }
+async function resumeAssistantSpeech() { try { if (!await resumeBrowserSpeech()) return; assistantSpeaking.value = true; assistantSpeechPaused.value = false; digitalHuman.transition({ type: 'tts_start' }) } catch (e) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); ElMessage.error(apiErrorMessage(e, '助教语音继续播放失败，请重试。')) } }
+async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value || !run.value) return; stopAssistantSpeech(); const sequence = ++assistantSpeechSequence; assistantSpeechLoading.value = true; digitalHuman.transition({ type: 'tts_start' }); try { await store.command('speak_text', { text }, 'teacher_panel', run.value.deviceId); const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); if (sequence !== assistantSpeechSequence) return; await playExclusiveAudio(data.audioUrl.trim(), { onEnded: () => { if (sequence === assistantSpeechSequence) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }) } }, onError: () => { if (sequence === assistantSpeechSequence) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用') } } }); if (sequence !== assistantSpeechSequence) return; assistantSpeaking.value = true; draftAccepted.value = true } catch (e) { if (sequence !== assistantSpeechSequence) return; stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { if (sequence === assistantSpeechSequence) assistantSpeechLoading.value = false } }
 function acceptDraftAsText() { draftAccepted.value = true; digitalHuman.transition({ type: 'ai_response', emotion: 'encourage' }); ElMessage.success('已由教师确认，可自行讲述给孩子听') }
 function discardAssistantDraft() { stopAssistantSpeech(); digitalHuman.transition({ type: 'settle' }); draftAccepted.value = false; assistant.endInteraction() }
 function beforeUnload(event: BeforeUnloadEvent) { if (!isActive.value) return; event.preventDefault(); event.returnValue = '' }
@@ -581,12 +589,15 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
               :requires-teacher-confirmation="requiresTeacherConfirmation"
               :assistant-speech-loading="assistantSpeechLoading"
               :assistant-speaking="assistantSpeaking"
+              :assistant-speech-paused="assistantSpeechPaused"
               :draft-accepted="draftAccepted"
               :attempt-count="attemptCount"
               @toggle-assistant="assistantEnabled = !assistantEnabled"
               @ask-assistant="askAssistant"
               @toggle-child-recording="toggleChildRecording"
               @play-draft="playAssistantDraft"
+              @pause-speech="pauseAssistantSpeech"
+              @resume-speech="resumeAssistantSpeech"
               @stop-speech="stopAssistantSpeech"
               @accept-draft="acceptDraftAsText"
               @discard-draft="discardAssistantDraft"

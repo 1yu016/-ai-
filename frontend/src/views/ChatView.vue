@@ -14,6 +14,12 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { apiErrorMessage, http } from '@/api/http'
 import { logoutAuthenticatedSession } from '@/services/authSession'
+import {
+  pauseBrowserSpeech,
+  playExclusiveAudio,
+  resumeBrowserSpeech,
+  stopBrowserSpeech,
+} from '@/services/browserSpeech'
 import ClassroomAssistantPanel from '@/components/ClassroomAssistantPanel.vue'
 import CourseResourcesPanel from '@/components/CourseResourcesPanel.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
@@ -148,14 +154,16 @@ const recognizing = ref(false)
 const voiceReplyLoading = ref(false)
 const synthesizing = ref(false)
 const playingAudio = ref(false)
+const audioPaused = ref(false)
 const playingResourceTitle = ref('')
 const assistantSpeechLoading = ref(false)
 
 let mediaRecorder: MediaRecorder | null = null
 let mediaStream: MediaStream | null = null
 let audioChunks: Blob[] = []
-let currentAudio: HTMLAudioElement | null = null
 let currentObjectUrl: string | null = null
+let audioPlaybackSequence = 0
+let recordingGeneration = 0
 let componentUnmounted = false
 let assistantSpeechSequence = 0
 
@@ -887,16 +895,14 @@ function stopMediaTracks() {
 }
 
 function releaseCurrentAudio() {
-  if (currentAudio) {
-    currentAudio.pause()
-    currentAudio.src = ''
-    currentAudio = null
-  }
+  audioPlaybackSequence += 1
+  stopBrowserSpeech()
   if (currentObjectUrl) {
     URL.revokeObjectURL(currentObjectUrl)
     currentObjectUrl = null
   }
   playingAudio.value = false
+  audioPaused.value = false
   playingResourceTitle.value = ''
 }
 
@@ -928,27 +934,16 @@ async function playAudioSource(
   releaseCurrentAudio()
   currentObjectUrl = objectUrl
   playingResourceTitle.value = resourceTitle
-
-  const audio = new Audio(source)
-  currentAudio = audio
-  audio.addEventListener(
-    'ended',
-    () => {
-      if (currentAudio === audio) releaseCurrentAudio()
-    },
-    { once: true },
-  )
-  audio.addEventListener(
-    'error',
-    () => {
-      if (currentAudio === audio) releaseCurrentAudio()
-    },
-    { once: true },
-  )
+  const sequence = ++audioPlaybackSequence
 
   try {
-    await audio.play()
+    await playExclusiveAudio(source, {
+      onEnded: () => { if (sequence === audioPlaybackSequence) releaseCurrentAudio() },
+      onError: () => { if (sequence === audioPlaybackSequence) releaseCurrentAudio() },
+    })
+    if (sequence !== audioPlaybackSequence) return
     playingAudio.value = true
+    audioPaused.value = false
   } catch (error) {
     releaseCurrentAudio()
     throw new Error(
@@ -957,6 +952,23 @@ async function playAudioSource(
         cause: error,
       },
     )
+  }
+}
+
+function pauseCurrentAudio() {
+  if (!pauseBrowserSpeech()) return
+  playingAudio.value = false
+  audioPaused.value = true
+}
+
+async function resumeCurrentAudio() {
+  try {
+    if (!await resumeBrowserSpeech()) return
+    playingAudio.value = true
+    audioPaused.value = false
+  } catch (error) {
+    releaseCurrentAudio()
+    errorText.value = apiErrorMessage(error, '语音继续播放失败，请重试。')
   }
 }
 
@@ -1066,12 +1078,21 @@ async function startRecording() {
   releaseCurrentAudio()
 
   try {
+    const generation = ++recordingGeneration
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
     })
-    const recorder = new MediaRecorder(stream, {
-      mimeType: RECORDING_MIME_TYPE,
-    })
+    if (componentUnmounted || generation !== recordingGeneration) {
+      stream.getTracks().forEach((track) => track.stop())
+      return
+    }
+    let recorder: MediaRecorder
+    try {
+      recorder = new MediaRecorder(stream, { mimeType: RECORDING_MIME_TYPE })
+    } catch (error) {
+      stream.getTracks().forEach((track) => track.stop())
+      throw error
+    }
 
     mediaStream = stream
     mediaRecorder = recorder
@@ -1182,6 +1203,7 @@ onBeforeUnmount(() => {
     stopChatAudioForResourcePlayer,
   )
   componentUnmounted = true
+  recordingGeneration += 1
   if (avatarSettleTimer) clearTimeout(avatarSettleTimer)
   digitalHumanStore.transition({ type: 'settle' })
   classroomAssistantStore.cancel()
@@ -1533,10 +1555,13 @@ onBeforeUnmount(() => {
       <ClassroomAssistantPanel
         v-if="assistantActive && !isBreakActive"
         :playing="playingAudio || assistantSpeechLoading"
+        :paused="audioPaused"
         @tool="runAssistantTool"
         @prompt="runAssistantPrompt"
         @play="playAssistantDraft"
         @stop="stopAssistantResponse"
+        @pause="pauseCurrentAudio"
+        @resume="resumeCurrentAudio"
         @confirm-action="confirmAssistantAction"
         @end="endAssistantInteraction"
       />

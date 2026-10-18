@@ -16,6 +16,7 @@ import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession'
 import { connectScreenRealtime } from '@/services/classroomRealtime'
+import { speakBrowserText, stopBrowserSpeech } from '@/services/browserSpeech'
 
 const route = useRoute()
 const router = useRouter()
@@ -144,10 +145,9 @@ async function hydrateArtwork(state: ClassroomScreenState) {
     artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
   }
   const speechKey = `${snapshot?.updatedAt || ''}:${snapshot?.ttsText || ''}`
-  if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot && 'speechSynthesis' in window) {
+  if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot) {
     lastSpokenSnapshot = speechKey
-    window.speechSynthesis.cancel()
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(snapshot.ttsText))
+    if (!speakBrowserText(snapshot.ttsText)) loadError.value = '当前浏览器无法播放语音，课堂内容仍可正常展示。'
   }
 }
 
@@ -180,9 +180,8 @@ async function applyScreenState(state: ClassroomScreenState) {
       rewardPresentation.value = presentation
       if (rewardTimer !== null) window.clearTimeout(rewardTimer)
       rewardTimer = window.setTimeout(() => { rewardPresentation.value = null; rewardTimer = null }, 4200)
-      if (presentation.praiseText && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel()
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(presentation.praiseText))
+      if (presentation.praiseText) {
+        if (!speakBrowserText(presentation.praiseText)) loadError.value = '当前浏览器无法播放表扬语音。'
       }
     }
     await hydratePlayer(state)
@@ -214,7 +213,7 @@ function queueSnapshot() {
   if (restoringPlayer || !run.value || busy.value) return
   if (snapshotTimer !== null) window.clearTimeout(snapshotTimer)
   if (rewardTimer !== null) window.clearTimeout(rewardTimer)
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+  stopBrowserSpeech()
   snapshotTimer = window.setTimeout(async () => {
     snapshotTimer = null
     const resourceId = Number(playingResource.value?.id)
@@ -282,6 +281,7 @@ onBeforeUnmount(() => {
   if (snapshotTimer !== null) window.clearTimeout(snapshotTimer)
   deviceSessionStore.stopHeartbeat()
   playerStore.requestControl('stop')
+  stopBrowserSpeech()
   clearArtworkPresentation()
 })
 </script>

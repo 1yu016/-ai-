@@ -26,15 +26,26 @@ export interface AvatarLoadContext {
   getToken?: () => string | null
 }
 
-function disposeObject(root: THREE.Object3D) {
+export function disposeAvatarObject(root: THREE.Object3D) {
+  const disposedTextures = new Set<THREE.Texture>()
+  const disposeTexture = (value: unknown) => {
+    if (!(value instanceof THREE.Texture) || disposedTextures.has(value)) return
+    disposedTextures.add(value)
+    value.dispose()
+  }
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
       obj.geometry?.dispose?.()
       const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
       for (const material of materials) {
-        material.map?.dispose?.()
+        for (const value of Object.values(material)) disposeTexture(value)
+        const uniforms = (material as THREE.ShaderMaterial).uniforms
+        if (uniforms) {
+          for (const uniform of Object.values(uniforms)) disposeTexture(uniform?.value)
+        }
         material.dispose?.()
       }
+      disposeTexture((obj as THREE.SkinnedMesh).skeleton?.boneTexture)
     }
   })
 }
@@ -128,7 +139,8 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
     },
     dispose() {
       mixer.stopAllAction()
-      disposeObject(gltf.scene)
+      mixer.uncacheRoot(gltf.scene)
+      disposeAvatarObject(gltf.scene)
     },
   }
 }
@@ -198,8 +210,9 @@ function buildVrmModel(vrm: VRM): AvatarLoadedModel {
     },
     dispose() {
       mixer.stopAllAction()
+      mixer.uncacheRoot(root)
       ;(vrm as { dispose?: () => void }).dispose?.()
-      disposeObject(root)
+      disposeAvatarObject(root)
     },
   }
 }
