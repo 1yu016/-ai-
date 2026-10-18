@@ -16,6 +16,8 @@ const classId = Number(route.params.classId)
 
 const loading = ref(true)
 const error = ref('')
+const mapLoading = ref(false)
+const mapError = ref('')
 const page = ref(1)
 const pageSize = 10
 const studentId = ref<number | null>(null)
@@ -37,33 +39,41 @@ function formatDate(value: string): string {
 async function load() {
   loading.value = true
   error.value = ''
-  try {
-    const [listResult, studentResult, mapResult] = await Promise.all([
-      listClassQuestions(classId, {
-        page: page.value,
-        pageSize,
-        studentId: studentId.value ?? undefined,
-        keyword: keyword.value.trim() || undefined,
-        topic: topic.value || undefined,
-        domain: domain.value || undefined,
-      }),
-      platformApi.students(classId),
-      getQuestionMap(classId, {
-        studentId: studentId.value ?? undefined,
-        topic: topic.value || undefined,
-        domain: domain.value || undefined,
-      }),
-    ])
-    items.value = listResult.items
-    total.value = listResult.total
-    students.value = studentResult.data.items
-    questionMap.value = mapResult
-  } catch (e) {
-    questionMap.value = null
-    error.value = apiErrorMessage(e, '班级问题记录加载失败。')
-  } finally {
-    loading.value = false
+  mapLoading.value = true
+  mapError.value = ''
+  const [listResult, studentResult, mapResult] = await Promise.allSettled([
+    listClassQuestions(classId, {
+      page: page.value,
+      pageSize,
+      studentId: studentId.value ?? undefined,
+      keyword: keyword.value.trim() || undefined,
+      topic: topic.value || undefined,
+      domain: domain.value || undefined,
+    }),
+    platformApi.students(classId),
+    getQuestionMap(classId, {
+      studentId: studentId.value ?? undefined,
+      topic: topic.value || undefined,
+      domain: domain.value || undefined,
+    }),
+  ])
+  if (listResult.status === 'fulfilled') {
+    items.value = listResult.value.items
+    total.value = listResult.value.total
+  } else {
+    error.value = apiErrorMessage(listResult.reason, '班级问题记录加载失败。')
   }
+  if (studentResult.status === 'fulfilled') {
+    students.value = studentResult.value.data.items
+  }
+  if (mapResult.status === 'fulfilled') {
+    questionMap.value = mapResult.value
+  } else {
+    questionMap.value = null
+    mapError.value = apiErrorMessage(mapResult.reason, '问题地图暂时无法加载。')
+  }
+  loading.value = false
+  mapLoading.value = false
 }
 
 function applyFilter() {
@@ -146,7 +156,16 @@ onMounted(load)
         </div>
       </div>
 
-      <section v-if="questionMap" class="map-panel">
+      <section class="map-panel">
+        <div v-if="mapLoading" class="map-state">问题地图加载中…</div>
+        <div v-else-if="mapError" class="map-state bad">
+          {{ mapError }}
+          <button class="ghost" type="button" @click="load">重试问题地图</button>
+        </div>
+        <div v-else-if="!questionMap || questionMap.summary.total === 0" class="map-state muted">
+          当前筛选条件下暂无问题地图数据。记录课堂问题后，这里会展示主题、领域和频率分布。
+        </div>
+        <template v-else>
         <header class="map-head">
           <div>
             <p class="eyebrow">兴趣洞察</p>
@@ -204,6 +223,7 @@ onMounted(load)
             </article>
           </div>
         </section>
+        </template>
       </section>
     </div>
   </ClassWorkspaceLayout>
@@ -255,6 +275,7 @@ onMounted(load)
 .question-meta small { color: #9a7e6e; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 18px; color: #9a7e6e; font-size: 13px; }
 .map-panel { margin-top: 20px; padding: 22px; border: 1px solid #eadbc9; border-radius: 18px; background: linear-gradient(135deg, #fffdf9, #f7fbf2); box-shadow: 0 10px 28px #6e8b5b12; }
+.map-state { display: grid; justify-items: center; gap: 12px; min-height: 110px; place-content: center; text-align: center; line-height: 1.7; }
 .map-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .map-head h2 { margin: 0; color: #60483e; font-size: 28px; }
 .safety-note { max-width: 520px; margin: 0; color: #718064; line-height: 1.6; }

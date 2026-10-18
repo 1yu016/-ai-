@@ -62,6 +62,8 @@ let rewardTimer: number | null = null
 let lastRewardRecordId: number | null = null
 const artworkPresentation = ref<{ id: number; imageUrl: string; comment: string } | null>(null)
 let artworkObjectUrl: string | null = null
+let artworkTimer: number | null = null
+let dismissedArtworkId: number | null = null
 let lastSpokenSnapshot = ''
 
 const deviceId = computed(() => {
@@ -124,6 +126,8 @@ async function hydratePlayer(state: ClassroomScreenState) {
 }
 
 function clearArtworkPresentation() {
+  if (artworkTimer !== null) window.clearTimeout(artworkTimer)
+  artworkTimer = null
   if (artworkObjectUrl) URL.revokeObjectURL(artworkObjectUrl)
   artworkObjectUrl = null
   artworkPresentation.value = null
@@ -135,14 +139,29 @@ async function hydrateArtwork(state: ClassroomScreenState) {
   const fileUrl = typeof snapshot?.artworkFileUrl === 'string' ? snapshot.artworkFileUrl : ''
   const comment = typeof snapshot?.artworkComment === 'string' ? snapshot.artworkComment : ''
   if (!Number.isInteger(artworkId) || artworkId <= 0 || !fileUrl || !comment) {
+    dismissedArtworkId = null
     clearArtworkPresentation()
     return
   }
+  if (dismissedArtworkId === artworkId) return
+  if (dismissedArtworkId !== artworkId) dismissedArtworkId = null
   if (artworkPresentation.value?.id !== artworkId) {
-    const { data } = await http.get<Blob>(fileUrl, { responseType: 'blob' })
-    clearArtworkPresentation()
-    artworkObjectUrl = URL.createObjectURL(data)
-    artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
+    try {
+      const { data } = await http.get<Blob>(fileUrl, { responseType: 'blob' })
+      clearArtworkPresentation()
+      artworkObjectUrl = URL.createObjectURL(data)
+      artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
+      // 大屏展示是一次性课堂插播；展示完成后关闭覆盖层并停止其语音，回到原课堂画面。
+      artworkTimer = window.setTimeout(() => {
+        dismissedArtworkId = artworkId
+        artworkTimer = null
+        clearArtworkPresentation()
+        stopBrowserSpeech()
+      }, 7000)
+    } catch (error) {
+      clearArtworkPresentation()
+      loadError.value = apiErrorMessage(error, '作品展示加载失败，课堂仍可继续。')
+    }
   }
   const speechKey = `${snapshot?.updatedAt || ''}:${snapshot?.ttsText || ''}`
   if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot) {

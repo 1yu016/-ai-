@@ -121,4 +121,28 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     expect(wrapper.text()).toContain('教师正式总结')
     expect(wrapper.text()).toContain('已确认')
   })
+
+  it('时间线支持按来源分类和分页，不串联服务端事件', async () => {
+    const items = Array.from({ length: 13 }, (_, index) => ({
+      key: `event:${index}`,
+      type: index === 12 ? 'ai_director_suggestion' : 'step_change',
+      title: index === 12 ? 'AI建议' : `步骤 ${index + 1}`,
+      description: '课堂事件',
+      occurredAt: `2026-10-07T01:${String(index).padStart(2, '0')}:00.000Z`,
+      source: index === 12 ? 'ai_director' : 'classroom_event',
+    }))
+    vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({
+      run: { id: 9, title: '星星探索课', status: 'completed', startedAt: null, endedAt: null },
+      items,
+    })
+    vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: { ...draft }, formalSummary: null })
+    vi.spyOn(records, 'ensureClassroomSummaryDraft').mockResolvedValue({ ...draft })
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(wrapper.text()).toContain('第 1 / 2 页')
+    const aiFilter = wrapper.findAll('.timeline-filters button').find((button) => button.text() === 'AI建议与决策')
+    await aiFilter!.trigger('click')
+    expect(wrapper.text()).toContain('AI建议')
+    expect(wrapper.text()).not.toContain('步骤 1')
+  })
 })

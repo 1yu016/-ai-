@@ -25,6 +25,7 @@ export type MobileJoinResult = {
 export type MobileClassroomState = {
   controlActive: boolean
   serverNow: string
+  resumeCursor?: string | null
   session: { id: string; expiresAt: string; lastHeartbeatAt: string | null }
   classroom: ClassroomRunPayload & {
     timing?: { elapsedSeconds?: number }
@@ -63,6 +64,19 @@ export type MobileClassroomState = {
   interaction: Record<string, unknown>
 }
 
+export type MobileCommandExecutionStatus = 'queued' | 'sending' | 'received' | 'executed' | 'failed' | 'expired'
+export type MobileCommandResponse = {
+  commandId?: string
+  requestId?: string
+  executionStatus?: MobileCommandExecutionStatus
+  errorCode?: string | null
+  expiresAt?: string | null
+  resumeCursor?: string | null
+  deliveryStatus?: 'confirmed' | 'received' | 'failed'
+  confirmedAt?: string
+  result?: { classroomState?: ClassroomRunPayload }
+}
+
 function sessionHeaders(token: string) {
   return { [CLASSROOM_CONTROL_SESSION_HEADER]: token }
 }
@@ -93,11 +107,7 @@ export const classroomMobileApi = {
       ttlMs: number
       parameters?: Record<string, unknown>
     },
-  ) => http.post<{
-    deliveryStatus: 'confirmed'
-    confirmedAt: string
-    result: { classroomState: ClassroomRunPayload }
-  }>('/classroom-mobile/commands', data, { headers: sessionHeaders(token) }),
+  ) => http.post<MobileCommandResponse>('/classroom-mobile/commands', data, { headers: sessionHeaders(token) }),
 }
 
 export function apiUrl(path: string): string {
