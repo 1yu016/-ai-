@@ -91,6 +91,10 @@ export class StartClassroomBreakDto extends ClassroomRunOperationDto {
 export class EndClassroomBreakDto extends ClassroomRunOperationDto {}
 
 export class ClassroomCheckpointDto extends ClassroomRunOperationDto {
+  // Public HTTP: playerState is an observation envelope only. The server
+  // extracts finite timing/page fields and bounded status/error codes after
+  // matching presentationCommandId AND presentationRevision. Other state
+  // objects remain accepted for old clients, but cannot grant write ownership.
   @IsEnum(ClassroomCheckpointType) checkpointType: ClassroomCheckpointType;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) resourceId?: number;
   @IsOptional() @IsObject() attendanceState?: Record<string, unknown>;
@@ -102,6 +106,7 @@ export class ClassroomCheckpointDto extends ClassroomRunOperationDto {
 
 /** Stage 7.3：给某幼儿发一朵（或几朵）小红花。 */
 export class CreateClassroomRewardDto extends RequestIdDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) version?: number;
   @Type(() => Number) @IsInt() @Min(1) studentId: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(5) stars?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(20) points?: number;
@@ -121,6 +126,7 @@ export class CreateGrowthGoalDto extends RequestIdDto {
 }
 
 export class CreateCollectiveRewardDto extends RequestIdDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) version?: number;
   @IsEnum(RewardCategory) rewardCategory: RewardCategory;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) points: number;
   @IsString() @MinLength(1) @MaxLength(200) reason: string;
@@ -128,5 +134,6 @@ export class CreateCollectiveRewardDto extends RequestIdDto {
 }
 
 export class RevokeRewardDto extends RequestIdDto {
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) version?: number;
   @IsString() @MinLength(1) @MaxLength(200) reason: string;
 }

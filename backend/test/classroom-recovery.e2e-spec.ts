@@ -1,4 +1,7 @@
+import { enterTeachingFixture } from './helpers/teaching-phase-fixture';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ClassroomSnapshotService } from '../src/classroom-runs/classroom-snapshot.service';
+import { ClassroomSnapshotReason } from '../src/classroom-runs/classroom-run.types';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { Test } from '@nestjs/testing';
@@ -86,6 +89,7 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
               TEST_TEACHER_NAME: '恢复测试教师',
               ARK_API_KEY: 'snapshot-test-key',
               ARK_ENDPOINT_ID: 'snapshot-test-model',
+              CLASSROOM_SUMMARY_AI_ENABLED: 'false',
             }),
           ],
         }),
@@ -310,13 +314,17 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
         deviceId,
         requestId: requestId('start'),
       })
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     runId = started.body.id as number;
     expect(started.body.version).toBe(1);
     const runs = app.get<Repository<ClassroomRun>>(
       getRepositoryToken(ClassroomRun),
     );
     await runs.update(runId, { resumedAt: new Date(Date.now() - 5000) });
+    await app.get(ClassroomSnapshotService).capture(runId, ClassroomSnapshotReason.Timed, false, {
+      playerState: { resourceId, presentationCommandId: 'recovery-resource', presentationMode: 'resource', autoPlay: false },
+      interactionState: { question: 'checkpoint interaction' },
+    });
     const checkpoint = await request(app.getHttpServer())
       .post(`/classroom-runs/${runId}/checkpoints`)
       .set(auth())
@@ -326,7 +334,7 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
         requestId: requestId('resource-complete'),
         checkpointType: 'resource_completed',
         resourceId,
-        playerState: { resourceId, positionSeconds: 60, completed: true },
+        playerState: { resourceId, presentationCommandId: 'recovery-resource', presentationRevision: 1, currentTime: 60, completed: true },
         interactionState: {
           question: 'checkpoint interaction',
           screenLifecycle: { phase: 'client-forged', revision: 999 },
@@ -335,9 +343,9 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
       .expect(201);
     expect(checkpoint.body.playedResourceIds).toContain(resourceId);
     expect(checkpoint.body.playerRecoverySuggestion.autoPlay).toBe(false);
-    expect(checkpoint.body.latestSnapshotVersion).toBe(2);
+    expect(checkpoint.body.latestSnapshotVersion).toBe(4);
     expect(checkpoint.body.interactionState.question).toBe('checkpoint interaction');
-    expect(checkpoint.body.interactionState.screenLifecycle).toMatchObject({ phase: 'opening', revision: 1, runId });
+    expect(checkpoint.body.interactionState.screenLifecycle).toMatchObject({ phase: 'teaching', revision: 2, runId });
 
     await app.close();
     app = await createApp();
@@ -354,7 +362,7 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
       .expect(200);
     expect(restored.body).toMatchObject({
       status: 'running',
-      latestSnapshotVersion: 2,
+      latestSnapshotVersion: 4,
       manualInterventionRequired: false,
     });
     expect(restored.body.playedResourceIds).toContain(resourceId);
@@ -376,7 +384,7 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
       .get(`/classroom-runs/${runId}/restore?deviceId=${deviceId}`)
       .set(auth())
       .expect(200);
-    expect(fallback.body.latestSnapshotVersion).toBe(1);
+    expect(fallback.body.latestSnapshotVersion).toBe(3);
     const recoverRequestId = requestId('recover');
     const recovered = await request(app.getHttpServer())
       .post(`/classroom-runs/${runId}/recover`)
@@ -385,7 +393,7 @@ describe('Task five classroom snapshot and recovery (e2e)', () => {
       .expect(201);
     expect(recovered.body).toMatchObject({
       status: 'running',
-      latestSnapshotVersion: 3,
+      latestSnapshotVersion: 5,
       version: 3,
     });
     const repeated = await request(app.getHttpServer())

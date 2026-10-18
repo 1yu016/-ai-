@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import { TeacherRole } from '../auth/entities/teacher.entity';
@@ -48,35 +48,39 @@ export class PlatformAccessService {
   async requireClassAccess(
     actor: JwtTeacherPayload,
     classId: number,
+    manager?: EntityManager,
+    options: { readOnly?: boolean } = {},
   ): Promise<SchoolClass> {
-    const schoolClass = await this.classes.findOne({ where: { id: classId } });
+    const classes = manager ? manager.getRepository(SchoolClass) : this.classes;
+    const relations = manager ? manager.getRepository(TeacherClass) : this.teacherClasses;
+    const schoolClass = await classes.findOne({ where: { id: classId } });
     if (!schoolClass) throw new NotFoundException('班级不存在');
     if (
       actor.schoolId &&
       schoolClass.schoolId &&
       actor.schoolId !== schoolClass.schoolId
     ) {
-      await this.audit.write(actor, {
+      if (!options.readOnly) await this.audit.write(actor, {
         action: 'permission.denied',
         targetType: 'class',
         targetId: classId,
         result: AuditResult.Failure,
         metadata: { reason: 'cross_school' },
-      });
+      }, manager);
       throw new ForbiddenException('无权访问其他园所数据');
     }
     if (this.isAdministrator(actor)) return schoolClass;
-    const relation = await this.teacherClasses.findOne({
+    const relation = await relations.findOne({
       where: { teacherId: actor.sub, classId },
     });
     if (!relation) {
-      await this.audit.write(actor, {
+      if (!options.readOnly) await this.audit.write(actor, {
         action: 'permission.denied',
         targetType: 'class',
         targetId: classId,
         result: AuditResult.Failure,
         metadata: { reason: 'teacher_class_missing' },
-      });
+      }, manager);
       throw new ForbiddenException('无权访问该班级');
     }
     return schoolClass;

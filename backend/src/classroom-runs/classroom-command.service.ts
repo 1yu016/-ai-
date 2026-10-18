@@ -34,8 +34,6 @@ import { ClassroomSnapshotService } from './classroom-snapshot.service';
 import {
   ClassroomBreakContentType,
   ClassroomCheckpointType,
-  ClassroomEventResult,
-  ClassroomEventType,
   TERMINAL_CLASSROOM_RUN_STATUSES,
 } from './classroom-run.types';
 import { ClassroomRunService } from './classroom-run.service';
@@ -43,6 +41,7 @@ import { ExecuteClassroomCommandDto } from './dto/classroom-command.dto';
 import { ClassroomCommandRecord } from './entities/classroom-command-record.entity';
 import { ClassroomRun } from './entities/classroom-run.entity';
 import { StudentRewardService } from './student-reward.service';
+import { ClassroomRollCallService, type RollCallInput } from './classroom-roll-call.service';
 import { AttendanceService } from './attendance.service';
 import {
   AttendanceChangeSource,
@@ -54,10 +53,10 @@ import {
   ClassroomRollCallRecord,
   RollCallMode,
 } from './entities/classroom-roll-call-record.entity';
-import { ClassroomEvent } from './entities/classroom-event.entity';
 import { StudentArtworkRecord } from '../artworks/entities/student-artwork-record.entity';
 import { AuditService } from '../platform/audit.service';
 import { AuditResult } from '../platform/platform.types';
+import { commandPolicyOperation } from './classroom-operation-policy';
 
 type CommandRunState = ClassroomRun & {
   steps?: Array<{ stepIndex: number }>;
@@ -79,8 +78,6 @@ export class ClassroomCommandService {
     @InjectRepository(Student) private readonly students: Repository<Student>,
     @InjectRepository(ClassroomRollCallRecord)
     private readonly rollCalls: Repository<ClassroomRollCallRecord>,
-    @InjectRepository(ClassroomEvent)
-    private readonly events: Repository<ClassroomEvent>,
     @InjectRepository(StudentArtworkRecord)
     private readonly artworks: Repository<StudentArtworkRecord>,
     private readonly runs: ClassroomRunService,
@@ -88,6 +85,7 @@ export class ClassroomCommandService {
     private readonly rewards: StudentRewardService,
     private readonly resources: ResourceService,
     private readonly attendance: AttendanceService,
+    private readonly rollCallService: ClassroomRollCallService,
     private readonly audit: AuditService,
   ) {}
 
@@ -137,7 +135,14 @@ export class ClassroomCommandService {
     const existing = await this.commands.findOne({
       where: { requestId: dto.requestId },
     });
-    if (existing) return this.replay(existing, requestHash, actor);
+    if (existing) {
+      if ([ClassroomCommandOperation.RewardStudent, ClassroomCommandOperation.RevokeReward].includes(existing.operation))
+        await this.rewards.assertRewardReceiptAccess(actor, existing.classroomRunId);
+      if (existing.operation === ClassroomCommandOperation.AttendanceUpdate)
+        await this.attendance.assertReceiptAccess(actor, existing.classroomRunId);
+      if (this.isRollCall(existing.operation)) await this.rollCallService.assertReceiptAccess(actor, existing.classroomRunId);
+      return this.replay(existing, this.compatibleDomainHash(existing, dto, requestHash), actor, dto);
+    }
 
     this.assertFreshMobileCommand(dto);
 
@@ -169,7 +174,12 @@ export class ClassroomCommandService {
         where: { requestId: dto.requestId },
       });
       if (!raced) throw error;
-      return this.replay(raced, requestHash, actor);
+      if ([ClassroomCommandOperation.RewardStudent, ClassroomCommandOperation.RevokeReward].includes(raced.operation))
+        await this.rewards.assertRewardReceiptAccess(actor, raced.classroomRunId);
+      if (raced.operation === ClassroomCommandOperation.AttendanceUpdate)
+        await this.attendance.assertReceiptAccess(actor, raced.classroomRunId);
+      if (this.isRollCall(raced.operation)) await this.rollCallService.assertReceiptAccess(actor, raced.classroomRunId);
+      return this.replay(raced, this.compatibleDomainHash(raced, dto, requestHash), actor, dto);
     }
 
     try {
@@ -267,6 +277,8 @@ export class ClassroomCommandService {
     run: CommandRunState,
     dto: ExecuteClassroomCommandDto,
   ): Promise<unknown> {
+    const operation = commandPolicyOperation(dto.operation);
+    if (operation) await this.runs.assertOperation(actor, run.id, operation);
     const parameters = dto.parameters ?? {};
     const legacy = {
       requestId: dto.requestId,
@@ -378,7 +390,7 @@ export class ClassroomCommandService {
     const previous = latest?.interactionState ?? {};
     const queues = previous.presentationQueues && typeof previous.presentationQueues === 'object'
       ? previous.presentationQueues as JsonMap : {};
-    await this.runs.checkpoint(actor, run.id, {
+    await this.runs.checkpointControl(actor, run.id, {
       requestId: dto.requestId, version: dto.expectedVersion, deviceId: run.deviceId,
       checkpointType: ClassroomCheckpointType.Command,
       interactionState: { ...previous, presentationQueues: { ...queues, [String(stepIndex)]: items } },
@@ -399,7 +411,7 @@ export class ClassroomCommandService {
       status: 'stopped', operation: dto.operation, presentationCommandId: dto.requestId,
       presentationItemId: this.optionalString(parameters, 'presentationItemId', 100) ?? null, updatedAt: new Date().toISOString() };
     // Keep the last resource and page as a return point; mode selects what is shown.
-    await this.runs.checkpoint(actor, run.id, {
+    await this.runs.checkpointControl(actor, run.id, {
       requestId: dto.requestId, version: dto.expectedVersion, deviceId: run.deviceId,
       checkpointType: ClassroomCheckpointType.Command, playerState,
     });
@@ -412,44 +424,26 @@ export class ClassroomCommandService {
     dto: ExecuteClassroomCommandDto,
     parameters: JsonMap,
   ) {
-    const sourceValue = this.optionalString(parameters, 'attendanceSource', 32);
-    const source = sourceValue === AttendanceChangeSource.VoiceConfirmed
-      ? AttendanceChangeSource.VoiceConfirmed
-      : sourceValue === AttendanceChangeSource.Batch
-        ? AttendanceChangeSource.Batch
-        : AttendanceChangeSource.Manual;
-    const rawUpdates = Array.isArray(parameters.updates)
-      ? parameters.updates
-      : [{ studentId: parameters.studentId, status: parameters.status }];
-    const updates = rawUpdates.map((raw) => {
-      if (!raw || typeof raw !== 'object')
-        throw new BadRequestException('考勤记录格式无效');
-      const value = raw as JsonMap;
-      const studentId = this.int(value, 'studentId', 1);
-      const status = this.string(value, 'status') as AttendanceStatus;
-      if (!Object.values(AttendanceStatus).includes(status))
-        throw new BadRequestException('考勤状态仅支持 present、absent、late 或 leave');
-      return { studentId, status };
+    const payload = this.attendancePayload(parameters);
+    return this.attendance.apply(actor, run, dto.requestId, payload.updates, payload.source, {
+      expectedVersion: dto.expectedVersion, mode: payload.mode, confirmed: payload.confirmed,
     });
-    const formal = await this.attendance.apply(actor, run, dto.requestId, updates, source);
-    await this.runs.checkpoint(actor, run.id, {
-      requestId: dto.requestId,
-      version: dto.expectedVersion,
-      deviceId: run.deviceId,
-      checkpointType: ClassroomCheckpointType.RollCall,
-      attendanceState: formal.attendanceState,
+  }
+
+  private attendancePayload(parameters: JsonMap) {
+    const source = (parameters.attendanceSource ?? AttendanceChangeSource.Manual) as AttendanceChangeSource;
+    const batch = Array.isArray(parameters.updates);
+    if (parameters.updates !== undefined && !batch) throw new BadRequestException('考勤记录格式无效');
+    const raw = batch ? parameters.updates as unknown[] : [parameters];
+    const updates = raw.map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new BadRequestException('考勤记录格式无效');
+      const value = item as JsonMap;
+      return { studentId: this.int(value, 'studentId', 1), status: value.status as AttendanceStatus,
+        note: value.note as string | null | undefined };
     });
-    await this.events.save(this.events.create({
-      classroomRunId: run.id,
-      eventType: ClassroomEventType.Attendance,
-      requestId: `${dto.requestId}:attendance`,
-      operatorType: actor.userType,
-      operatorId: actor.sub,
-      deviceId: run.deviceId,
-      payload: JSON.stringify({ updates, source }),
-      result: ClassroomEventResult.Success,
-    }));
-    return { updates, ...formal };
+    return this.attendance.normalize(updates, source, {
+      mode: batch ? 'batch' : 'single', confirmed: parameters.confirmed as boolean | undefined,
+    });
   }
 
   private async rollCall(
@@ -458,104 +452,19 @@ export class ClassroomCommandService {
     dto: ExecuteClassroomCommandDto,
     parameters: JsonMap,
   ) {
-    const all = await this.students.find({
-      where: { classId: run.classId, status: RecordStatus.Active },
-      order: { id: 'ASC' },
-    });
-    if (!all.length) throw new ConflictException('当前班级没有可点名幼儿');
-    const excluded = await this.attendance.excludedStudentIds(run.id);
-    let candidates = all.filter((student) => !excluded.has(student.id));
-    if (!candidates.length) throw new ConflictException('当前没有可点名的出勤幼儿');
-    if (dto.operation === ClassroomCommandOperation.SpecifiedRollCall) {
-      const student = parameters.studentId == null
-        ? await this.requireStudentByName(run, this.string(parameters, 'studentName'))
-        : await this.requireStudent(run, this.int(parameters, 'studentId', 1));
-      if (excluded.has(student.id))
-        throw new ConflictException('缺勤或请假幼儿不能被点名');
-      candidates = [student];
-    }
-    if (dto.operation === ClassroomCommandOperation.GroupRollCall) {
-      const ids = this.intArray(parameters, 'studentIds');
-      if (!ids.length) throw new BadRequestException('分组点名必须提供 studentIds');
-      const allowed = new Set(ids);
-      const classMembers = all.filter((student) => allowed.has(student.id));
-      if (classMembers.length !== allowed.size)
-        throw new ForbiddenException('分组中包含本课堂之外的幼儿');
-      candidates = classMembers.filter((student) => !excluded.has(student.id));
-      if (!candidates.length) throw new ConflictException('该分组没有可点名的出勤幼儿');
-    }
+    return this.rollCallService.execute(actor, run.id, dto.requestId,
+      this.rollCallPayload(dto.operation, parameters), dto.expectedVersion);
+  }
 
-    const latest = await this.snapshots.loadLatestValid(run.id);
-    const previous = latest?.rollCallState ?? {};
-    const history = await this.rollCalls.find({
-      where: { classroomRunId: run.id },
-      order: { createdAt: 'DESC', id: 'DESC' },
-      take: 50,
-    });
-    const counts = history.length
-      ? history.reduce<Record<number, number>>((map, item) => {
-          map[item.studentId] = (map[item.studentId] ?? 0) + 1;
-          return map;
-        }, {})
-      : this.numericMap(previous.counts);
-    const recent = history.length
-      ? history.slice(0, 5).map((item) => item.studentId)
-      : Array.isArray(previous.recentStudentIds)
-        ? previous.recentStudentIds.filter((id): id is number => Number.isInteger(id))
-        : [];
-    const minCount = Math.min(...candidates.map((student) => counts[student.id] ?? 0));
-    const fairPool = candidates.filter(
-      (student) => (counts[student.id] ?? 0) === minCount,
-    );
-    const withoutLatest = fairPool.filter((student) => student.id !== recent[0]);
-    const pool = withoutLatest.length ? withoutLatest : fairPool;
-    const selected = pool[Math.floor(Math.random() * pool.length)]!;
-    counts[selected.id] = (counts[selected.id] ?? 0) + 1;
-    const rollCallState = {
-      counts,
-      recentStudentIds: [selected.id, ...recent.filter((id) => id !== selected.id)].slice(0, 5),
-      lastStudentId: selected.id,
-      lastStudentDisplayName: selected.nickname || selected.name,
-      lastOperation: dto.operation,
-      updatedAt: new Date().toISOString(),
-    };
-    await this.runs.checkpoint(actor, run.id, {
-      requestId: dto.requestId,
-      version: dto.expectedVersion,
-      deviceId: run.deviceId,
-      checkpointType: ClassroomCheckpointType.RollCall,
-      rollCallState,
-    });
-    const mode = dto.operation === ClassroomCommandOperation.SpecifiedRollCall
-      ? RollCallMode.Specified
-      : dto.operation === ClassroomCommandOperation.GroupRollCall
-        ? RollCallMode.GroupRandom
-        : RollCallMode.Random;
-    const formalRecord = await this.rollCalls.save(this.rollCalls.create({
-      requestId: dto.requestId,
-      classroomRunId: run.id,
-      classId: run.classId,
-      studentId: selected.id,
-      teacherId: actor.sub,
-      mode,
-      groupKey: this.optionalString(parameters, 'groupKey', 100) ?? null,
-      eligibleCount: candidates.length,
-    }));
-    await this.events.save(this.events.create({
-      classroomRunId: run.id,
-      eventType: ClassroomEventType.RollCall,
-      requestId: `${dto.requestId}:roll-call`,
-      operatorType: actor.userType,
-      operatorId: actor.sub,
-      deviceId: run.deviceId,
-      payload: JSON.stringify({ recordId: formalRecord.id, studentId: selected.id, mode }),
-      result: ClassroomEventResult.Success,
-    }));
-    return {
-      recordId: formalRecord.id,
-      student: { id: selected.id, displayName: selected.nickname || selected.name },
-      rollCallState,
-    };
+  private isRollCall(operation: ClassroomCommandOperation) {
+    return [ClassroomCommandOperation.RandomRollCall, ClassroomCommandOperation.SpecifiedRollCall,
+      ClassroomCommandOperation.GroupRollCall].includes(operation);
+  }
+
+  private rollCallPayload(operation: ClassroomCommandOperation, parameters: JsonMap) {
+    const mode = operation === ClassroomCommandOperation.SpecifiedRollCall ? RollCallMode.Specified
+      : operation === ClassroomCommandOperation.GroupRollCall ? RollCallMode.GroupRandom : RollCallMode.Random;
+    return this.rollCallService.normalize({ ...parameters, mode } as RollCallInput);
   }
 
   private async rewardStudent(
@@ -568,13 +477,18 @@ export class ClassroomCommandService {
       ? await this.requireStudentByName(run, this.string(parameters, 'studentName'))
       : await this.requireStudent(run, this.int(parameters, 'studentId', 1));
     const studentId = student.id;
-    const stars = this.optionalInt(parameters, 'stars', 1, 5) ?? 1;
-    const reason = this.optionalString(parameters, 'reason', 200);
     const reward = await this.rewards.createReward(actor, run.id, {
-      requestId: dto.requestId,
+      ...this.rewardInput(dto, parameters),
       studentId,
-      stars,
-      reason,
+    });
+    return reward;
+  }
+
+  private rewardInput(dto: ExecuteClassroomCommandDto, parameters: JsonMap) {
+    return {
+      version: dto.expectedVersion, requestId: dto.requestId,
+      stars: this.optionalInt(parameters, 'stars', 1, 5) ?? 1,
+      reason: this.optionalString(parameters, 'reason', 200),
       points: this.optionalInt(parameters, 'points', 0, 20),
       rewardCategory: this.optionalString(parameters, 'rewardCategory', 32) as never,
       rewardForms: Array.isArray(parameters.rewardForms) ? parameters.rewardForms as never : undefined,
@@ -583,15 +497,7 @@ export class ClassroomCommandService {
       praiseText: this.optionalString(parameters, 'praiseText', 120),
       teacherConfirmedPraise: parameters.teacherConfirmedPraise === true,
       animationKey: this.optionalString(parameters, 'animationKey', 32),
-    });
-    await this.runs.checkpoint(actor, run.id, {
-      requestId: `${dto.requestId}:state`,
-      version: dto.expectedVersion,
-      deviceId: run.deviceId,
-      checkpointType: ClassroomCheckpointType.Reward,
-      rewardState: reward.rewardState,
-    });
-    return reward;
+    };
   }
 
   private async revokeReward(
@@ -606,14 +512,8 @@ export class ClassroomCommandService {
       this.int(parameters, 'rewardRecordId', 1),
       dto.requestId,
       this.optionalString(parameters, 'reason', 200),
+      dto.expectedVersion,
     );
-    await this.runs.checkpoint(actor, run.id, {
-      requestId: `${dto.requestId}:state`,
-      version: dto.expectedVersion,
-      deviceId: run.deviceId,
-      checkpointType: ClassroomCheckpointType.Reward,
-      rewardState: reward.rewardState,
-    });
     return reward;
   }
 
@@ -697,7 +597,7 @@ export class ClassroomCommandService {
     playerState.operation = dto.operation;
     playerState.targetDeviceId = dto.targetDeviceId;
     playerState.updatedAt = new Date().toISOString();
-    await this.runs.checkpoint(actor, run.id, {
+    await this.runs.checkpointControl(actor, run.id, {
       requestId: dto.requestId,
       version: dto.expectedVersion,
       deviceId: run.deviceId,
@@ -841,11 +741,12 @@ export class ClassroomCommandService {
     return { statusCode, message, body };
   }
 
-  private replay(
+  private async replay(
     record: ClassroomCommandRecord,
     requestHash: string,
     actor: JwtTeacherPayload,
-  ): unknown {
+    dto: ExecuteClassroomCommandDto,
+  ): Promise<unknown> {
     if (
       record.operatorType !== actor.userType ||
       record.operatorId !== actor.sub
@@ -853,6 +754,10 @@ export class ClassroomCommandService {
       throw new ConflictException('该 requestId 已被其他操作者使用');
     if (record.requestHash !== requestHash)
       throw new ConflictException('同一 requestId 已用于不同的课堂指令');
+    if (record.status !== ClassroomCommandStatus.Success) {
+      const recovered = await this.recoverCommittedBusiness(actor, record, dto);
+      if (recovered) return recovered;
+    }
     if (record.status === ClassroomCommandStatus.Processing)
       throw new ConflictException('该课堂指令正在处理中，请稍后查询结果');
     const payload = this.parseJson(record.responsePayload) ?? {
@@ -861,6 +766,43 @@ export class ClassroomCommandService {
     };
     if (record.status === ClassroomCommandStatus.Success) return payload;
     throw new HttpException(payload, record.httpStatus ?? 500);
+  }
+
+  /** Read-only reconciliation. Never execute a command or mutate a durable receipt. */
+  private async recoverCommittedBusiness(actor: JwtTeacherPayload, record: ClassroomCommandRecord,
+    dto: ExecuteClassroomCommandDto) {
+    const parameters = dto.parameters ?? {};
+    let receipt;
+    if (record.operation === ClassroomCommandOperation.RewardStudent) {
+      receipt = await this.rewards.readCommandReceipt(actor, record.classroomRunId, record.requestId, {
+        ...this.rewardInput(dto, parameters),
+        studentId: parameters.studentId == null ? undefined : this.int(parameters, 'studentId', 1),
+      });
+    } else if (record.operation === ClassroomCommandOperation.RevokeReward) {
+      receipt = await this.rewards.readRevokeCommandReceipt(actor, record.classroomRunId, record.requestId,
+        this.int(parameters, 'rewardRecordId', 1), this.optionalString(parameters, 'reason', 200));
+    } else if (record.operation === ClassroomCommandOperation.AttendanceUpdate) {
+      const payload = this.attendancePayload(parameters);
+      receipt = await this.attendance.readCommandReceipt(actor, record.classroomRunId, record.requestId,
+        payload.updates, payload.source, { mode: payload.mode, confirmed: payload.confirmed });
+    } else if (this.isRollCall(record.operation)) {
+      receipt = await this.rollCallService.readCommandReceipt(actor, record.classroomRunId, record.requestId,
+        this.rollCallPayload(record.operation, parameters));
+    }
+    if (!receipt) return null;
+    // Canonical digests intentionally exclude transport expectedVersion: an already
+    // committed request remains replayable after the Run advances or terminates.
+    // Run.get() can settle a timed break. Use a plain read, never synthesize the lost original response.
+    const currentClassroomState = await this.commands.manager.getRepository(ClassroomRun)
+      .findOneBy({ id: record.classroomRunId });
+    return {
+      requestId: record.requestId, runId: record.classroomRunId, operation: record.operation,
+      source: record.source, targetDeviceId: record.targetDeviceId,
+      status: ClassroomCommandStatus.Success, result: receipt.result,
+      classroomState: null, currentClassroomState,
+      recovery: { source: 'canonical_business_receipt', contractVersion: 1,
+        committedRunVersion: receipt.committedRunVersion, refreshRequired: true },
+    };
   }
 
   private recordView(record: ClassroomCommandRecord) {
@@ -873,8 +815,19 @@ export class ClassroomCommandService {
 
   private requestHash(dto: ExecuteClassroomCommandDto) {
     return createHash('sha256')
-      .update(this.stableJson(dto))
+      .update(this.stableJson(dto.operation === ClassroomCommandOperation.AttendanceUpdate
+        ? { ...dto, parameters: this.attendancePayload(dto.parameters ?? {}) }
+        : this.isRollCall(dto.operation) ? { ...dto, parameters: this.rollCallPayload(dto.operation, dto.parameters ?? {}) } : dto))
       .digest('hex');
+  }
+
+  private compatibleDomainHash(record: ClassroomCommandRecord, dto: ExecuteClassroomCommandDto, current: string) {
+    // Pre-3C transport receipts used the unnormalised envelope. Exact retries may
+    // replay them, but never synthesize a canonical receipt or execute again.
+    if ((record.operation === ClassroomCommandOperation.AttendanceUpdate || this.isRollCall(record.operation)) &&
+        record.requestHash === createHash('sha256').update(this.stableJson(dto)).digest('hex'))
+      return record.requestHash;
+    return current;
   }
 
   private parametersSummary(parameters?: JsonMap) {

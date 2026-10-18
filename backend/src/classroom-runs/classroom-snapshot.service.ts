@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomUUID } from 'node:crypto';
@@ -14,6 +14,9 @@ import {
 import { ClassroomEvent } from './entities/classroom-event.entity';
 import { ClassroomRun } from './entities/classroom-run.entity';
 import { ClassroomSnapshot } from './entities/classroom-snapshot.entity';
+import { applyPresentationControl, mergePresentationObservation, readablePresentation } from './presentation-ownership';
+import { readBusinessProjection, type BusinessDomain } from './canonical-business-projection';
+import { serializeDatabaseWrite } from '../platform/database-write-coordinator';
 
 const RECENT_SNAPSHOT_LIMIT = 20;
 const TOTAL_SNAPSHOT_LIMIT = 50;
@@ -28,6 +31,7 @@ export type ClassroomSnapshotPatch = {
   rewardState?: JsonMap;
   interactionState?: JsonMap;
   playerState?: JsonMap;
+  playerObservation?: JsonMap;
 };
 
 export type ValidClassroomSnapshot = {
@@ -44,7 +48,7 @@ export type ValidClassroomSnapshot = {
 export class ClassroomSnapshotService {
   private readonly logger = new Logger(ClassroomSnapshotService.name);
   private lifecycleWriterClaimed = false;
-  private snapshotWriteTail: Promise<void> = Promise.resolve();
+  private readonly canonicalPatches = new WeakSet<object>();
 
   /** One internal owner receives the write capability. Controllers/checkpoints
    * only have capture(), which cannot alter this namespace. */
@@ -92,6 +96,9 @@ export class ClassroomSnapshotService {
     patch: ClassroomSnapshotPatch = {},
     manager?: EntityManager,
   ): Promise<ValidClassroomSnapshot | null> {
+    if (['rewardState', 'attendanceState', 'rollCallState'].some(key => key in patch) &&
+        !(this.canonicalPatches.has(patch) && manager?.queryRunner?.isTransactionActive))
+      throw new ConflictException({ code: 'BUSINESS_PROJECTION_OWNERSHIP', message: '业务投影只能从正式记录生成' });
     // Read the protected namespace and append its successor in one transaction:
     // a concurrent ordinary checkpoint must not append stale lifecycle metadata.
     if (manager)
@@ -109,18 +116,49 @@ export class ClassroomSnapshotService {
     );
   }
 
-  private async serialSnapshotWrite<T>(work: () => Promise<T>): Promise<T> {
-    const previous = this.snapshotWriteTail;
-    let release!: () => void;
-    this.snapshotWriteTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await work();
-    } finally {
-      release();
+  /** Acquire the existing snapshot queue BEFORE opening the business transaction.
+   * Required capture with its manager never enters this queue again. */
+  transactionRequired<T>(work: (manager: EntityManager) => Promise<T>): Promise<T> {
+    return this.serialSnapshotWrite(() => this.runs.manager.transaction(work));
+  }
+
+  async captureRequired(
+    runId: number, reason: ClassroomSnapshotReason, isKey: boolean,
+    patch: ClassroomSnapshotPatch, manager: EntityManager,
+  ): Promise<ValidClassroomSnapshot> {
+    if (!manager?.queryRunner?.isTransactionActive)
+      throw new Error('Required snapshot needs the caller active transaction manager');
+    const saved = await this.capture(runId, reason, isKey, patch, manager);
+    if (!saved) throw new ConflictException('必需课堂快照保存失败');
+    return saved;
+  }
+
+  /** Internal, transaction-only: accepts no caller-supplied business state JSON. */
+  async captureBusinessRequired(runId: number, reason: ClassroomSnapshotReason, isKey: boolean,
+    domain: BusinessDomain, patch: Omit<ClassroomSnapshotPatch, 'rewardState' | 'attendanceState' | 'rollCallState'>,
+    manager: EntityManager) {
+    if (!manager?.queryRunner?.isTransactionActive) throw new Error('Canonical projection needs active caller transaction');
+    if (['rewardState', 'attendanceState', 'rollCallState'].some(key => key in patch))
+      throw new ConflictException({ code: 'BUSINESS_PROJECTION_OWNERSHIP', message: '不得提交业务状态JSON' });
+    const projected = { ...patch, ...await readBusinessProjection(manager, runId, domain) };
+    this.canonicalPatches.add(projected);
+    try { return await this.captureRequired(runId, reason, isKey, projected, manager); }
+    finally { this.canonicalPatches.delete(projected); }
+  }
+
+  async captureBestEffort(
+    runId: number, reason: ClassroomSnapshotReason, isKey: boolean,
+    patch: ClassroomSnapshotPatch = {},
+  ): Promise<ValidClassroomSnapshot | null> {
+    try { return await this.capture(runId, reason, isKey, patch); }
+    catch {
+      this.logger.warn(`课堂 ${runId} 辅助快照失败，保留课堂业务状态`);
+      return null;
     }
+  }
+
+  private async serialSnapshotWrite<T>(work: () => Promise<T>): Promise<T> {
+    return serializeDatabaseWrite(this.runs.manager.connection, work);
   }
 
   private async captureInternal(
@@ -148,10 +186,20 @@ export class ClassroomSnapshotService {
         const latestVersion = await snapshots.maximum('snapshotVersion', {
           classroomRunId,
         });
+        const playerState = patch.playerObservation
+          ? mergePresentationObservation(previous?.playerState ?? {}, patch.playerObservation)
+          : patch.playerState
+            ? applyPresentationControl(previous?.playerState ?? {}, patch.playerState, run.version)
+            : previous?.playerState ?? {};
+        const observation = playerState.observation as JsonMap | undefined;
+        const observedCompletedResource = patch.playerObservation && playerState !== previous?.playerState &&
+          playerState.presentationMode === 'resource' && observation?.completed === true && Number.isSafeInteger(playerState.resourceId)
+          ? playerState.resourceId as number : undefined;
         const playedResourceIds = Array.from(
           new Set([
             ...(previous?.playedResourceIds ?? []),
             ...(patch.playedResourceId ? [patch.playedResourceId] : []),
+            ...(observedCompletedResource ? [observedCompletedResource] : []),
           ]),
         );
         const values = {
@@ -171,7 +219,7 @@ export class ClassroomSnapshotService {
             patch.interactionState,
             lifecycle?.value,
           ),
-          playerState: patch.playerState ?? previous?.playerState ?? {},
+          playerState,
           deviceId: run.deviceId,
           avatarVersionId: run.avatarVersionId,
           avatarCharacterId: run.avatarCharacterId,
@@ -234,7 +282,7 @@ export class ClassroomSnapshotService {
         Date.now() - latest.createdAt.getTime() < PERIODIC_SNAPSHOT_MS - 1000
       )
         continue;
-      await this.capture(run.id, ClassroomSnapshotReason.Timed, false);
+      await this.captureBestEffort(run.id, ClassroomSnapshotReason.Timed, false);
     }
   }
 
@@ -322,7 +370,7 @@ export class ClassroomSnapshotService {
       rollCallState: value.rollCallState,
       rewardState: value.rewardState,
       interactionState: value.interactionState,
-      playerState: value.playerState,
+      playerState: readablePresentation(value.playerState),
     };
   }
 

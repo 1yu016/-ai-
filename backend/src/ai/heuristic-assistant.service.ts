@@ -13,11 +13,14 @@ import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import { ClassroomRunStatus } from '../classroom-runs/classroom-run.types';
 import { ClassroomRunStepSnapshot } from '../classroom-runs/entities/classroom-run-step-snapshot.entity';
 import { ClassroomRun } from '../classroom-runs/entities/classroom-run.entity';
+import { ClassroomSnapshotService } from '../classroom-runs/classroom-snapshot.service';
+import { assertRunOperation } from '../classroom-runs/classroom-operation-context';
 import { ResourceReviewStatus } from '../data/entities/teaching-resource.entity';
 import { LessonPlanVersion } from '../lesson-plans/entities/lesson-plan-version.entity';
 import { LessonPlan } from '../lesson-plans/entities/lesson-plan.entity';
 import { AuditService } from '../platform/audit.service';
 import { PlatformAccessService } from '../platform/platform-access.service';
+import { TeacherClass } from '../platform/entities/teacher-class.entity';
 import {
   ResourceService,
   type ResourceResponse,
@@ -81,6 +84,7 @@ export class HeuristicAssistantService {
     private readonly access: PlatformAccessService,
     private readonly resources: ResourceService,
     private readonly audit: AuditService,
+    private readonly operationSnapshots: ClassroomSnapshotService,
   ) {}
 
   async create(actor: JwtTeacherPayload, dto: HeuristicAssistantRequestDto) {
@@ -255,14 +259,29 @@ export class HeuristicAssistantService {
 
   async play(actor: JwtTeacherPayload, id: number) {
     const draft = await this.requireOwnedDraft(actor, id);
-    await this.requireActiveOwnedRun(actor, draft.classroomRunId);
+    const initialRun = await this.requireActiveOwnedRun(actor, draft.classroomRunId);
+    await assertRunOperation(initialRun, this.runs.manager, this.operationSnapshots, 'tts');
     if (draft.status !== HeuristicDraftStatus.Confirmed)
       throw new ConflictException('草稿尚未由教师确认，不能正式播放');
     const text = draft.editedResponseText ?? draft.responseText;
     if (!text) throw new ConflictException('没有可播放的启发式内容');
     const audioUrl = await this.audio.tts(text);
-    draft.ttsPlayedAt = new Date();
-    await this.drafts.save(draft);
+    // Network work stays outside the transaction. Recheck immediately before
+    // committing the played marker; a pause/opening during synthesis must win.
+    const playedAt = await this.operationSnapshots.transactionRequired(async manager => {
+      const current = await manager.getRepository(ClassroomRun).findOneByOrFail({ id: initialRun.id, teacherId: actor.sub });
+      if (!await manager.getRepository(TeacherClass).existsBy({ teacherId: actor.sub, classId: current.classId }))
+        throw new ForbiddenException('无权播放本课堂内容');
+      if (current.version !== initialRun.version) throw new ConflictException('课堂状态已变化，请重新确认播放');
+      await assertRunOperation(current, manager, this.operationSnapshots, 'tts');
+      const repo = manager.getRepository(HeuristicAssistantDraft);
+      const confirmed = await repo.findOneByOrFail({ id: draft.id, teacherId: actor.sub });
+      if (confirmed.status !== HeuristicDraftStatus.Confirmed || (confirmed.editedResponseText ?? confirmed.responseText) !== text)
+        throw new ConflictException('草稿已变化，请重新确认播放');
+      confirmed.ttsPlayedAt = new Date();
+      await repo.save(confirmed);
+      return confirmed.ttsPlayedAt;
+    });
     await this.safeWriteAi({
       actor,
       feature: 'heuristic_assistant_tts',
@@ -276,7 +295,7 @@ export class HeuristicAssistantService {
         textLength: text.length,
       },
     });
-    return { id: draft.id, audioUrl, playedAt: draft.ttsPlayedAt };
+    return { id: draft.id, audioUrl, playedAt };
   }
 
   private async buildContext(

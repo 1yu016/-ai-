@@ -15,6 +15,7 @@ import { BindingStatus, DeviceStatus } from '../platform/platform.types';
 import { ClassroomRun } from './entities/classroom-run.entity';
 import { ClassroomRunStatus } from './classroom-run.types';
 import { ClassroomSnapshotService } from './classroom-snapshot.service';
+import { assertRunOperation } from './classroom-operation-context';
 
 export type ScreenLifecycle = {
   schemaVersion: 1;
@@ -132,6 +133,7 @@ export class ScreenLifecycleService {
         return previous;
       if ((previous?.revision ?? 0) !== target.expectedRevision)
         throw new ConflictException('生命周期已更新');
+      if (phase === 'teaching') await assertRunOperation(run, manager, this.snapshots, 'complete_opening');
       if (
         previous &&
         (previous.runId !== target.runId ||

@@ -38,6 +38,7 @@ import {
 } from './entities/classroom-summary-draft.entity';
 import { ClassroomSummary } from './entities/classroom-summary.entity';
 import { StudentAttendanceChange } from './entities/student-attendance-change.entity';
+import { StudentAttendanceRecord } from './entities/student-attendance-record.entity';
 import { StudentQuestionRecord } from './entities/student-question-record.entity';
 import { StudentRewardRecord } from './entities/student-reward-record.entity';
 
@@ -63,6 +64,8 @@ export class ClassroomRecordService {
     private readonly commands: Repository<ClassroomCommandRecord>,
     @InjectRepository(StudentAttendanceChange)
     private readonly attendanceChanges: Repository<StudentAttendanceChange>,
+    @InjectRepository(StudentAttendanceRecord)
+    private readonly attendanceRecords: Repository<StudentAttendanceRecord>,
     @InjectRepository(ClassroomRollCallRecord)
     private readonly rollCalls: Repository<ClassroomRollCallRecord>,
     @InjectRepository(StudentRewardRecord)
@@ -397,18 +400,14 @@ export class ClassroomRecordService {
   private async summaryAggregate(run: ClassroomRun) {
     const [attendance, rollCalls, rewards, questions, suggestions, events] =
       await Promise.all([
-        this.attendanceChanges.find({ where: { classroomRunId: run.id } }),
+        this.attendanceRecords.find({ where: { classroomRunId: run.id } }),
         this.rollCalls.find({ where: { classroomRunId: run.id } }),
         this.rewards.find({ where: { classroomRunId: run.id } }),
         this.questions.find({ where: { classroomRunId: run.id } }),
         this.directorSuggestions.find({ where: { classroomRunId: run.id } }),
         this.events.find({ where: { classroomRunId: run.id } }),
       ]);
-    const latestAttendance = new Map<number, string>();
-    attendance
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .forEach((item) => latestAttendance.set(item.studentId, item.nextStatus));
-    const attendanceCounts = this.count([...latestAttendance.values()]);
+    const attendanceCounts = this.count(attendance.map(item => item.status));
     const topics = this.count(questions.map((item) => item.topic || '未分类'));
     const commonQuestions = this.count(
       questions.map((item) => this.redactQuestion(item.questionText)),
@@ -421,7 +420,7 @@ export class ClassroomRecordService {
       .map((item) => item.name);
     const fallback: ClassroomSummaryContent = {
       classroomSummary: `${run.title}已完成，共记录${events.length}个课堂操作节点，课堂过程包含${new Set(events.filter((item) => item.eventType === ClassroomEventType.ChangeStep).map((item) => item.id)).size}次步骤切换。`,
-      participation: `考勤${latestAttendance.size}人，点名${rollCalls.length}次，有效奖励${rewards.filter((item) => !item.revokedAt).length}次，幼儿提问${questions.length}条。`,
+      participation: `考勤${attendance.length}人，点名${rollCalls.length}次，有效奖励${rewards.filter((item) => !item.revokedAt).length}次，幼儿提问${questions.length}条。`,
       interestPoints: interestPoints.length ? interestPoints : ['本节课堂互动内容'],
       commonQuestions,
       teachingStrategies: [

@@ -12,8 +12,9 @@ import { IsNull, MoreThan, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import { ClassroomRunService } from '../classroom-runs/classroom-run.service';
+import type { ClassroomOperation } from '../classroom-runs/classroom-operation-policy';
+import { rejectLegacyWrite } from '../classroom-runs/legacy-write-boundary';
 import {
-  ClassroomCheckpointType,
   ClassroomRunStatus,
   TERMINAL_CLASSROOM_RUN_STATUSES,
 } from '../classroom-runs/classroom-run.types';
@@ -341,6 +342,10 @@ export class ClassroomCommandService {
     if (!record) throw new NotFoundException('执行凭证不存在或无效');
     if (record.teacherId !== actor.sub)
       throw new ForbiddenException('无权使用其他教师的执行凭证');
+    if ([ClassroomCommandV2Intent.Reward, ClassroomCommandV2Intent.CallStudent].includes(record.intent)) {
+      await this.requireRunOwnership(actor, record.classroomRunId);
+      return rejectLegacyWrite(`voice.${record.intent}`);
+    }
     if (record.executionTokenUsedAt)
       throw new ConflictException('执行凭证已使用，不能重放');
     if (
@@ -353,6 +358,7 @@ export class ClassroomCommandService {
       throw new ConflictException('执行凭证已过期');
     }
     await this.requireRun(actor, record.classroomRunId);
+    await this.classroomRuns.assertOperation(actor, record.classroomRunId, this.voicePolicyOperation(record.intent));
     const claimedAt = new Date();
     const claimed = await this.records.update(
       {
@@ -789,35 +795,24 @@ export class ClassroomCommandService {
       record.intent === ClassroomCommandV2Intent.CallStudent ||
       record.intent === ClassroomCommandV2Intent.Reward
     ) {
-      if (!parameters.studentId)
-        throw new BadRequestException('点名或奖励指令缺少有效学生');
-      const student = await this.students.findOne({
-        where: {
-          id: parameters.studentId,
-          classId: run.classId,
-          status: RecordStatus.Active,
-        },
-      });
-      if (!student) throw new ForbiddenException('学生不属于当前课堂班级');
-      return this.classroomRuns.checkpoint(actor, run.id, {
-        requestId,
-        version: run.version,
-        deviceId: run.deviceId,
-        checkpointType:
-          record.intent === ClassroomCommandV2Intent.CallStudent
-            ? ClassroomCheckpointType.RollCall
-            : ClassroomCheckpointType.Reward,
-        ...(record.intent === ClassroomCommandV2Intent.CallStudent
-          ? { rollCallState: { studentId: student.id, source: 'command' } }
-          : { rewardState: { studentId: student.id, source: 'command' } }),
-      });
+      return rejectLegacyWrite(`voice.${record.intent}`);
     }
+
     if (
       record.intent === ClassroomCommandV2Intent.Play &&
       parameters.resourceId
     )
       await this.requireApprovedResource(actor, parameters.resourceId);
+    await this.classroomRuns.assertOperation(actor, run.id, this.voicePolicyOperation(record.intent));
     return { action: record.intent, parameters };
+  }
+
+  private voicePolicyOperation(intent: ClassroomCommandV2Intent): ClassroomOperation {
+    if ([ClassroomCommandV2Intent.NextStep, ClassroomCommandV2Intent.PreviousStep].includes(intent)) return 'change_step';
+    if (intent === ClassroomCommandV2Intent.BreakMode) return 'pause';
+    if (intent === ClassroomCommandV2Intent.ReturnToClass) return 'resume';
+    if ([ClassroomCommandV2Intent.Pause, ClassroomCommandV2Intent.Mute].includes(intent)) return 'safe_stop';
+    return 'resource_start';
   }
 
   private async requireRun(actor: JwtTeacherPayload, id: number) {

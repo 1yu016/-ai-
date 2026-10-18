@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -14,6 +15,8 @@ import {
 import { AuthGuard } from '../auth/auth.guard';
 import type { AuthenticatedRequest } from '../auth/auth.types';
 import { ClassroomRunService } from './classroom-run.service';
+import { ClassroomCockpitService } from './classroom-cockpit.service';
+import type { ClassroomCockpitResponse } from './dto/classroom-cockpit.dto';
 import { AttendanceService } from './attendance.service';
 import { VoiceAttendanceCandidatesDto } from './dto/attendance.dto';
 import { StudentRewardService } from './student-reward.service';
@@ -44,6 +47,7 @@ export class ClassroomRunController {
     private readonly service: ClassroomRunService,
     private readonly rewardService: StudentRewardService,
     private readonly attendanceService: AttendanceService,
+    private readonly cockpitService: ClassroomCockpitService,
   ) {}
 
   @Post('start')
@@ -52,6 +56,12 @@ export class ClassroomRunController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.service.start(request.user, dto);
+  }
+
+  @Get(':id/cockpit')
+  @Header('Cache-Control', 'private, no-store')
+  cockpit(@Req() request: AuthenticatedRequest, @Param('id', ParseIntPipe) id: number): Promise<ClassroomCockpitResponse> {
+    return this.cockpitService.get(request.user, id);
   }
 
   @Get('active')
@@ -207,7 +217,7 @@ export class ClassroomRunController {
     @Body() dto: RevokeRewardDto,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.rewardService.revokeReward(request.user, id, rewardId, dto.requestId, dto.reason);
+    return this.rewardService.revokeReward(request.user, id, rewardId, dto.requestId, dto.reason, dto.version);
   }
 
   @Get(':id/reward-dashboard')
@@ -244,7 +254,7 @@ export class ClassroomRunController {
     @Body() dto: RevokeRewardDto,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.rewardService.revokeCollectiveReward(request.user, id, rewardId, dto.requestId, dto.reason);
+    return this.rewardService.revokeCollectiveReward(request.user, id, rewardId, dto.requestId, dto.reason, dto.version);
   }
 
   @Get(':id/attendance')

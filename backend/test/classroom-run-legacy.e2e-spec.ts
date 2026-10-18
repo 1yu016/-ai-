@@ -1,4 +1,11 @@
+import { enterTeachingFixture } from './helpers/teaching-phase-fixture';
+import { seedSnapshotFixture } from './helpers/snapshot-fixture';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ClassroomSnapshotService } from '../src/classroom-runs/classroom-snapshot.service';
+import { ClassroomRunService } from '../src/classroom-runs/classroom-run.service';
+import { StudentRewardService } from '../src/classroom-runs/student-reward.service';
+import { AttendanceService } from '../src/classroom-runs/attendance.service';
+import { ClassroomRollCallService } from '../src/classroom-runs/classroom-roll-call.service';
 import { ConfigModule } from '@nestjs/config';
 import { jest } from '@jest/globals';
 import { Test } from '@nestjs/testing';
@@ -29,10 +36,7 @@ import {
   CLASSROOM_PARTICIPATION_ENTITIES,
   AttendanceChangeLog,
   AttendanceRecord,
-  RollCallCandidateSnapshot,
   RollCallRecord,
-  StudentGroup,
-  StudentGroupMember,
 } from '../src/classroom-participation/entities';
 import { ClassroomParticipationModule } from '../src/classroom-participation/classroom-participation.module';
 import {
@@ -40,9 +44,8 @@ import {
   BreakRun,
   ClassGrowthRecord,
   HonorRecord,
-  RewardRecord,
-  RewardReversal,
   StudentBadge,
+  RewardRecord,
 } from '../src/classroom-engagement/entities';
 import { ClassroomEngagementModule } from '../src/classroom-engagement/classroom-engagement.module';
 import { AVATAR_ENTITIES } from '../src/avatars/avatar.module';
@@ -114,7 +117,7 @@ describe('Task four classroom run state machine (e2e)', () => {
   let app: INestApplication;
   let token: string;
   let otherToken: string;
-  let adminToken: string;
+  let _adminToken: string;
   let teacherId: number;
   let classId: number;
   let foreignClassId: number;
@@ -156,6 +159,7 @@ describe('Task four classroom run state machine (e2e)', () => {
               TEST_TEACHER_NAME: '课堂老师',
               ARK_API_KEY: 'classroom-test-key',
               ARK_ENDPOINT_ID: 'classroom-test-model',
+              CLASSROOM_SUMMARY_AI_ENABLED: 'false',
               VOLC_API_KEY: 'classroom-audio-test-key',
             }),
           ],
@@ -256,7 +260,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .send({ account: other.account, password: 'Teacher123!' })
         .expect(200)
     ).body.access_token as string;
-    adminToken = (
+    _adminToken = (
       await request(app.getHttpServer())
         .post('/auth/admin/login')
         .send({ account: 'run_admin', password: 'Admin123!' })
@@ -667,6 +671,128 @@ describe('Task four classroom run state machine (e2e)', () => {
     };
   }
 
+  const boundaryRows = async () => {
+    const manager = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).manager;
+    const tables = ['attendance_record', 'attendance_change_log', 'roll_call_record', 'roll_call_candidate_snapshot',
+      'reward_record', 'reward_reversal', 'student_badge', 'class_growth_record', 'honor_record',
+      'student_reward_record', 'class_collective_reward_record', 'student_attendance_record',
+      'student_attendance_change', 'classroom_roll_call_record', 'classroom_run', 'classroom_snapshot', 'classroom_event',
+      'classroom_command_record', 'collective_goal', 'class_growth_goal'];
+    return Promise.all(tables.map(async table => {
+      const rows = await manager.query('SELECT * FROM "' + table + '" ORDER BY id');
+      return { table, count: rows.length, digest: createHash('sha256').update(JSON.stringify(rows)).digest('hex'), rows };
+    }));
+  };
+  const beginLegacyBoundaryRun = async () => {
+    const plan = await createPlan();
+    return (await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; })).body;
+  };
+  it.each(['start-event', 'start-snapshot', 'end-event', 'end-snapshot', 'start-cas', 'end-cas'])('4C rolls back late failure: %s', async fault => {
+    const run = await beginLegacyBoundaryRun();
+    const body = { type: 'water', title: '隔离课间', durationSeconds: 60, deviceId, version: run.version, requestId: requestId('4c-start') };
+    let breakId = 0;
+    if (fault.startsWith('end')) {
+      breakId = (await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/breaks/start`).set(auth()).send(body).expect(201)).body.id;
+    }
+    const manager = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).manager;
+    const rows = async () => Promise.all(['classroom_run', 'break_run', 'classroom_event', 'classroom_snapshot'].map(table => manager.query(`SELECT * FROM ${table} ORDER BY id`)));
+    const before = await rows();
+    const snapshots = app.get(ClassroomSnapshotService);
+    let restore: () => void;
+    if (fault.endsWith('event')) {
+      const original = Repository.prototype.save;
+      const spy = jest.spyOn(Repository.prototype, 'save').mockImplementation(async function(this: Repository<unknown>, ...args: unknown[]) {
+        const result = await original.apply(this, args as never);
+        if (this.metadata.target === ClassroomEvent) throw new Error('4C after Event insert');
+        return result;
+      } as never);
+      restore = () => spy.mockRestore();
+    } else if (fault.endsWith('snapshot')) {
+      const original = snapshots.captureRequired.bind(snapshots);
+      const spy = jest.spyOn(snapshots, 'captureRequired').mockImplementation(async (...args) => {
+        await original(...args);
+        throw new Error('4C after Snapshot insert');
+      });
+      restore = () => spy.mockRestore();
+    } else {
+      const original = Repository.prototype.update;
+      const spy = jest.spyOn(Repository.prototype, 'update').mockImplementation(async function(this: Repository<unknown>, ...args: unknown[]) {
+        if (this.metadata.target === ClassroomRun) return { affected: 0, raw: [], generatedMaps: [] };
+        return original.apply(this, args as never);
+      } as never);
+      restore = () => spy.mockRestore();
+    }
+    const endBody = { version: 1, requestId: requestId('4c-end') };
+    try {
+      await request(app.getHttpServer()).post(breakId ? `/break-runs/${breakId}/end` : `/classroom-runs/${run.id}/breaks/start`)
+        .set(auth()).send(breakId ? endBody : body).expect(fault.endsWith('cas') ? 409 : 500);
+      expect(await rows()).toEqual(before);
+    } finally { restore(); }
+    const url = breakId ? `/break-runs/${breakId}/end` : `/classroom-runs/${run.id}/breaks/start`;
+    await request(app.getHttpServer()).post(url).set(auth()).send(breakId ? endBody : body).expect(201);
+    const committed = await rows();
+    await request(app.getHttpServer()).post(url).set(auth()).send(breakId ? endBody : body).expect(201);
+    expect(await rows()).toEqual(committed);
+    if (!breakId) await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, title: '不同请求内容' }).expect(409);
+    expect(await manager.query('PRAGMA integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+    await finishLegacyBoundaryRun(run.id);
+  });
+
+  it('4C serializes competing end requests without duplicate Event or Snapshot', async () => {
+    const run = await beginLegacyBoundaryRun();
+    const started = await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/breaks/start`).set(auth())
+      .send({ type: 'water', title: '并发结束', durationSeconds: 60, deviceId, version: run.version, requestId: requestId('4c-race-start') }).expect(201);
+    const manager = events.manager;
+    const beforeEvents = await events.count();
+    const beforeSnapshots = await manager.getRepository(ClassroomSnapshot).count();
+    const responses = await Promise.all([1, 2].map(n => request(app.getHttpServer()).post(`/break-runs/${started.body.id}/end`).set(auth())
+      .send({ version: 1, requestId: requestId(`4c-race-${n}`) })));
+    expect(responses.map(r => r.status)).toEqual([201, 201]);
+    expect(await events.count()).toBe(beforeEvents + 1);
+    expect(await manager.getRepository(ClassroomSnapshot).count()).toBe(beforeSnapshots + 1);
+    expect(await manager.getRepository(ClassroomRun).findOneByOrFail({ id: run.id })).toMatchObject({ status: 'running', version: run.version + 2 });
+    await finishLegacyBoundaryRun(run.id);
+  });
+
+  it('4C rejects legacy start while a core break is active, and core start while legacy is active', async () => {
+    const run = await beginLegacyBoundaryRun();
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/break`).set(auth())
+      .send({ contentType: 'water', durationSeconds: 60, deviceId, version: run.version, requestId: requestId('4c-core-start') }).expect(201);
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/breaks/start`).set(auth())
+      .send({ type: 'water', title: '不能叠加', durationSeconds: 60, deviceId, version: run.version + 1, requestId: requestId('4c-legacy-block') }).expect(409);
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/break/end`).set(auth())
+      .send({ deviceId, version: run.version + 1, requestId: requestId('4c-core-end') }).expect(200);
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/breaks/start`).set(auth())
+      .send({ type: 'water', title: '旧课间', durationSeconds: 60, deviceId, version: run.version + 2, requestId: requestId('4c-legacy-start') }).expect(201);
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/break`).set(auth())
+      .send({ contentType: 'water', durationSeconds: 60, deviceId, version: run.version + 3, requestId: requestId('4c-core-block') }).expect(409);
+    await finishLegacyBoundaryRun(run.id);
+  });
+
+  it('4C preserves a previously paused Run when legacy break ends', async () => {
+    const run = await beginLegacyBoundaryRun();
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/pause`).set(auth())
+      .send({ deviceId, version: run.version, requestId: requestId('4c-original-pause') }).expect(201);
+    const started = await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/breaks/start`).set(auth())
+      .send({ type: 'water', title: '暂停后课间', durationSeconds: 60, deviceId, version: run.version + 1, requestId: requestId('4c-paused-start') }).expect(201);
+    await request(app.getHttpServer()).post(`/break-runs/${started.body.id}/end`).set(auth())
+      .send({ version: 1, requestId: requestId('4c-paused-end') }).expect(201);
+    expect(await events.manager.getRepository(ClassroomRun).findOneByOrFail({ id: run.id })).toMatchObject({ status: 'paused', version: run.version + 3 });
+    await finishLegacyBoundaryRun(run.id);
+  });
+
+  const finishLegacyBoundaryRun = async (id: number) => {
+    const current = (await request(app.getHttpServer()).get(`/classroom-runs/${id}`).set(auth()).expect(200)).body;
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth())
+      .send({ deviceId, version: current.version, requestId: requestId('boundary-cleanup') }).expect(201);
+  };
+  const expectBlocked = async (url: string, body: object) => {
+    const before = await boundaryRows();
+    const response = await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(409);
+    expect(response.body.code).toBe('LEGACY_SEMANTICS_UNSUPPORTED');
+    expect(await boundaryRows()).toEqual(before);
+  };
+
   it('starts atomically, freezes step snapshots, and enforces ownership', async () => {
     const plan = await createPlan(true, approvedResourceId);
     await request(app.getHttpServer())
@@ -677,7 +803,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(started.body).toMatchObject({
       lessonPlanId: plan.id,
       lessonPlanVersion: plan.version,
@@ -731,9 +857,11 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const runId = started.body.id as number;
-    // 教师A写入考勤+奖励快照，确保数据真实存在快照表中
+    // Formal state is seeded by the server, never forged through an HTTP checkpoint.
+    await seedSnapshotFixture(app.get(ClassroomSnapshotService), runId, ClassroomSnapshotReason.Timed, false,
+      { attendanceState: { 1: 'present' }, rewardState: { 1: 2 } });
     await request(app.getHttpServer())
       .post(`/classroom-runs/${runId}/checkpoints`)
       .set(auth())
@@ -814,12 +942,12 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(body)
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const repeated = await request(app.getHttpServer())
       .post('/classroom-runs/start')
       .set(auth())
       .send(body)
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(repeated.body.id).toBe(first.body.id);
     expect(await events.countBy({ requestId: body.requestId })).toBe(1);
     const another = await createPlan();
@@ -841,7 +969,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const pauseRequestId = requestId('pause');
     const paused = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/pause`)
@@ -902,7 +1030,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .send(
         startBody(plan.id, { classroomId: classroom2Id, deviceId: device2Id }),
       )
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const [pause, complete] = await Promise.all([
       request(app.getHttpServer())
         .post(`/classroom-runs/${started.body.id}/pause`)
@@ -1036,7 +1164,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(started.body.avatarCharacterId).toBe(lessonAvatar.character.id);
     const pinnedAtStart = await request(app.getHttpServer())
       .get(
@@ -1128,7 +1256,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .post('/classroom-runs/start')
         .set(auth())
         .send(startBody(plan.id))
-        .expect(201);
+        .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       return started.body as {
         id: number;
         version: number;
@@ -1507,7 +1635,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const body = {
       classroomRunId: started.body.id as number,
       currentStepIndex: 0,
@@ -1614,7 +1742,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const decisions = ['accepted', 'edited', 'rejected', 'ignored'] as const;
     for (const decision of decisions) {
       aiCreate.mockResolvedValueOnce(directorCompletion());
@@ -1687,7 +1815,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     aiCreate
       .mockResolvedValueOnce({
         choices: [{ message: { content: 'not json' } }],
@@ -1752,7 +1880,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const body = {
       classroomRunId: started.body.id as number,
       childText: '一是什么？',
@@ -1898,7 +2026,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const unsafeInputs = [
       '我叫小明，我的手机号是13800138000',
       '我想拿刀玩火试一试',
@@ -1981,7 +2109,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const expectedFollowUps = [
       'observe',
       'compare',
@@ -2069,7 +2197,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const body = {
       classroomRunId: started.body.id as number,
       text: '下一页',
@@ -2167,75 +2295,32 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(201);
   });
 
-  it('requires confirmation for reward and classroom state changes, then rechecks live state', async () => {
+  it('3E-1 requires confirmation for reward and classroom state changes, then rechecks live state', async () => {
     aiCreate.mockReset();
-    const plan = await createPlan();
-    const started = await request(app.getHttpServer())
-      .post('/classroom-runs/start')
-      .set(auth())
-      .send(startBody(plan.id))
-      .expect(201);
-    const command = async (text: string, label: string) =>
-      request(app.getHttpServer())
-        .post('/ai/classroom-command')
-        .set(auth())
-        .send({
-          classroomRunId: started.body.id,
-          text,
-          locale: 'zh-CN',
-          context: {},
-          requestId: requestId(label),
-        })
-        .expect(200);
-    const execute = async (executionToken: string, label: string) =>
-      request(app.getHttpServer())
-        .post('/ai/classroom-command/execute')
-        .set(auth())
-        .send({ executionToken, requestId: requestId(label) })
-        .expect(200);
-
-    const reward = await command('奖励小雨小朋友一朵小红花', 'command-reward');
-    expect(reward.body).toMatchObject({
-      intent: 'reward',
-      parameters: { studentId },
-      requiresConfirmation: true,
-    });
-    await execute(reward.body.executionToken, 'execute-reward');
-    let current = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}`)
-      .set(auth())
-      .expect(200);
-    expect(current.body.version).toBe(2);
-
-    const breakMode = await command('进入课间模式', 'command-break');
-    expect(breakMode.body).toMatchObject({
-      intent: 'break_mode',
-      requiresConfirmation: true,
-    });
-    await execute(breakMode.body.executionToken, 'execute-break');
-    current = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}`)
-      .set(auth())
-      .expect(200);
-    expect(current.body).toMatchObject({ status: 'paused', version: 3 });
-
-    const returnToClass = await command('返回课堂', 'command-return');
-    await execute(returnToClass.body.executionToken, 'execute-return');
-    current = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}`)
-      .set(auth())
-      .expect(200);
-    expect(current.body).toMatchObject({ status: 'running', version: 4 });
-
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/complete`)
-      .set(auth())
-      .send({
-        version: 4,
-        deviceId,
-        requestId: requestId('command-state-complete'),
-      })
-      .expect(201);
+    const started = await beginLegacyBoundaryRun();
+    try {
+      for (const text of ['奖励小雨小朋友一朵小红花', '请小雨回答']) {
+        const recognized = await request(app.getHttpServer()).post('/ai/classroom-command').set(auth()).send({
+          classroomRunId: started.id, text, locale: 'zh-CN', context: {}, requestId: requestId('recognize-blocked'),
+        }).expect(200);
+        expect(recognized.body.requiresConfirmation).toBe(true);
+        expect(recognized.body.executionToken).toEqual(expect.any(String));
+        const before = await boundaryRows();
+        for (let retry = 0; retry < 2; retry++) {
+          const response = await request(app.getHttpServer()).post('/ai/classroom-command/execute').set(auth())
+            .send({ executionToken: recognized.body.executionToken, requestId: requestId('unsupported-execute') }).expect(409);
+          expect(response.body.code).toBe('LEGACY_SEMANTICS_UNSUPPORTED');
+          expect(await boundaryRows()).toEqual(before);
+        }
+      }
+      const command = async (text: string) => (await request(app.getHttpServer()).post('/ai/classroom-command').set(auth())
+        .send({ classroomRunId: started.id, text, locale: 'zh-CN', context: {}, requestId: requestId('state-command') }).expect(200)).body;
+      for (const text of ['进入课间模式', '返回课堂']) {
+        const c = await command(text);
+        await request(app.getHttpServer()).post('/ai/classroom-command/execute').set(auth())
+          .send({ executionToken: c.executionToken, requestId: requestId('state-execute') }).expect(200);
+      }
+    } finally { await finishLegacyBoundaryRun(started.id); }
   });
 
   it('returns multiple resource candidates, forces low-confidence confirmation and rejects invalid AI output', async () => {
@@ -2260,7 +2345,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const makeBody = (text: string, label: string) => ({
       classroomRunId: started.body.id,
       text,
@@ -2421,7 +2506,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const safeRule = {
       phrase: '翻一张',
       locale: 'zh-CN',
@@ -2563,644 +2648,382 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(201);
   });
 
-  it('handles manual, batch and teacher-confirmed voice attendance without direct ASR writes', async () => {
-    const plan = await createPlan();
-    const started = await request(app.getHttpServer())
-      .post('/classroom-runs/start')
-      .set(auth())
-      .send(startBody(plan.id))
-      .expect(201);
-
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance`)
-      .set(auth())
-      .send({
-        studentId: student2Id,
-        status: 'absent',
-        note: '今日未到园',
-        requestId: requestId('attendance-manual'),
-      })
-      .expect(201);
-
-    const beforeVoice = await app
-      .get<Repository<AttendanceRecord>>(getRepositoryToken(AttendanceRecord))
-      .count({ where: { classroomRunId: started.body.id } });
-    const voice = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/voice/recognize`)
-      .set(auth())
-      .send({ text: '朵朵迟到了', requestId: requestId('attendance-voice') })
-      .expect(201);
-    expect(voice.body).toMatchObject({
-      status: 'pending_confirmation',
-      suggestedStatus: 'late',
-    });
-    expect(voice.body.candidates).toEqual([
-      expect.objectContaining({ id: student3Id, matchType: 'exact' }),
-    ]);
-    expect(
-      await app
-        .get<Repository<AttendanceRecord>>(getRepositoryToken(AttendanceRecord))
-        .count({ where: { classroomRunId: started.body.id } }),
-    ).toBe(beforeVoice);
-
-    const voiceConfirmRequestId = requestId('attendance-voice-confirm');
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/voice/confirm`)
-      .set(auth())
-      .send({
-        confirmationToken: voice.body.confirmationToken,
-        studentId: student3Id,
-        status: 'late',
-        requestId: voiceConfirmRequestId,
-      })
-      .expect(201)
-      .expect(({ body }) => expect(body.status).toBe('late'));
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/voice/confirm`)
-      .set(auth())
-      .send({
-        confirmationToken: voice.body.confirmationToken,
-        studentId: student3Id,
-        status: 'present',
-        requestId: requestId('attendance-voice-replay'),
-      })
-      .expect(409);
-
-    const similar = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/voice/recognize`)
-      .set(auth())
-      .send({ text: '小语到了', requestId: requestId('attendance-similar') })
-      .expect(201);
-    expect(similar.body.status).toBe('pending_confirmation');
-    expect(
-      similar.body.candidates.map((item: { id: number }) => item.id),
-    ).toEqual(expect.arrayContaining([studentId, student2Id]));
-    const unmatched = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/voice/recognize`)
-      .set(auth())
-      .send({ text: '豆豆来了', requestId: requestId('attendance-unmatched') })
-      .expect(201);
-    expect(unmatched.body).toMatchObject({
-      status: 'pending_unmatched',
-      confirmationToken: null,
-      candidates: [],
-    });
-
-    const batchRequestId = requestId('attendance-batch');
-    const batchBody = {
-      requestId: batchRequestId,
-      entries: [
-        { studentId, status: 'present' },
-        { studentId: student2Id, status: 'absent' },
-        { studentId: student4Id, status: 'leave' },
-      ],
-    };
-    const batch = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/batch`)
-      .set(auth())
-      .send(batchBody)
-      .expect(201);
-    expect(batch.body.items).toHaveLength(3);
-    const repeatedBatch = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/batch`)
-      .set(auth())
-      .send(batchBody)
-      .expect(201);
-    expect(repeatedBatch.body.items).toHaveLength(3);
-
-    const attendance = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}/attendance/legacy`)
-      .set(auth())
-      .expect(200);
-    expect(attendance.body.items).toHaveLength(4);
-    await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}/attendance/legacy`)
-      .set('Authorization', `Bearer ${adminToken}`)
-      .expect(200);
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance`)
-      .set('Authorization', `Bearer ${adminToken}`)
-      .send({
-        studentId,
-        status: 'present',
-        requestId: requestId('attendance-admin-write'),
-      })
-      .expect(403);
-    const history = await request(app.getHttpServer())
-      .get(`/students/${student3Id}/attendance-history`)
-      .set(auth())
-      .expect(200);
-    expect(history.body.items[0]).toMatchObject({
-      classroomRunId: started.body.id,
-      status: 'late',
-    });
-    const logs = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}/attendance/change-logs`)
-      .set(auth())
-      .expect(200);
-    expect(logs.body).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ source: 'voice_confirmed' }),
-        expect.objectContaining({ source: 'batch' }),
-      ]),
-    );
-    expect(
-      await app
-        .get<Repository<AttendanceChangeLog>>(
-          getRepositoryToken(AttendanceChangeLog),
-        )
-        .count({ where: { classroomRunId: started.body.id } }),
-    ).toBe(5);
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance`)
-      .set('Authorization', `Bearer ${otherToken}`)
-      .send({
-        studentId,
-        status: 'present',
-        requestId: requestId('attendance-forbidden'),
-      })
-      .expect(403);
-
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/complete`)
-      .set(auth())
-      .send({
-        version: 1,
-        deviceId,
-        requestId: requestId('attendance-complete'),
-      })
-      .expect(201);
-  });
-
-  it('persists classroom group snapshots and excludes absent or leave students from group roll call', async () => {
-    const plan = await createPlan();
-    const started = await request(app.getHttpServer())
-      .post('/classroom-runs/start')
-      .set(auth())
-      .send(startBody(plan.id))
-      .expect(201);
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/attendance/batch`)
-      .set(auth())
-      .send({
-        requestId: requestId('group-attendance'),
-        entries: [
-          { studentId: student2Id, status: 'absent' },
-          { studentId: student3Id, status: 'leave' },
-        ],
-      })
-      .expect(201);
-    const group = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/groups`)
-      .set(auth())
-      .send({
-        name: '观察组',
-        studentIds: [studentId, student2Id, student3Id, student4Id],
-        requestId: requestId('group-create'),
-      })
-      .expect(201);
-    expect(group.body.memberSnapshot).toEqual([
-      studentId,
-      student2Id,
-      student3Id,
-      student4Id,
-    ]);
-    const rollRequestId = requestId('group-roll');
-    const rolled = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/roll-calls`)
-      .set(auth())
-      .send({
-        mode: 'group',
-        groupId: group.body.id,
-        cooldownCount: 2,
-        requestId: rollRequestId,
-      })
-      .expect(201);
-    expect([studentId, student4Id]).toContain(rolled.body.selectedStudent.id);
-    expect(rolled.body.candidateSnapshot).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          studentId: student2Id,
-          eligible: false,
-          exclusionReason: 'absent',
-        }),
-        expect.objectContaining({
-          studentId: student3Id,
-          eligible: false,
-          exclusionReason: 'leave',
-        }),
-      ]),
-    );
-    const repeated = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/roll-calls`)
-      .set(auth())
-      .send({
-        mode: 'group',
-        groupId: group.body.id,
-        cooldownCount: 2,
-        requestId: rollRequestId,
-      })
-      .expect(201);
-    expect(repeated.body.id).toBe(rolled.body.id);
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/roll-calls`)
-      .set(auth())
-      .send({
-        mode: 'teacher_specified',
-        specifiedStudentId: student2Id,
-        requestId: requestId('group-roll-absent'),
-      })
-      .expect(409);
-
-    await request(app.getHttpServer())
-      .delete(
-        `/classroom-runs/${started.body.id}/groups/${group.body.id}/members/${student4Id}`,
-      )
-      .set(auth())
-      .expect(200);
-    const groups = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}/groups`)
-      .set(auth())
-      .expect(200);
-    expect(groups.body.items[0].memberSnapshot).not.toContain(student4Id);
-    expect(
-      await app
-        .get<Repository<StudentGroup>>(getRepositoryToken(StudentGroup))
-        .count({ where: { classroomRunId: started.body.id } }),
-    ).toBe(1);
-    expect(
-      await app
-        .get<Repository<StudentGroupMember>>(
-          getRepositoryToken(StudentGroupMember),
-        )
-        .count({ where: { groupId: group.body.id, active: false } }),
-    ).toBe(1);
-
-    const random = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/groups/random`)
-      .set(auth())
-      .send({ groupCount: 2, requestId: requestId('random-groups') })
-      .expect(201);
-    expect(random.body.items).toHaveLength(2);
-    expect(
-      random.body.items
-        .flatMap((item: { memberSnapshot: number[] }) => item.memberSnapshot)
-        .sort(),
-    ).toEqual([studentId, student2Id, student3Id, student4Id].sort());
-
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/complete`)
-      .set(auth())
-      .send({ version: 1, deviceId, requestId: requestId('group-complete') })
-      .expect(201);
-  });
-
-  it('uses cooldown and least-called priority with idempotent, auditable fair distribution', async () => {
-    const plan = await createPlan();
-    const started = await request(app.getHttpServer())
-      .post('/classroom-runs/start')
-      .set(auth())
-      .send(startBody(plan.id))
-      .expect(201);
-    const selections: number[] = [];
-    let firstRequestId = '';
-    let firstRecordId = 0;
-    for (let index = 0; index < 12; index += 1) {
-      const id = requestId(`fair-roll-${index}`);
-      if (index === 0) firstRequestId = id;
-      const response = await request(app.getHttpServer())
-        .post(`/classroom-runs/${started.body.id}/roll-calls`)
-        .set(auth())
-        .send({ mode: 'all', cooldownCount: 2, requestId: id })
-        .expect(201);
-      if (index === 0) firstRecordId = response.body.id;
-      selections.push(response.body.selectedStudent.id);
-      if (index >= 2) {
-        expect(response.body.selectedStudent.id).not.toBe(
-          selections[index - 1],
-        );
-        expect(response.body.selectedStudent.id).not.toBe(
-          selections[index - 2],
-        );
+  it('3E-1 rejects internal business patches and command-type spoofing; canonical transactions still work', async () => {
+    const started = await beginLegacyBoundaryRun();
+    const actor = { sub: teacherId, userType: AuthUserType.Teacher, schoolId: 'garden-run' } as any;
+    const snapshots = app.get(ClassroomSnapshotService);
+    try {
+      for (const field of ['rewardState', 'attendanceState', 'rollCallState']) {
+        const before = await boundaryRows();
+        await expect(app.get(ClassroomRunService).checkpointControl(actor, started.id, {
+          requestId: requestId('internal-spoof'), version: 1, deviceId, checkpointType: 'command' as any,
+          [field]: { forged: 999 },
+        })).rejects.toMatchObject({ status: 409 });
+        await expect(snapshots.capture(started.id, ClassroomSnapshotReason.Command, false,
+          { [field]: { forged: 999 } })).rejects.toMatchObject({ status: 409 });
+        await expect(snapshots.transactionRequired(manager => snapshots.captureRequired(started.id,
+          ClassroomSnapshotReason.Command, false, { [field]: {} }, manager))).rejects.toMatchObject({ status: 409 });
+        await expect(snapshots.transactionRequired(manager => snapshots.captureBusinessRequired(started.id,
+          ClassroomSnapshotReason.Reward, false, 'reward', { [field]: {} } as any, manager))).rejects.toMatchObject({ status: 409 });
+        expect(await boundaryRows()).toEqual(before);
       }
-    }
-    const repeated = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/roll-calls`)
-      .set(auth())
-      .send({ mode: 'all', cooldownCount: 2, requestId: firstRequestId })
-      .expect(201);
-    expect(repeated.body.id).toBe(firstRecordId);
-    const counts = [...new Set(selections)].map(
-      (id) => selections.filter((selected) => selected === id).length,
-    );
-    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
-    expect(new Set(selections).size).toBe(4);
-
-    const records = await app
-      .get<Repository<RollCallRecord>>(getRepositoryToken(RollCallRecord))
-      .find({ where: { classroomRunId: started.body.id } });
-    expect(records).toHaveLength(12);
-    const snapshots = await app
-      .get<Repository<RollCallCandidateSnapshot>>(
-        getRepositoryToken(RollCallCandidateSnapshot),
-      )
-      .find({ where: { rollCallRecordId: records[0].id } });
-    expect(snapshots).toHaveLength(4);
-    expect(JSON.stringify(snapshots)).not.toMatch(
-      /gender|score|reward|aiEvaluation/i,
-    );
-
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/complete`)
-      .set(auth())
-      .send({ version: 1, deviceId, requestId: requestId('fair-complete') })
-      .expect(201);
-  });
-
-  it('records all six reward types idempotently and reverses badge, flower and class growth with audit', async () => {
-    const plan = await createPlan();
-    const started = await request(app.getHttpServer())
-      .post('/classroom-runs/start')
-      .set(auth())
-      .send(startBody(plan.id))
-      .expect(201);
-    const badge = await request(app.getHttpServer())
-      .post('/badge-definitions')
-      .set(auth())
-      .send({
-        code: `answer-badge-${Date.now()}`,
-        name: '勇敢回答徽章',
-        rewardType: 'answer',
-        iconKey: 'answer-star',
-      })
-      .expect(201);
-    const rule = await request(app.getHttpServer())
-      .post('/reward-rules')
-      .set(auth())
-      .send({
-        name: `回答小红花-${Date.now()}`,
-        rewardType: 'answer',
-        pointsValue: 2,
-        flowerCount: 1,
-        classGrowthValue: 2,
-        badgeDefinitionId: badge.body.id,
-      })
-      .expect(201);
-    const goal = await request(app.getHttpServer())
-      .post(`/classes/${classId}/collective-goals`)
-      .set(auth())
-      .send({ title: '一起长出第一片叶子', targetValue: 2 })
-      .expect(201);
-    const awardRequestId = requestId('reward-answer');
-    const answerReward = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/engagement-rewards`)
-      .set(auth())
-      .send({
-        studentId,
-        ruleId: rule.body.id,
-        reason: '主动观察并回答问题',
-        requestId: awardRequestId,
-      })
-      .expect(201);
-    expect(answerReward.body).toMatchObject({
-      rewardType: 'answer',
-      points: 2,
-      flowerCount: 1,
-      classGrowthValue: 2,
-      status: 'active',
-    });
-    expect(answerReward.body.badge).toMatchObject({ active: true });
-    const repeated = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/engagement-rewards`)
-      .set(auth())
-      .send({
-        studentId,
-        ruleId: rule.body.id,
-        reason: '重复请求不应再次奖励',
-        requestId: awardRequestId,
-      })
-      .expect(201);
-    expect(repeated.body.id).toBe(answerReward.body.id);
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/engagement-rewards`)
-      .set(auth())
-      .send({
-        studentId: student2Id,
-        ruleId: rule.body.id,
-        reason: '相同requestId但学生不同',
-        requestId: awardRequestId,
-      })
-      .expect(409);
-
-    const types = ['cooperation', 'focus', 'labor', 'exploration', 'progress'];
-    for (const [index, rewardType] of types.entries()) {
-      await request(app.getHttpServer())
-        .post(`/classroom-runs/${started.body.id}/engagement-rewards`)
-        .set(auth())
-        .send({
-          studentId: [student2Id, student3Id, student4Id][index % 3],
-          rewardType,
-          points: 1,
-          reason: `${rewardType}表现良好`,
-          requestId: requestId(`reward-${rewardType}`),
-        })
-        .expect(201);
-    }
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/engagement-rewards`)
-      .set('Authorization', `Bearer ${otherToken}`)
-      .send({
-        studentId,
-        rewardType: 'focus',
-        points: 1,
-        reason: '越权奖励',
-        requestId: requestId('reward-forbidden'),
-      })
-      .expect(403);
-
-    const growthBeforeReverse = await request(app.getHttpServer())
-      .get(`/classes/${classId}/growth`)
-      .set(auth())
-      .expect(200);
-    expect(growthBeforeReverse.body).toMatchObject({ currentValue: 2 });
-    expect(
-      growthBeforeReverse.body.goals.find(
-        (item: { id: number }) => item.id === goal.body.id,
-      ),
-    ).toMatchObject({ currentValue: 2, status: 'completed' });
-
-    const reversed = await request(app.getHttpServer())
-      .post(`/rewards/${answerReward.body.id}/reverse`)
-      .set(auth())
-      .send({
-        reason: '教师误触，撤销本次奖励',
-        requestId: requestId('reward-reverse'),
-      })
-      .expect(201);
-    expect(reversed.body).toMatchObject({ status: 'reversed' });
-    expect(reversed.body.reversal).toEqual(
-      expect.objectContaining({ reason: '教师误触，撤销本次奖励' }),
-    );
-    expect(reversed.body.badge).toMatchObject({ active: false });
-    expect(
-      await app
-        .get<Repository<RewardRecord>>(getRepositoryToken(RewardRecord))
-        .count({ where: { classroomRunId: started.body.id } }),
-    ).toBe(6);
-    expect(
-      await app
-        .get<Repository<RewardReversal>>(getRepositoryToken(RewardReversal))
-        .count({ where: { rewardRecordId: answerReward.body.id } }),
-    ).toBe(1);
-    expect(
-      await app
-        .get<Repository<StudentBadge>>(getRepositoryToken(StudentBadge))
-        .count({
-          where: { rewardRecordId: answerReward.body.id, active: false },
-        }),
-    ).toBe(1);
-    const growthAfterReverse = await request(app.getHttpServer())
-      .get(`/classes/${classId}/growth`)
-      .set(auth())
-      .expect(200);
-    expect(growthAfterReverse.body.currentValue).toBe(0);
-    expect(
-      await app
-        .get<Repository<ClassGrowthRecord>>(
-          getRepositoryToken(ClassGrowthRecord),
-        )
-        .count({ where: { rewardRecordId: answerReward.body.id } }),
-    ).toBeGreaterThanOrEqual(2);
-
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/complete`)
-      .set(auth())
-      .send({ version: 1, deviceId, requestId: requestId('reward-complete') })
-      .expect(201);
-  });
-
-  it('creates multi-dimensional honors with cooldown rotation and teacher confirmation without rankings', async () => {
-    const plan = await createPlan();
-    const started = await request(app.getHttpServer())
-      .post('/classroom-runs/start')
-      .set(auth())
-      .send(startBody(plan.id))
-      .expect(201);
-    const combinations: Array<[number, string[]]> = [
-      [studentId, ['answer', 'exploration']],
-      [student2Id, ['cooperation', 'progress']],
-      [student3Id, ['labor', 'cooperation']],
-    ];
-    for (const [candidateId, rewardTypes] of combinations) {
-      for (const rewardType of rewardTypes) {
-        await request(app.getHttpServer())
-          .post(`/classroom-runs/${started.body.id}/engagement-rewards`)
-          .set(auth())
-          .send({
-            studentId: candidateId,
-            rewardType,
-            points: 1,
-            reason: '荣誉多维度依据',
-            requestId: requestId(`honor-${candidateId}-${rewardType}`),
-          })
-          .expect(201);
-      }
-    }
-    const selectedStudents: number[] = [];
-    for (let index = 0; index < 3; index += 1) {
-      const draft = await request(app.getHttpServer())
-        .post(`/classroom-runs/${started.body.id}/honors/suggest`)
-        .set(auth())
-        .send({
-          type: 'today_star',
-          cooldownDays: 7,
-          requestId: requestId(`honor-draft-${index}`),
-        })
-        .expect(201);
-      expect(draft.body).toMatchObject({
-        type: 'today_star',
-        status: 'draft',
+      const feedback = await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/checkpoints`).set(auth()).send({
+        requestId: requestId('http-command-spoof'), version: 1, deviceId, checkpointType: 'command',
+        rewardState: { forged: 999 }, attendanceState: { forged: 'present' }, rollCallState: { forged: 999 },
+        playerState: { presentationMode: 'resource', presentationCommandId: 'forged', resourceId: approvedResourceId },
+      }).expect(201);
+      expect(feedback.body.rewardState).toEqual({}); expect(feedback.body.attendanceState).toEqual({});
+      expect(feedback.body.rollCallState).toEqual({});
+      expect(feedback.body.playerRecoverySuggestion?.presentationMode).not.toBe('resource');
+      const reward = await app.get(StudentRewardService).createReward(actor, started.id, {
+        requestId: requestId('canonical-live-reward'), studentId, stars: 1, version: 2,
       });
-      expect(draft.body.dimensions).toEqual(
-        expect.objectContaining({
-          rewardTypes: 2,
-          participationEvents: 2,
-        }),
-      );
-      selectedStudents.push(draft.body.student.id);
-      await request(app.getHttpServer())
-        .post(`/honors/${draft.body.id}/publish`)
-        .set(auth())
-        .send({ requestId: requestId(`honor-publish-${index}`) })
-        .expect(201)
-        .expect(({ body }) => expect(body.status).toBe('published'));
+      await app.get(AttendanceService).apply(actor, { id: started.id, classId }, requestId('canonical-live-attendance'),
+        [{ studentId, status: 'present' as any }], 'manual' as any, { expectedVersion: reward.committedRunVersion });
+      const roll = await app.get(ClassroomRollCallService).execute(actor, started.id, requestId('canonical-live-roll'),
+        { mode: 'specified' as any, studentId }, reward.committedRunVersion + 1);
+      const latest = (await snapshots.loadLatestValid(started.id))!;
+      expect(latest.rewardState[studentId]).toBe(1); expect(latest.attendanceState[studentId]).toBe('present');
+      expect(latest.rollCallState.lastRecordId).toBe(roll.recordId);
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E-1 keeps seeded legacy history readable and separates equal numeric IDs', async () => {
+    const started = await beginLegacyBoundaryRun();
+    const repo = <T>(entity: new () => T): Repository<T & object> => app.get(getRepositoryToken(entity));
+    try {
+      // Explicit isolated historical fixtures, not writes through retired request paths.
+      const attendance = await repo(AttendanceRecord).save(repo(AttendanceRecord).create({
+        classroomRunId: started.id, classId, studentId, status: 'present' as any, note: '历史备注', updatedBy: teacherId,
+      }));
+      await repo(AttendanceChangeLog).save(repo(AttendanceChangeLog).create({ attendanceRecordId: attendance.id,
+        classroomRunId: started.id, classId, studentId, previousStatus: null, newStatus: 'present' as any,
+        source: 'manual' as any, actorType: AuthUserType.Teacher, actorId: teacherId, requestId: requestId('historical-change') }));
+      await repo(RollCallRecord).save(repo(RollCallRecord).create({ classroomRunId: started.id, classId, teacherId,
+        selectedStudentId: studentId, mode: 'teacher_specified' as any, algorithmVersion: 'fair-v1', cooldownCount: 2,
+        source: 'teacher', requestId: requestId('historical-roll') }));
+      const actor = { sub: teacherId, userType: AuthUserType.Teacher, schoolId: 'garden-run' } as any;
+      const canonical = await app.get(StudentRewardService).createReward(actor, started.id, {
+        requestId: requestId('separate-identity'), studentId, stars: 1,
+      });
+      await repo(RewardRecord).save(repo(RewardRecord).create({ id: canonical.record.id, classroomRunId: started.id,
+        classId, studentId, teacherId, rewardType: 'answer' as any, points: 5, flowerCount: 2, classGrowthValue: 8,
+        reason: '旧奖励历史', status: 'active' as any, requestId: requestId('historical-reward') }));
+      const badge = await request(app.getHttpServer()).post('/badge-definitions').set(auth()).send({
+        code: `legacy_history_${Date.now()}`, name: '历史徽章定义', rewardType: 'answer',
+      }).expect(201);
+      await repo(StudentBadge).save(repo(StudentBadge).create({ studentId, badgeDefinitionId: badge.body.id,
+        rewardRecordId: canonical.record.id, active: true, reversedAt: null }));
+      await repo(ClassGrowthRecord).save(repo(ClassGrowthRecord).create({ classId, classroomRunId: started.id,
+        rewardRecordId: canonical.record.id, goalId: null, delta: 8, balanceAfter: 8, eventType: 'reward' as any,
+        reason: '历史成长流水', teacherId, requestId: requestId('historical-growth') }));
+      await repo(HonorRecord).save(repo(HonorRecord).create({ classroomRunId: started.id, classId, studentId,
+        type: 'today_star' as any, title: '历史荣誉', dimensions: '{}', status: 'published' as any,
+        teacherId, requestId: requestId('historical-honor'), confirmedBy: teacherId, confirmedAt: new Date() }));
+      const before = await boundaryRows();
+      const old = await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/engagement-rewards`).set(auth()).expect(200);
+      const current = await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/rewards`).set(auth()).expect(200);
+      expect(old.body.items[0].id).toBe(current.body.items[0].id);
+      expect(old.body.items[0].identity).not.toBe(current.body.items[0].identity);
+      expect(old.body.items[0].recordIdentity.source).toBe('legacy_engagement');
+      expect(current.body.items[0].recordIdentity.source).toBe('canonical');
+      const history = await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/attendance/legacy`).set(auth()).expect(200);
+      expect(history.body.items.find((i: any) => i.attendance)?.attendance.note).toBe('历史备注');
+      const changes = await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/attendance/change-logs`).set(auth()).expect(200);
+      expect(changes.body[0].source).toBe('manual'); expect(changes.body[0].recordSource).toBe('legacy_participation');
+      const calls = await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/roll-calls`).set(auth()).expect(200);
+      expect(calls.body.items[0].recordIdentity.source).toBe('legacy_participation');
+      await request(app.getHttpServer()).get(`/students/${studentId}/attendance-history`).set(auth()).expect(200);
+      const badges = await request(app.getHttpServer()).get(`/students/${studentId}/badges`).set(auth()).expect(200);
+      expect(badges.body.items[0].recordIdentity.source).toBe('legacy_engagement');
+      const growth = await request(app.getHttpServer()).get(`/classes/${classId}/growth`).set(auth()).expect(200);
+      expect(growth.body.records[0].recordIdentity.source).toBe('legacy_engagement');
+      const honors = await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/honors`).set(auth()).expect(200);
+      expect(honors.body.items[0].recordIdentity.source).toBe('legacy_engagement');
+      expect(await boundaryRows()).toEqual(before);
+      await expectBlocked(`/rewards/${canonical.record.id}/reverse`, { reason: '不能按数值关联', requestId: requestId('no-id-guess') });
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E adapters write manual/batch attendance canonically; voice confirmation remains blocked', async () => {
+    const started = await beginLegacyBoundaryRun();
+    try {
+      const recognized = await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance/voice/recognize`)
+        .set(auth()).send({ text: '小雨到了', requestId: requestId('recognize-attendance') }).expect(201);
+      expect(recognized.body.confirmationToken).toEqual(expect.any(String));
+      const before = await boundaryRows();
+      const body = { studentId, status: 'present', note: '不得丢弃', requestId: requestId('manual') };
+      const first = await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance`).set(auth()).send(body).expect(201);
+      expect(first.body.record.recordIdentity.source).toBe('canonical');
+      expect(first.body.updates[0].note).toBe('不得丢弃');
+      const committed = await boundaryRows();
+      expect((await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance`).set(auth()).send(body).expect(201)).body).toEqual(first.body);
+      expect(await boundaryRows()).toEqual(committed);
+      for (const delta of [{ status: 'late' }, { note: '修改备注' }, { studentId: student2Id }]) {
+        await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance`).set(auth()).send({ ...body, ...delta }).expect(409);
+        expect(await boundaryRows()).toEqual(committed);
+      }
+      const batch = { entries: [{ studentId, status: 'present' }, { studentId: student2Id, status: 'late' }], requestId: requestId('batch') };
+      const batchFirst = await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance/batch`).set(auth()).send(batch).expect(201);
+      const batchCommitted = await boundaryRows();
+      expect((await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance/batch`).set(auth())
+        .send({ ...batch, entries: [...batch.entries].reverse() }).expect(201)).body).toEqual(batchFirst.body);
+      expect(await boundaryRows()).toEqual(batchCommitted);
+      for (const entries of [
+        [{ studentId, status: 'late' }, { studentId: student2Id, status: 'late' }],
+        [{ studentId, status: 'present', note: '新备注' }, { studentId: student2Id, status: 'late' }],
+        [{ studentId, status: 'present' }, { studentId: student3Id, status: 'late' }],
+      ]) {
+        await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance/batch`).set(auth())
+          .send({ ...batch, entries }).expect(409);
+        expect(await boundaryRows()).toEqual(batchCommitted);
+      }
+      expect(batchCommitted.filter(t => ['attendance_record', 'attendance_change_log'].includes(t.table)))
+        .toEqual(before.filter(t => ['attendance_record', 'attendance_change_log'].includes(t.table)));
+      const eventPayloads = batchCommitted.find(t => t.table === 'classroom_event')!.rows.map((r: any) => JSON.parse(r.payload));
+      expect(eventPayloads.some((p: any) => p.kind === 'classroom_business_receipt' &&
+        p.originalRequestId === body.requestId && p.result.updates[0].note === body.note)).toBe(true);
+      await expectBlocked(`/classroom-runs/${started.id}/attendance/voice/confirm`,
+        { confirmationToken: recognized.body.confirmationToken, studentId, status: 'present', requestId: requestId('confirm') });
+      await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/attendance/legacy`).set(auth()).expect(200);
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E-1 persists classroom group snapshots and excludes absent or leave students from group roll call', async () => {
+    const started = await beginLegacyBoundaryRun();
+    try {
+      const before = await boundaryRows();
+      const created = await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/groups`).set(auth())
+        .send({ name: '保留分组', studentIds: [studentId, student2Id], requestId: requestId('group-create') }).expect(201);
+      const gid = created.body.id;
+      await request(app.getHttpServer()).patch(`/classroom-runs/${started.id}/groups/${gid}`).set(auth())
+        .send({ name: '修改分组', requestId: requestId('group-update') }).expect(200);
+      await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/groups/${gid}/members`).set(auth())
+        .send({ studentId: student3Id, requestId: requestId('group-add') }).expect(201);
+      await request(app.getHttpServer()).delete(`/classroom-runs/${started.id}/groups/${gid}/members/${student3Id}`).set(auth()).expect(200);
+      await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/groups/random`).set(auth())
+        .send({ groupCount: 2, studentIds: [studentId, student2Id, student3Id, student4Id], requestId: requestId('random-groups') }).expect(201);
+      await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/groups`).set(auth()).expect(200);
+      // Even a valid groupId cannot make the old algorithm/candidate contract
+      // equivalent. Existing canonical group commands remain covered by 3D.
+      await expectBlocked(`/classroom-runs/${started.id}/roll-calls`,
+        { mode: 'group', groupId: gid, requestId: requestId('valid-group-unmapped') });
+      await request(app.getHttpServer()).delete(`/classroom-runs/${started.id}/groups/${gid}`).set(auth()).expect(200);
+      expect(await boundaryRows()).toEqual(before);
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E-1 uses cooldown and least-called priority with idempotent, auditable fair distribution', async () => {
+    const started = await beginLegacyBoundaryRun();
+    try {
+      for (const body of [
+        { mode: 'all' }, { mode: 'range', studentIds: [studentId, student2Id] },
+        { mode: 'group', groupId: 999 },
+      ]) await expectBlocked(`/classroom-runs/${started.id}/roll-calls`, { ...body, requestId: requestId('blocked-roll') });
+      await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/roll-calls`).set(auth()).expect(200);
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E adapters preserve direct reward fields, durable replay and canonical-only writes', async () => {
+    const started = await beginLegacyBoundaryRun();
+    try {
+      const before = await boundaryRows();
+      const body = { studentId, rewardType: 'answer', points: 3, flowerCount: 2, reason: '认真观察', requestId: requestId('adapter-reward') };
+      const url = `/classroom-runs/${started.id}/engagement-rewards`;
+      const first = (await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201)).body;
+      expect(first.record).toMatchObject({ points: 3, stars: 2, rewardCategory: 'answer', reason: body.reason, recordSource: 'canonical' });
+      const committed = await boundaryRows();
+      expect((await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201)).body).toEqual(first);
+      expect(await boundaryRows()).toEqual(committed);
+      for (const delta of [{ points: 4 }, { flowerCount: 1 }, { rewardType: 'focus' }, { reason: '新原因' }, { studentId: student2Id }]) {
+        await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, ...delta }).expect(409);
+        expect(await boundaryRows()).toEqual(committed);
+      }
+      expect(committed.filter(t => ['reward_record', 'reward_reversal', 'student_badge', 'class_growth_record'].includes(t.table)))
+        .toEqual(before.filter(t => ['reward_record', 'reward_reversal', 'student_badge', 'class_growth_record'].includes(t.table)));
+      expect(committed.find(t => t.table === 'student_reward_record')!.count).toBe(before.find(t => t.table === 'student_reward_record')!.count + 1);
+      // Canonical revoke is explicit: old numeric /rewards/:id/reverse remains rejected.
+      await expectBlocked(`/rewards/${first.record.id}/reverse`, { reason: '不能猜来源', requestId: requestId('adapter-reverse') });
+      await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/rewards/${first.record.id}/revoke`).set(auth())
+        .send({ reason: '教师纠正', requestId: requestId('canonical-revoke-adapter') }).expect(200);
+      for (const [points, flowerCount] of [[2, 0], [0, 1]]) {
+        const r = (await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, points, flowerCount, requestId: requestId('reward-forms') }).expect(201)).body;
+        expect(r.record.points).toBe(points); expect(r.record.stars).toBe(flowerCount);
+      }
+      for (const rewardType of ['answer', 'cooperation', 'focus', 'labor', 'exploration', 'progress']) {
+        const r = (await request(app.getHttpServer()).post(url).set(auth())
+          .send({ ...body, rewardType, requestId: requestId('adapter-category') }).expect(201)).body;
+        expect(r.record.rewardCategory).toBe(rewardType);
+      }
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E adapters select specified students once and never fabricate candidate history', async () => {
+    const started = await beginLegacyBoundaryRun();
+    const students = app.get<Repository<Student>>(getRepositoryToken(Student));
+    try {
+      const before = await boundaryRows();
+      const body = { mode: 'teacher_specified', specifiedStudentId: studentId, cooldownCount: 2, requestId: requestId('adapter-call') };
+      const url = `/classroom-runs/${started.id}/roll-calls`;
+      const first = (await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201)).body;
+      expect(first).toMatchObject({ selectedStudent: { id: studentId }, recordSource: 'canonical' });
+      expect(first).not.toHaveProperty('candidateSnapshot');
+      const committed = await boundaryRows();
+      expect(committed.filter(t => ['roll_call_record', 'roll_call_candidate_snapshot'].includes(t.table)))
+        .toEqual(before.filter(t => ['roll_call_record', 'roll_call_candidate_snapshot'].includes(t.table)));
+      expect(committed.find(t => t.table === 'classroom_roll_call_record')!.count).toBe(before.find(t => t.table === 'classroom_roll_call_record')!.count + 1);
+      for (const delta of [{ specifiedStudentId: student2Id }, { cooldownCount: 3 }]) {
+        await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, ...delta }).expect(409);
+        expect(await boundaryRows()).toEqual(committed);
+      }
+      await students.update(studentId, { status: RecordStatus.Disabled });
+      const disabled = await boundaryRows();
+      expect((await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201)).body).toEqual(first);
+      expect(await boundaryRows()).toEqual(disabled);
+      await students.update(studentId, { status: RecordStatus.Active });
+      for (const mode of ['all', 'range', 'group']) await expectBlocked(url, { mode, studentIds: [studentId], groupId: 999, requestId: requestId('unmapped-call') });
+    } finally {
+      await students.update(studentId, { status: RecordStatus.Active });
+      await finishLegacyBoundaryRun(started.id);
     }
-    expect(new Set(selectedStudents).size).toBe(3);
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/honors/suggest`)
-      .set(auth())
-      .send({
-        type: 'today_star',
-        cooldownDays: 7,
-        requestId: requestId('honor-cooldown'),
-      })
-      .expect(409);
+  });
 
-    await request(app.getHttpServer())
-      .post(`/classes/${classId}/collective-goals`)
-      .set(auth())
-      .send({ title: `共同整理玩具-${Date.now()}`, targetValue: 1 })
-      .expect(201);
-    await request(app.getHttpServer())
-      .post(`/classes/${classId}/growth/adjust`)
-      .set(auth())
-      .send({
-        delta: 1,
-        reason: '全班一起完成整理',
-        requestId: requestId('collective-growth'),
-      })
-      .expect(201);
-    const collective = await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/honors/suggest`)
-      .set(auth())
-      .send({
-        type: 'collective',
-        requestId: requestId('collective-honor'),
-      })
-      .expect(201);
-    expect(collective.body).toMatchObject({
-      type: 'collective',
-      student: null,
-      status: 'draft',
-    });
-    await request(app.getHttpServer())
-      .post(`/honors/${collective.body.id}/publish`)
-      .set(auth())
-      .send({ requestId: requestId('collective-publish') })
-      .expect(201);
-    const honors = await request(app.getHttpServer())
-      .get(`/classroom-runs/${started.body.id}/honors`)
-      .set(auth())
-      .expect(200);
-    expect(JSON.stringify(honors.body)).not.toMatch(
-      /negative|lowest|lastPlace|总积分排名|负面榜单/i,
-    );
-    expect(
-      await app
-        .get<Repository<HonorRecord>>(getRepositoryToken(HonorRecord))
-        .count({
-          where: {
-            classroomRunId: started.body.id,
-            status: 'published' as never,
-          },
-        }),
-    ).toBe(4);
+  it('3E adapters reject pre-canonical request IDs instead of repeating historical writes', async () => {
+    const started = await beginLegacyBoundaryRun();
+    const repo = <T>(entity: new () => T): Repository<T & object> => app.get(getRepositoryToken(entity));
+    try {
+      const attendanceRequest = requestId('old-attendance-request');
+      const rewardRequest = requestId('old-reward-request');
+      const rollRequest = requestId('old-roll-request');
+      const record = await repo(AttendanceRecord).save(repo(AttendanceRecord).create({ classroomRunId: started.id, classId,
+        studentId, status: 'present' as any, note: '历史记录', updatedBy: teacherId }));
+      await repo(AttendanceChangeLog).save(repo(AttendanceChangeLog).create({ attendanceRecordId: record.id,
+        classroomRunId: started.id, classId, studentId, previousStatus: null, newStatus: 'present' as any,
+        source: 'manual' as any, actorType: AuthUserType.Teacher, actorId: teacherId, requestId: attendanceRequest }));
+      await repo(RewardRecord).save(repo(RewardRecord).create({ classroomRunId: started.id, classId, studentId,
+        teacherId, rewardType: 'answer' as any, points: 1, flowerCount: 1, classGrowthValue: 0,
+        reason: '历史奖励', status: 'active' as any, requestId: rewardRequest }));
+      await repo(RollCallRecord).save(repo(RollCallRecord).create({ classroomRunId: started.id, classId, teacherId,
+        selectedStudentId: studentId, mode: 'teacher_specified' as any, algorithmVersion: 'fair-v1', cooldownCount: 2,
+        source: 'teacher', requestId: rollRequest }));
+      await expectBlocked(`/classroom-runs/${started.id}/attendance`, { studentId, status: 'present', requestId: attendanceRequest });
+      await expectBlocked(`/classroom-runs/${started.id}/attendance/batch`, { entries: [{ studentId, status: 'present' }], requestId: attendanceRequest });
+      await expectBlocked(`/classroom-runs/${started.id}/engagement-rewards`, {
+        studentId, rewardType: 'answer', points: 1, flowerCount: 1, reason: '历史奖励', requestId: rewardRequest });
+      await expectBlocked(`/classroom-runs/${started.id}/roll-calls`, { mode: 'teacher_specified', specifiedStudentId: studentId, requestId: rollRequest });
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
 
-    await request(app.getHttpServer())
-      .post(`/classroom-runs/${started.body.id}/complete`)
-      .set(auth())
-      .send({ version: 1, deviceId, requestId: requestId('honor-complete') })
-      .expect(201);
+  it('3E adapters roll back all facts on required Snapshot failure', async () => {
+    const started = await beginLegacyBoundaryRun();
+    const snapshots = app.get(ClassroomSnapshotService);
+    try {
+      for (const [path, fields] of [
+        ['attendance', { studentId, status: 'present' }],
+        ['attendance/batch', { entries: [{ studentId, status: 'present' }, { studentId: student2Id, status: 'late' }] }],
+        ['engagement-rewards', { studentId, rewardType: 'focus', points: 1, flowerCount: 1, reason: '认真观察' }],
+        ['roll-calls', { mode: 'teacher_specified', specifiedStudentId: studentId }],
+      ] as Array<[string, object]>) {
+        const before = await boundaryRows();
+        const body = { ...fields, requestId: requestId('adapter-failure') };
+        const fail = jest.spyOn(snapshots, 'captureBusinessRequired').mockRejectedValueOnce(new Error('injected-required-failure'));
+        try { await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth()).send(body).expect(500); }
+        finally { fail.mockRestore(); }
+        expect(await boundaryRows()).toEqual(before);
+        const committed = (await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth()).send(body).expect(201)).body;
+        const after = await boundaryRows();
+        expect((await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth()).send(body).expect(201)).body).toEqual(committed);
+        expect(await boundaryRows()).toEqual(after);
+      }
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E adapters enforce access, active/class membership, batch atomicity and terminal replay', async () => {
+    const started = await beginLegacyBoundaryRun();
+    const students = app.get<Repository<Student>>(getRepositoryToken(Student));
+    let finished = false;
+    try {
+      const cases: Array<[string, any]> = [
+        ['attendance', { studentId, status: 'present' }],
+        ['engagement-rewards', { studentId, rewardType: 'labor', points: 1, flowerCount: 1, reason: '主动劳动' }],
+        ['roll-calls', { mode: 'teacher_specified', specifiedStudentId: studentId }],
+      ];
+      for (const [path, fields] of cases) {
+        const before = await boundaryRows();
+        await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set({ Authorization: `Bearer ${otherToken}` })
+          .send({ ...fields, requestId: requestId('foreign-adapter') }).expect(403);
+        expect(await boundaryRows()).toEqual(before);
+      }
+      for (const patch of [{ status: RecordStatus.Disabled }, { classId: foreignClassId }]) {
+        await students.update(studentId, patch);
+        for (const [path, fields] of cases) {
+          const before = await boundaryRows();
+          const response = await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth())
+            .send({ ...fields, requestId: requestId('invalid-student') });
+          expect([400, 403, 409]).toContain(response.status);
+          expect(await boundaryRows()).toEqual(before);
+        }
+        await students.update(studentId, { status: RecordStatus.Active, classId });
+      }
+      const before = await boundaryRows();
+      for (const entries of [
+        [{ studentId, status: 'present' }, { studentId, status: 'late' }],
+        [{ studentId, status: 'present' }, { studentId: 99999999, status: 'late' }],
+      ]) await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/attendance/batch`).set(auth())
+        .send({ entries, requestId: requestId('invalid-batch') }).expect(400);
+      expect(await boundaryRows()).toEqual(before);
+      const successful: Array<[string, any, any]> = [];
+      for (const [path, fields] of cases) {
+        const body = { ...fields, requestId: requestId('terminal-replay') };
+        successful.push([path, body, (await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth()).send(body).expect(201)).body]);
+      }
+      await finishLegacyBoundaryRun(started.id); finished = true;
+      const ended = await boundaryRows();
+      for (const [path, body, result] of successful) {
+        expect((await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth()).send(body).expect(201)).body).toEqual(result);
+        await request(app.getHttpServer()).post(`/classroom-runs/${started.id}/${path}`).set(auth())
+          .send({ ...body, requestId: requestId('terminal-new') }).expect(409);
+      }
+      expect(await boundaryRows()).toEqual(ended);
+    } finally {
+      await students.update(studentId, { status: RecordStatus.Active, classId });
+      if (!finished) await finishLegacyBoundaryRun(started.id);
+    }
+  });
+
+  it('3E rejects reward rules, growth, badge and out-of-range semantics without writes', async () => {
+    const started = await beginLegacyBoundaryRun();
+    try {
+      const rule = await request(app.getHttpServer()).post('/reward-rules').set(auth()).send({
+        name: '保留规则配置', rewardType: 'answer', pointsValue: 30, flowerCount: 20, classGrowthValue: 40,
+      }).expect(201);
+      for (const rewardType of ['answer', 'cooperation', 'focus', 'labor', 'exploration', 'progress'])
+        await expectBlocked(`/classroom-runs/${started.id}/engagement-rewards`, {
+          studentId, rewardType, points: 30, flowerCount: 20, classGrowthValue: 40, reason: '不得截断', requestId: requestId('blocked-award'),
+        });
+      await expectBlocked(`/classroom-runs/${started.id}/engagement-rewards`, {
+        studentId, ruleId: rule.body.id, reason: '规则不隐式授予', requestId: requestId('blocked-rule'),
+      });
+      const direct = { studentId, rewardType: 'answer', points: 1, flowerCount: 1, reason: '明确奖励' };
+      for (const delta of [{ points: 21 }, { flowerCount: 6 }, { classGrowthValue: 1 },
+        { badgeDefinitionId: 999 }, { rewardType: undefined }, { points: 0, flowerCount: 0 }, { reason: '长'.repeat(201) }])
+        await expectBlocked(`/classroom-runs/${started.id}/engagement-rewards`,
+          { ...direct, ...delta, requestId: requestId('unmapped-reward') });
+      await expectBlocked('/rewards/999/reverse', { reason: '不能猜测正式ID', requestId: requestId('blocked-revoke') });
+      await request(app.getHttpServer()).get('/reward-rules').set(auth()).expect(200);
+    } finally { await finishLegacyBoundaryRun(started.id); }
+  });
+
+  it('3E-1 creates multi-dimensional honors with cooldown rotation and teacher confirmation without rankings', async () => {
+    const started = await beginLegacyBoundaryRun();
+    try {
+      for (const delta of [-20, 20]) await expectBlocked(`/classes/${classId}/growth/adjust`,
+        { delta, reason: '不能变成积分', requestId: requestId('growth') });
+      await expectBlocked(`/classroom-runs/${started.id}/honors/suggest`, { type: 'today_star', requestId: requestId('honor') });
+      await expectBlocked('/honors/999/publish', { requestId: requestId('publish') });
+      await request(app.getHttpServer()).get(`/classroom-runs/${started.id}/honors`).set(auth()).expect(200);
+      await request(app.getHttpServer()).get(`/classes/${classId}/growth`).set(auth()).expect(200);
+    } finally { await finishLegacyBoundaryRun(started.id); }
   });
 
   it('persists break countdown, restores the saved step and auto-terminates break on classroom terminal state', async () => {
@@ -3209,7 +3032,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const stepped = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/steps/1`)
       .set(auth())
@@ -3367,7 +3190,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(cancelPlan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const cancelBreak = await request(app.getHttpServer())
       .post(`/classroom-runs/${cancelRun.body.id}/breaks/start`)
       .set(auth())

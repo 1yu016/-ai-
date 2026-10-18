@@ -1,3 +1,5 @@
+import { assertRunOperation, readOperationContext } from './classroom-operation-context';
+import { policyAllowedActions, type ClassroomOperation } from './classroom-operation-policy';
 import {
   BadRequestException,
   ConflictException,
@@ -48,7 +50,6 @@ import {
 } from '../platform/platform.types';
 import { ResourceService } from '../resources/resource.service';
 import {
-  allowedClassroomRunTransitions,
   assertClassroomRunTransition,
 } from './classroom-run.state-machine';
 import {
@@ -378,14 +379,8 @@ export class ClassroomRunService {
     if (isBreakActive(run))
       throw new ConflictException('当前已经处于课间休息');
     const contentType = dto.contentType ?? ClassroomBreakContentType.Water;
-    const previousSnapshot = await this.snapshotService.loadLatestValid(id);
-    const breakContext = {
-      currentStepIndex: run.currentStepIndex,
-      playerState: previousSnapshot?.playerState ?? {},
-      capturedAt: new Date().toISOString(),
-    };
     try {
-      await this.dataSource.transaction(async (manager) => {
+      await this.snapshotService.transactionRequired(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
         const current = await runRepo.findOne({ where: { id } });
         if (!current) throw new NotFoundException('课堂运行不存在');
@@ -396,6 +391,13 @@ export class ClassroomRunService {
           throw new ConflictException('只有运行中的课堂可以进入课间休息');
         if (isBreakActive(current))
           throw new ConflictException('当前已经处于课间休息');
+        await assertRunOperation(current, manager, this.snapshotService, 'start_break');
+        const previousSnapshot = await this.snapshotService.loadLatestValid(id, manager);
+        const breakContext = {
+          currentStepIndex: current.currentStepIndex,
+          playerState: previousSnapshot?.playerState ?? {},
+          capturedAt: new Date().toISOString(),
+        };
         const now = new Date();
         const ends = new Date(now.getTime() + dto.durationSeconds * 1000);
         const protectionAt = new Date(
@@ -437,29 +439,30 @@ export class ClassroomRunService {
           },
           dto.requestId,
         );
-      });
-      await this.snapshotService.capture(
-        id,
-        ClassroomSnapshotReason.BreakStart,
-        true,
-        {
-          interactionState: {
-            ...previousSnapshot?.interactionState,
-            breakMode: {
-              contentType,
-              avatarAction:
-                CLASSROOM_BREAK_CONTENT[contentType].avatarAction,
-              startedAt: new Date().toISOString(),
+        await this.snapshotService.captureRequired(
+          id,
+          ClassroomSnapshotReason.BreakStart,
+          true,
+          {
+            interactionState: {
+              ...previousSnapshot?.interactionState,
+              breakMode: {
+                contentType,
+                avatarAction:
+                  CLASSROOM_BREAK_CONTENT[contentType].avatarAction,
+                startedAt: new Date().toISOString(),
+              },
+            },
+            playerState: {
+              ...previousSnapshot?.playerState,
+              status: 'stopped',
+              operation: 'stop_media',
+              breakMediaExclusive: true,
             },
           },
-          playerState: {
-            ...previousSnapshot?.playerState,
-            status: 'stopped',
-            operation: 'stop_media',
-            breakMediaExclusive: true,
-          },
-        },
-      );
+          manager,
+        );
+      });
       return this.get(actor, id);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -500,9 +503,8 @@ export class ClassroomRunService {
       await this.finalizeExpiredBreak(id);
       return this.get(actor, id);
     }
-    const context = this.breakContext(run);
     try {
-      await this.dataSource.transaction(async (manager) => {
+      await this.snapshotService.transactionRequired(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
         const current = await runRepo.findOne({ where: { id } });
         if (!current) throw new NotFoundException('课堂运行不存在');
@@ -510,6 +512,8 @@ export class ClassroomRunService {
         this.assertCurrentDevice(current, dto.deviceId);
         if (current.version !== dto.version) throw this.versionConflict();
         if (!isBreakActive(current)) return;
+        await assertRunOperation(current, manager, this.snapshotService, 'end_break');
+        const context = this.breakContext(current);
         const update = await runRepo.update(
           { id, version: dto.version, status: ClassroomRunStatus.Running },
           {
@@ -540,13 +544,11 @@ export class ClassroomRunService {
           },
           dto.requestId,
         );
+        await this.snapshotService.captureRequired(
+          id, ClassroomSnapshotReason.BreakEnd, true,
+          this.breakRestorePatch(context, 'teacher'), manager,
+        );
       });
-      await this.snapshotService.capture(
-        id,
-        ClassroomSnapshotReason.BreakEnd,
-        true,
-        this.breakRestorePatch(context, 'teacher'),
-      );
       return this.get(actor, id);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -581,7 +583,7 @@ export class ClassroomRunService {
     this.assertNotInBreak(preflight);
     await this.assertNoActiveBreak(id);
     try {
-      await this.dataSource.transaction(async (manager) => {
+      await this.snapshotService.transactionRequired(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
         const run = await runRepo.findOne({ where: { id } });
         if (!run) throw new NotFoundException('课堂运行不存在');
@@ -594,6 +596,7 @@ export class ClassroomRunService {
         if (run.status !== ClassroomRunStatus.Running)
           throw new ConflictException('只有运行中的课堂可以切换步骤');
         this.assertNotInBreak(run);
+        await assertRunOperation(run, manager, this.snapshotService, 'change_step');
         const exists = await manager
           .getRepository(ClassroomRunStepSnapshot)
           .exists({ where: { classroomRunId: id, stepIndex: dto.stepIndex } });
@@ -616,12 +619,10 @@ export class ClassroomRunService {
           },
           dto.requestId,
         );
+        await this.snapshotService.captureRequired(
+          id, ClassroomSnapshotReason.ChangeStep, false, {}, manager,
+        );
       });
-      await this.snapshotService.capture(
-        id,
-        ClassroomSnapshotReason.ChangeStep,
-        false,
-      );
       return this.get(actor, id);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -680,6 +681,7 @@ export class ClassroomRunService {
     preparation?: Awaited<ReturnType<ScreenPreparationService['create']>> | null; serverNow: string;
     phase?: 'opening' | 'teaching' | 'paused' | 'summary'; lifecycle?: ScreenLifecycle | null;
     handoff?: { id: string }; summary?: { runId: number; courseTitle: string; endedAt: string | null };
+    allowedActions?: string[];
   }> {
     this.requireTeacher(actor);
     const [device, binding] = await Promise.all([
@@ -694,7 +696,7 @@ export class ClassroomRunService {
       throw new ConflictException('大屏设备当前不可用于课堂');
     if (!binding) throw new ForbiddenException('大屏设备尚未绑定班级');
     await this.access.requireClassAccess(actor, binding.classId);
-    const idle = () => ({ page: 'idle', deviceId, classroomState: null, serverNow: new Date().toISOString() });
+    const idle = () => ({ page: 'idle', deviceId, classroomState: null, allowedActions: policyAllowedActions({}), serverNow: new Date().toISOString() });
     const candidates = await this.runs.find({
       where: { teacherId: actor.sub, deviceId, status: In([ClassroomRunStatus.Running, ClassroomRunStatus.Paused]) },
     });
@@ -718,6 +720,7 @@ export class ClassroomRunService {
             // A captured lease object is not sufficient after that boundary.
             if (lifecycle?.phase === 'summary' && this.handoffs.resolve(actor, handoffId, deviceId, binding.id)) return {
               page: 'summary', phase: 'summary', deviceId, classroomState: null, lifecycle,
+              allowedActions: policyAllowedActions({ summary: true }),
               summary: { runId: summaryRun.id, courseTitle: summaryRun.title, endedAt: summaryRun.endedAt?.toISOString() ?? null },
               handoff: { id: lease.id }, serverNow: new Date().toISOString(),
             };
@@ -725,7 +728,7 @@ export class ClassroomRunService {
           this.handoffs.revokeRun(lease.runId);
         }
       }
-      return state;
+      return { ...state, allowedActions: policyAllowedActions({ preparation: state.page === 'ready' }) };
     }
     await this.finalizeExpiredBreak(run.id);
     run = (await this.runs.findOneBy({ id: run.id })) ?? run;
@@ -825,7 +828,7 @@ export class ClassroomRunService {
           message: '没有可用快照，请教师人工确认课堂状态',
         },
         timing: this.timing(run, elapsedSeconds),
-        allowedActions: this.allowedActions(run.status),
+        allowedActions: await this.allowedActions(run),
         manualInterventionRequired: true,
       };
     const currentStep = steps.find(
@@ -857,7 +860,7 @@ export class ClassroomRunService {
         completedResourceIds: valid.playedResourceIds,
       },
       timing: this.timing(run, elapsedSeconds),
-      allowedActions: this.allowedActions(run.status),
+      allowedActions: await this.allowedActions(run),
       manualInterventionRequired: false,
     };
   }
@@ -884,7 +887,7 @@ export class ClassroomRunService {
       throw new ConflictException('旧设备已不再拥有课堂控制权');
     await this.requireTakeoverDevice(actor, run, dto);
     try {
-      await this.dataSource.transaction(async (manager) => {
+      await this.snapshotService.transactionRequired(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
         const current = await runRepo.findOne({ where: { id } });
         if (!current) throw new NotFoundException('课堂运行不存在');
@@ -893,6 +896,7 @@ export class ClassroomRunService {
         if (current.deviceId !== dto.oldDeviceId)
           throw new ConflictException('旧设备已不再拥有课堂控制权');
         if (current.version !== dto.version) throw this.versionConflict();
+        await assertRunOperation(current, manager, this.snapshotService, 'takeover');
         const update = await runRepo.update(
           { id, version: dto.version, deviceId: dto.oldDeviceId },
           { deviceId: dto.newDeviceId, version: dto.version + 1 },
@@ -921,12 +925,10 @@ export class ClassroomRunService {
           },
           dto.requestId,
         );
+        await this.snapshotService.captureRequired(
+          id, ClassroomSnapshotReason.Takeover, true, {}, manager,
+        );
       });
-      await this.snapshotService.capture(
-        id,
-        ClassroomSnapshotReason.Takeover,
-        true,
-      );
       return this.restore(actor, id, dto.newDeviceId);
     } catch (error) {
       const repeated = await this.findDuplicate(
@@ -966,7 +968,7 @@ export class ClassroomRunService {
     await this.assertNoActiveBreak(id);
     const valid = await this.snapshotService.loadLatestValid(id);
     if (!valid) return this.restore(actor, id, dto.deviceId);
-    await this.dataSource.transaction(async (manager) => {
+    await this.snapshotService.transactionRequired(async (manager) => {
       const runRepo = manager.getRepository(ClassroomRun);
       const current = await runRepo.findOne({ where: { id } });
       if (!current) throw new NotFoundException('课堂运行不存在');
@@ -975,15 +977,18 @@ export class ClassroomRunService {
       this.assertActive(current);
       await this.assertNoActiveBreak(id, manager);
       if (current.version !== dto.version) throw this.versionConflict();
+      await assertRunOperation(current, manager, this.snapshotService, 'recover');
+      const latest = await this.snapshotService.loadLatestValid(id, manager);
+      if (!latest) throw new ConflictException('恢复快照已失效，请重新读取');
       const elapsedSeconds = Math.max(
-        valid.entity.elapsedSeconds,
+        latest.entity.elapsedSeconds,
         this.snapshotService.currentElapsed(current),
       );
       const now = new Date();
       const update = await runRepo.update(
         { id, version: dto.version, deviceId: dto.deviceId },
         {
-          currentStepIndex: valid.entity.currentStepIndex,
+          currentStepIndex: latest.entity.currentStepIndex,
           elapsedSeconds,
           resumedAt: current.status === ClassroomRunStatus.Running ? now : null,
           version: dto.version + 1,
@@ -997,18 +1002,16 @@ export class ClassroomRunService {
         updated,
         ClassroomEventType.Recover,
         {
-          restoredSnapshotVersion: valid.entity.snapshotVersion,
+          restoredSnapshotVersion: latest.entity.snapshotVersion,
           version: updated.version,
         },
         dto.requestId,
       );
+      await this.snapshotService.captureRequired(
+        id, ClassroomSnapshotReason.Recover, true,
+        this.patchFromSnapshot(latest), manager,
+      );
     });
-    await this.snapshotService.capture(
-      id,
-      ClassroomSnapshotReason.Recover,
-      true,
-      this.patchFromSnapshot(valid),
-    );
     return this.restore(actor, id, dto.deviceId);
   }
 
@@ -1016,6 +1019,22 @@ export class ClassroomRunService {
     actor: JwtTeacherPayload,
     id: number,
     dto: ClassroomCheckpointDto,
+  ) {
+    return this.writeCheckpoint(actor, id, dto, false);
+  }
+
+  /** Internal TypeScript entry only. Never selected by request body fields. */
+  async checkpointControl(actor: JwtTeacherPayload, id: number, dto: ClassroomCheckpointDto) {
+    if ((['rewardState', 'attendanceState', 'rollCallState'] as const).some(key => dto[key] !== undefined))
+      throw new ConflictException({ code: 'BUSINESS_PROJECTION_OWNERSHIP', message: 'checkpoint不能写业务投影' });
+    return this.writeCheckpoint(actor, id, dto, true);
+  }
+
+  private async writeCheckpoint(
+    actor: JwtTeacherPayload,
+    id: number,
+    dto: ClassroomCheckpointDto,
+    trustedControl: boolean,
   ) {
     this.requireTeacher(actor);
     const duplicate = await this.findDuplicate(
@@ -1038,13 +1057,18 @@ export class ClassroomRunService {
       !dto.resourceId
     )
       throw new BadRequestException('资源播放完成必须提供resourceId');
-    if (dto.resourceId) {
+    if (trustedControl && dto.resourceId) {
       const belongs = await this.snapshots.exists({
         where: { classroomRunId: id, resourceId: dto.resourceId },
       });
       if (!belongs) throw new BadRequestException('资源不属于当前课堂快照');
     }
-    await this.dataSource.transaction(async (manager) => {
+    const snapshotPatch = trustedControl ? {
+      playedResourceId: dto.resourceId,
+      interactionState: dto.interactionState,
+      playerState: dto.playerState,
+    } : { playerObservation: dto.playerState ?? {} };
+    const write = async (manager: EntityManager) => {
       const runRepo = manager.getRepository(ClassroomRun);
       const current = await runRepo.findOne({ where: { id } });
       if (!current) throw new NotFoundException('课堂运行不存在');
@@ -1053,6 +1077,8 @@ export class ClassroomRunService {
       this.assertActive(current);
       await this.assertNoActiveBreak(id, manager);
       if (current.version !== dto.version) throw this.versionConflict();
+      await assertRunOperation(current, manager, this.snapshotService,
+        trustedControl ? this.controlPolicyOperation(dto) : 'checkpoint');
       const update = await runRepo.update(
         { id, version: dto.version, deviceId: dto.deviceId },
         { version: dto.version + 1 },
@@ -1071,20 +1097,20 @@ export class ClassroomRunService {
         },
         dto.requestId,
       );
-    });
-    await this.snapshotService.capture(
-      id,
-      this.checkpointReason(dto.checkpointType),
-      dto.checkpointType === ClassroomCheckpointType.RecoverableError,
-      {
-        playedResourceId: dto.resourceId,
-        attendanceState: dto.attendanceState,
-        rollCallState: dto.rollCallState,
-        rewardState: dto.rewardState,
-        interactionState: dto.interactionState,
-        playerState: dto.playerState,
-      },
-    );
+      if (trustedControl) await this.snapshotService.captureRequired(
+        id, this.checkpointReason(dto.checkpointType),
+        dto.checkpointType === ClassroomCheckpointType.RecoverableError, snapshotPatch, manager,
+      );
+    };
+    // Both roots share the existing snapshot transaction gate. Observation
+    // sampling remains best effort OUTSIDE this Run/Event transaction.
+    await this.snapshotService.transactionRequired(write);
+    if (!trustedControl) {
+      await this.snapshotService.captureBestEffort(
+        id, this.checkpointReason(dto.checkpointType),
+        dto.checkpointType === ClassroomCheckpointType.RecoverableError, snapshotPatch,
+      );
+    }
     return this.restore(actor, id, dto.deviceId);
   }
 
@@ -1109,7 +1135,7 @@ export class ClassroomRunService {
       dto.characterId,
       dto.versionId,
     );
-    await this.dataSource.transaction(async (manager) => {
+    await this.snapshotService.transactionRequired(async (manager) => {
       const runRepo = manager.getRepository(ClassroomRun);
       const current = await runRepo.findOne({ where: { id } });
       if (!current) throw new NotFoundException('课堂运行不存在');
@@ -1117,6 +1143,7 @@ export class ClassroomRunService {
       this.assertCurrentDevice(current, dto.deviceId);
       this.assertActive(current);
       if (current.version !== dto.version) throw this.versionConflict();
+      await assertRunOperation(current, manager, this.snapshotService, 'avatar_binding');
       await this.avatarConfiguration.upsertClassroomBinding(
         manager,
         actor,
@@ -1146,12 +1173,10 @@ export class ClassroomRunService {
         },
         dto.requestId,
       );
+      await this.snapshotService.captureRequired(
+        id, ClassroomSnapshotReason.AvatarBinding, true, {}, manager,
+      );
     });
-    await this.snapshotService.capture(
-      id,
-      ClassroomSnapshotReason.AvatarBinding,
-      true,
-    );
     return this.get(actor, id);
   }
 
@@ -1171,7 +1196,7 @@ export class ClassroomRunService {
     const run = await this.ownedRun(actor, id);
     this.assertCurrentDevice(run, dto.deviceId);
     this.assertActive(run);
-    await this.dataSource.transaction(async (manager) => {
+    await this.snapshotService.transactionRequired(async (manager) => {
       const runRepo = manager.getRepository(ClassroomRun);
       const current = await runRepo.findOne({ where: { id } });
       if (!current) throw new NotFoundException('课堂运行不存在');
@@ -1179,6 +1204,7 @@ export class ClassroomRunService {
       this.assertCurrentDevice(current, dto.deviceId);
       this.assertActive(current);
       if (current.version !== dto.version) throw this.versionConflict();
+      await assertRunOperation(current, manager, this.snapshotService, 'avatar_binding');
       await this.avatarConfiguration.cancelClassroomBinding(
         manager,
         actor,
@@ -1213,12 +1239,10 @@ export class ClassroomRunService {
         },
         dto.requestId,
       );
+      await this.snapshotService.captureRequired(
+        id, ClassroomSnapshotReason.AvatarBinding, true, {}, manager,
+      );
     });
-    await this.snapshotService.capture(
-      id,
-      ClassroomSnapshotReason.AvatarBinding,
-      true,
-    );
     return this.get(actor, id);
   }
 
@@ -1257,6 +1281,9 @@ export class ClassroomRunService {
         this.assertCurrentDevice(run, dto.deviceId);
         if (run.version !== dto.version) throw this.versionConflict();
         assertClassroomRunTransition(run.status, target);
+        await assertRunOperation(run, manager, this.snapshotService,
+          target === ClassroomRunStatus.Paused ? 'pause' : target === ClassroomRunStatus.Running ? 'resume'
+            : target === ClassroomRunStatus.Completed ? 'complete' : target === ClassroomRunStatus.Cancelled ? 'cancel' : 'fail');
         if (
           eventType === ClassroomEventType.Pause ||
           eventType === ClassroomEventType.Resume
@@ -1337,12 +1364,10 @@ export class ClassroomRunService {
           } else {
             // Recovery/transfer may leave no valid screen binding. Ending the
             // classroom must still work, but such a Run has no SUMMARY eligibility.
-            const saved = await this.snapshotService.capture(id, ClassroomSnapshotReason.Complete, true, {}, manager);
-            if (!saved) throw new ConflictException('结束快照保存失败');
+            await this.snapshotService.captureRequired(id, ClassroomSnapshotReason.Complete, true, {}, manager);
           }
         } else {
-          const saved = await this.snapshotService.capture(id, this.transitionSnapshotReason(eventType), true, {}, manager);
-          if (!saved) throw new ConflictException('课堂快照保存失败');
+          await this.snapshotService.captureRequired(id, this.transitionSnapshotReason(eventType), true, {}, manager);
         }
         await this.writeEvent(
           manager,
@@ -1520,11 +1545,8 @@ export class ClassroomRunService {
       initial.breakEndsAt.getTime() > Date.now()
     )
       return;
-    const context = this.breakContext(initial);
-    const requestId = `break-auto:${id}:${initial.breakEndsAt.getTime()}`;
-    let settled = false;
     try {
-      await this.dataSource.transaction(async (manager) => {
+      await this.snapshotService.transactionRequired(async (manager) => {
         const runRepo = manager.getRepository(ClassroomRun);
         const current = await runRepo.findOne({ where: { id } });
         if (
@@ -1534,6 +1556,8 @@ export class ClassroomRunService {
           current.breakEndsAt.getTime() > Date.now()
         )
           return;
+        const context = this.breakContext(current);
+        const requestId = `break-auto:${id}:${current.breakEndsAt.getTime()}`;
         const update = await runRepo.update(
           {
             id,
@@ -1570,18 +1594,14 @@ export class ClassroomRunService {
             result: ClassroomEventResult.Success,
           }),
         );
-        settled = true;
+        await this.snapshotService.captureRequired(
+          id, ClassroomSnapshotReason.BreakEnd, true,
+          this.breakRestorePatch(context, 'elapsed'), manager,
+        );
       });
     } catch (error) {
       if (!this.isUniqueViolation(error)) throw error;
     }
-    if (settled)
-      await this.snapshotService.capture(
-        id,
-        ClassroomSnapshotReason.BreakEnd,
-        true,
-        this.breakRestorePatch(context, 'elapsed'),
-      );
   }
 
   private breakContext(run: ClassroomRun): {
@@ -1777,25 +1797,22 @@ export class ClassroomRunService {
     };
   }
 
-  private allowedActions(status: ClassroomRunStatus): string[] {
-    const actionName: Record<ClassroomRunStatus, string> = {
-      [ClassroomRunStatus.Prepared]: 'start',
-      [ClassroomRunStatus.Running]: 'resume',
-      [ClassroomRunStatus.Paused]: 'pause',
-      [ClassroomRunStatus.Completed]: 'complete',
-      [ClassroomRunStatus.Cancelled]: 'cancel',
-      [ClassroomRunStatus.Failed]: 'fail',
-    };
-    const actions: string[] = allowedClassroomRunTransitions(status).map(
-      (value) => actionName[value],
-    );
-    if (status === ClassroomRunStatus.Running)
-      actions.push('change_step', 'checkpoint');
-    if (
-      [ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(status)
-    )
-      actions.push('takeover', 'recover', 'avatar_binding');
-    return actions;
+  async assertOperation(actor: JwtTeacherPayload, runId: number, operation: ClassroomOperation) {
+    this.requireTeacher(actor);
+    const run = await this.ownedRun(actor, runId);
+    await assertRunOperation(run, this.runs.manager, this.snapshotService, operation);
+  }
+
+  private async allowedActions(run: ClassroomRun): Promise<string[]> {
+    return policyAllowedActions(await readOperationContext(run, this.runs.manager, this.snapshotService));
+  }
+
+  private controlPolicyOperation(dto: ClassroomCheckpointDto): ClassroomOperation {
+    const operation = dto.playerState?.operation;
+    if (['stop_media', 'pause_media', 'mute'].includes(String(operation))) return 'safe_stop';
+    if (operation === 'speak_text') return 'tts';
+    if (dto.interactionState && !dto.playerState) return 'queue_edit';
+    return 'resource_start'; // Unknown control JSON cannot masquerade as observation.
   }
 
   private transitionSnapshotReason(
@@ -1822,9 +1839,6 @@ export class ClassroomRunService {
     snapshot: ValidClassroomSnapshot,
   ): ClassroomSnapshotPatch {
     return {
-      attendanceState: snapshot.attendanceState,
-      rollCallState: snapshot.rollCallState,
-      rewardState: snapshot.rewardState,
       interactionState: snapshot.interactionState,
       playerState: snapshot.playerState,
     };

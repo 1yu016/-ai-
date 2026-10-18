@@ -1,3 +1,6 @@
+import { rejectLegacyWrite, withRecordIdentity } from '../classroom-runs/legacy-write-boundary';
+import { StudentRewardService } from '../classroom-runs/student-reward.service';
+import { RewardCategory, RewardForm } from '../classroom-runs/reward-system.types';
 import {
   BadRequestException,
   ConflictException,
@@ -6,12 +9,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
+import { EntityManager, In, IsNull, Repository } from 'typeorm';
+import { createHash } from 'node:crypto';
+import { ClassroomEvent } from '../classroom-runs/entities/classroom-event.entity';
+import { TeacherClass } from '../platform/entities/teacher-class.entity';
+import { SchoolClass } from '../platform/entities/school-class.entity';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import {
   ClassroomRunStatus,
   ClassroomSnapshotReason,
+  ClassroomEventType,
+  ClassroomEventResult,
   TERMINAL_CLASSROOM_RUN_STATUSES,
 } from '../classroom-runs/classroom-run.types';
 import { ClassroomSnapshotService } from '../classroom-runs/classroom-snapshot.service';
@@ -23,10 +32,7 @@ import {
   ACTIVE_BREAK_STATUSES,
   BreakRunStatus,
   CollectiveGoalStatus,
-  GrowthEventType,
-  HonorStatus,
   HonorType,
-  RewardRecordStatus,
   RewardType,
 } from './classroom-engagement.types';
 import {
@@ -87,9 +93,9 @@ export class ClassroomEngagementService {
     @InjectRepository(ClassroomRun)
     private readonly runs: Repository<ClassroomRun>,
     @InjectRepository(Student) private readonly students: Repository<Student>,
-    private readonly dataSource: DataSource,
     private readonly access: PlatformAccessService,
     private readonly snapshots: ClassroomSnapshotService,
+    private readonly canonicalRewards: StudentRewardService,
   ) {}
 
   async createBadge(actor: JwtTeacherPayload, dto: CreateBadgeDefinitionDto) {
@@ -196,121 +202,28 @@ export class ClassroomEngagementService {
   }
 
   async award(actor: JwtTeacherPayload, runId: number, dto: AwardRewardDto) {
-    const run = await this.teacherRun(actor, runId, true);
-    await this.requireStudentInClass(run.classId, dto.studentId);
-    const duplicate = await this.rewards.findOne({
-      where: { teacherId: actor.sub, requestId: dto.requestId },
+    await this.teacherRun(actor, runId, false);
+    const points = dto.points ?? 0;
+    const flowers = dto.flowerCount ?? 0;
+    // Explicit intersection only: no rule expansion, growth conversion,
+    // badge-id guessing, truncation or implicit category/reward defaults.
+    if (dto.ruleId != null || dto.badgeDefinitionId != null || (dto.classGrowthValue ?? 0) !== 0 ||
+        !dto.rewardType || !Object.values(RewardCategory).includes(dto.rewardType as unknown as RewardCategory) ||
+        !Number.isInteger(points) || points < 0 || points > 20 ||
+        !Number.isInteger(flowers) || flowers < 0 || flowers > 5 || (!points && !flowers) ||
+        typeof dto.reason !== 'string' || !dto.reason.trim() || dto.reason.length > 200)
+      return rejectLegacyWrite('engagement.award.unmappedFields');
+    if (await this.rewards.existsBy({ teacherId: actor.sub, requestId: dto.requestId }))
+      return rejectLegacyWrite('engagement.award.legacyRequest');
+    const result = await this.canonicalRewards.createReward(actor, runId, {
+      requestId: dto.requestId, studentId: dto.studentId,
+      rewardCategory: dto.rewardType as unknown as RewardCategory,
+      rewardForms: [...(points ? [RewardForm.Points] : []), ...(flowers ? [RewardForm.Flower] : [])],
+      ...(flowers ? { stars: flowers } : {}), points, reason: dto.reason,
     });
-    if (duplicate) {
-      if (
-        duplicate.classroomRunId !== run.id ||
-        duplicate.studentId !== dto.studentId
-      )
-        throw new ConflictException('requestId 已用于其他奖励');
-      return this.rewardResponse(duplicate);
-    }
-
-    let values: {
-      ruleId: number | null;
-      rewardType: RewardType;
-      points: number;
-      flowerCount: number;
-      classGrowthValue: number;
-      badgeDefinitionId: number | null;
-    };
-    if (dto.ruleId) {
-      const rule = await this.ruleForActor(actor, dto.ruleId, true);
-      values = {
-        ruleId: rule.id,
-        rewardType: rule.rewardType,
-        points: rule.pointsValue,
-        flowerCount: rule.flowerCount,
-        classGrowthValue: rule.classGrowthValue,
-        badgeDefinitionId: rule.badgeDefinitionId,
-      };
-    } else {
-      if (!dto.rewardType)
-        throw new BadRequestException('未使用规则时必须提供奖励类型');
-      await this.validateBadge(actor, dto.badgeDefinitionId, dto.rewardType);
-      this.assertRewardForm(dto);
-      values = {
-        ruleId: null,
-        rewardType: dto.rewardType,
-        points: dto.points ?? 0,
-        flowerCount: dto.flowerCount ?? 0,
-        classGrowthValue: dto.classGrowthValue ?? 0,
-        badgeDefinitionId: dto.badgeDefinitionId ?? null,
-      };
-    }
-
-    let reward: RewardRecord;
-    try {
-      reward = await this.dataSource.transaction(async (manager) => {
-        const rewardRepo = manager.getRepository(RewardRecord);
-        const repeated = await rewardRepo.findOne({
-          where: { teacherId: actor.sub, requestId: dto.requestId },
-        });
-        if (repeated) {
-          if (
-            repeated.classroomRunId !== run.id ||
-            repeated.studentId !== dto.studentId
-          )
-            throw new ConflictException('requestId 已用于其他奖励');
-          return repeated;
-        }
-        const saved = await rewardRepo.save(
-          rewardRepo.create({
-            classroomRunId: run.id,
-            classId: run.classId,
-            studentId: dto.studentId,
-            teacherId: actor.sub,
-            ...values,
-            reason: dto.reason.trim(),
-            status: RewardRecordStatus.Active,
-            requestId: dto.requestId,
-          }),
-        );
-        if (values.badgeDefinitionId) {
-          await manager.getRepository(StudentBadge).save(
-            manager.getRepository(StudentBadge).create({
-              studentId: dto.studentId,
-              badgeDefinitionId: values.badgeDefinitionId,
-              rewardRecordId: saved.id,
-              active: true,
-              reversedAt: null,
-            }),
-          );
-        }
-        if (values.classGrowthValue > 0) {
-          await this.appendGrowth(manager, {
-            classId: run.classId,
-            classroomRunId: run.id,
-            rewardRecordId: saved.id,
-            delta: values.classGrowthValue,
-            eventType: GrowthEventType.Reward,
-            reason: dto.reason.trim(),
-            teacherId: actor.sub,
-            requestId: `reward:${dto.requestId}`,
-          });
-          await this.advanceGoals(
-            manager,
-            run.classId,
-            values.classGrowthValue,
-            actor.sub,
-            saved.id,
-          );
-        }
-        return saved;
-      });
-    } catch (error) {
-      const repeated = await this.rewards.findOne({
-        where: { teacherId: actor.sub, requestId: dto.requestId },
-      });
-      if (repeated) return this.rewardResponse(repeated);
-      throw error;
-    }
-    await this.captureReward(run.id, reward);
-    return this.rewardResponse(reward);
+    const record = withRecordIdentity(result.record, 'canonical', 'reward');
+    return { ...record, flowerCount: record.stars, rewardType: record.rewardCategory,
+      ...result, record };
   }
 
   async reverseReward(
@@ -318,72 +231,8 @@ export class ClassroomEngagementService {
     rewardId: number,
     dto: ReverseRewardDto,
   ) {
-    this.requireTeacher(actor);
-    const byRequest = await this.reversals.findOne({
-      where: { teacherId: actor.sub, requestId: dto.requestId },
-    });
-    if (byRequest && byRequest.rewardRecordId !== rewardId)
-      throw new ConflictException('requestId 已用于其他奖励撤销');
-    const existingReversal =
-      byRequest ??
-      (await this.reversals.findOne({ where: { rewardRecordId: rewardId } }));
-    if (existingReversal) {
-      const existingReward = await this.rewards.findOneByOrFail({
-        id: existingReversal.rewardRecordId,
-      });
-      return this.rewardResponse(existingReward);
-    }
-    const reward = await this.rewards.findOne({ where: { id: rewardId } });
-    if (!reward) throw new NotFoundException('奖励记录不存在');
-    const run = await this.teacherRun(actor, reward.classroomRunId, false);
-    if (reward.status === RewardRecordStatus.Reversed)
-      throw new ConflictException('奖励已经撤销');
-    await this.dataSource.transaction(async (manager) => {
-      const repo = manager.getRepository(RewardRecord);
-      const current = await repo.findOneByOrFail({ id: reward.id });
-      if (current.status === RewardRecordStatus.Reversed)
-        throw new ConflictException('奖励已经撤销');
-      current.status = RewardRecordStatus.Reversed;
-      await repo.save(current);
-      await manager.getRepository(RewardReversal).save(
-        manager.getRepository(RewardReversal).create({
-          rewardRecordId: current.id,
-          requestId: dto.requestId,
-          teacherId: actor.sub,
-          reason: dto.reason.trim(),
-        }),
-      );
-      const studentBadge = await manager
-        .getRepository(StudentBadge)
-        .findOne({ where: { rewardRecordId: current.id } });
-      if (studentBadge) {
-        studentBadge.active = false;
-        studentBadge.reversedAt = new Date();
-        await manager.getRepository(StudentBadge).save(studentBadge);
-      }
-      if (current.classGrowthValue > 0) {
-        await this.appendGrowth(manager, {
-          classId: current.classId,
-          classroomRunId: current.classroomRunId,
-          rewardRecordId: current.id,
-          delta: -current.classGrowthValue,
-          eventType: GrowthEventType.RewardReversal,
-          reason: dto.reason.trim(),
-          teacherId: actor.sub,
-          requestId: `reverse:${dto.requestId}`,
-        });
-        await this.advanceGoals(
-          manager,
-          current.classId,
-          -current.classGrowthValue,
-          actor.sub,
-          current.id,
-        );
-      }
-    });
-    const updated = await this.rewards.findOneByOrFail({ id: reward.id });
-    await this.captureReward(run.id, updated);
-    return this.rewardResponse(updated);
+    this.requireTeacher(actor); void rewardId; void dto;
+    return rejectLegacyWrite('engagement.reverseReward');
   }
 
   async listRewards(actor: JwtTeacherPayload, runId: number) {
@@ -411,7 +260,7 @@ export class ClassroomEngagementService {
     const byId = new Map(definitions.map((item) => [item.id, item]));
     return {
       items: items.map((item) => ({
-        ...item,
+        ...withRecordIdentity(item, 'legacy_engagement', 'badge'),
         badge: byId.get(item.badgeDefinitionId) ?? null,
       })),
     };
@@ -424,18 +273,36 @@ export class ClassroomEngagementService {
   ) {
     this.requireTeacher(actor);
     await this.access.requireClassAccess(actor, classId);
-    return this.goals.save(
-      this.goals.create({
-        classId,
-        title: dto.title.trim(),
-        description: dto.description?.trim() || null,
-        targetValue: dto.targetValue,
-        currentValue: 0,
-        status: CollectiveGoalStatus.Active,
-        teacherId: actor.sub,
-        completedAt: null,
-      }),
-    );
+    try {
+      return await this.snapshots.transactionRequired(async manager => {
+        const schoolClass = await manager.getRepository(SchoolClass).findOneBy({ id: classId });
+        if (!schoolClass) throw new NotFoundException('班级不存在');
+        if (actor.schoolId && schoolClass.schoolId && actor.schoolId !== schoolClass.schoolId)
+          throw new ForbiddenException('无权访问其他园所数据');
+        const administrator = this.access.isAdministrator(actor);
+        if (!administrator && !await manager.getRepository(TeacherClass).existsBy({ teacherId: actor.sub, classId }))
+          throw new ForbiddenException('无权访问该班级');
+        // The revocation path does not share our queue. Keep authorization in
+        // the INSERT itself too; a stale WAL read transaction cannot upgrade
+        // to a writer after another connection has committed a revocation.
+        const inserted: { id: number }[] = await manager.query(`
+          INSERT INTO "collective_goal"
+            (class_id, title, description, target_value, current_value, status, teacher_id, completed_at)
+          SELECT c.id, ?, ?, ?, 0, ?, ?, NULL FROM "class" c
+          WHERE c.id = ? AND (? IS NULL OR c.school_id IS NULL OR c.school_id = '' OR c.school_id = ?)
+            AND (? = 1 OR EXISTS (SELECT 1 FROM teacher_class tc WHERE tc.class_id = c.id AND tc.teacher_id = ?))
+          RETURNING id`, [dto.title.trim(), dto.description?.trim() || null, dto.targetValue,
+          CollectiveGoalStatus.Active, actor.sub, classId, actor.schoolId || null, actor.schoolId || null,
+          administrator ? 1 : 0, actor.sub]);
+        if (!inserted.length) throw new ForbiddenException('无权访问该班级');
+        return manager.getRepository(CollectiveGoal).findOneByOrFail({ id: inserted[0].id });
+      });
+    } catch (error) {
+      const code = (error as { driverError?: { code?: string }; code?: string })?.driverError?.code ??
+        (error as { code?: string })?.code;
+      if (code?.startsWith('SQLITE_BUSY')) throw new ConflictException('班级授权或配置已变化，请刷新后重试');
+      throw error;
+    }
   }
 
   async adjustGrowth(
@@ -443,32 +310,8 @@ export class ClassroomEngagementService {
     classId: number,
     dto: AdjustClassGrowthDto,
   ) {
-    this.requireTeacher(actor);
-    await this.access.requireClassAccess(actor, classId);
-    const duplicate = await this.growth.findOne({
-      where: { classId, requestId: dto.requestId },
-    });
-    if (duplicate) return duplicate;
-    if (dto.delta === 0) throw new BadRequestException('成长值调整不能为0');
-    const record = await this.dataSource.transaction(async (manager) => {
-      const repeated = await manager
-        .getRepository(ClassGrowthRecord)
-        .findOne({ where: { classId, requestId: dto.requestId } });
-      if (repeated) return repeated;
-      const saved = await this.appendGrowth(manager, {
-        classId,
-        classroomRunId: null,
-        rewardRecordId: null,
-        delta: dto.delta,
-        eventType: GrowthEventType.TeacherAdjustment,
-        reason: dto.reason.trim(),
-        teacherId: actor.sub,
-        requestId: dto.requestId,
-      });
-      await this.advanceGoals(manager, classId, dto.delta, actor.sub, null);
-      return saved;
-    });
-    return record;
+    this.requireTeacher(actor); await this.access.requireClassAccess(actor, classId); void dto;
+    return rejectLegacyWrite('engagement.adjustGrowth');
   }
 
   async classGrowth(actor: JwtTeacherPayload, classId: number) {
@@ -477,7 +320,9 @@ export class ClassroomEngagementService {
       this.growth.find({ where: { classId }, order: { id: 'DESC' } }),
       this.goals.find({ where: { classId }, order: { id: 'DESC' } }),
     ]);
-    return { currentValue: records[0]?.balanceAfter ?? 0, records, goals };
+    return { currentValue: records[0]?.balanceAfter ?? 0,
+      records: records.map(r => withRecordIdentity(r, 'legacy_engagement', 'growth')),
+      goals: goals.map(r => withRecordIdentity(r, 'legacy_engagement', 'goal')) };
   }
 
   async suggestHonor(
@@ -485,135 +330,8 @@ export class ClassroomEngagementService {
     runId: number,
     dto: SuggestHonorDto,
   ) {
-    const run = await this.teacherRun(actor, runId, false);
-    const duplicate = await this.honors.findOne({
-      where: { teacherId: actor.sub, requestId: dto.requestId },
-    });
-    if (duplicate) {
-      if (duplicate.classroomRunId !== run.id || duplicate.type !== dto.type)
-        throw new ConflictException('requestId 已用于其他荣誉建议');
-      return this.honorResponse(duplicate);
-    }
-    if (dto.type === HonorType.Collective) {
-      const completedGoal = await this.goals.findOne({
-        where: { classId: run.classId, status: CollectiveGoalStatus.Completed },
-        order: { completedAt: 'DESC' },
-      });
-      if (!completedGoal)
-        throw new ConflictException('班级尚无已完成的共同目标');
-      const honor = await this.honors.save(
-        this.honors.create({
-          classroomRunId: run.id,
-          classId: run.classId,
-          studentId: null,
-          type: dto.type,
-          title: `集体荣誉：${completedGoal.title}`,
-          dimensions: JSON.stringify({
-            goalId: completedGoal.id,
-            goalCompleted: true,
-            collectiveGrowth: completedGoal.currentValue,
-          }),
-          status: HonorStatus.Draft,
-          teacherId: actor.sub,
-          requestId: dto.requestId,
-          confirmedBy: null,
-          confirmedAt: null,
-          cooldownUntil: null,
-        }),
-      );
-      return this.honorResponse(honor);
-    }
-
-    const activeRewards = await this.rewards.find({
-      where: { classroomRunId: run.id, status: RewardRecordStatus.Active },
-    });
-    const students = await this.classStudents(run.classId);
-    const now = new Date();
-    const recent = await this.honors.find({
-      where: {
-        classId: run.classId,
-        type: dto.type,
-        status: HonorStatus.Published,
-      },
-      order: { confirmedAt: 'DESC' },
-    });
-    const recentCount = new Map<number, number>();
-    recent.forEach((item) => {
-      if (item.studentId)
-        recentCount.set(
-          item.studentId,
-          (recentCount.get(item.studentId) ?? 0) + 1,
-        );
-    });
-    const candidates = students
-      .map((student) => {
-        const records = activeRewards.filter(
-          (reward) => reward.studentId === student.id,
-        );
-        const types = new Set(records.map((reward) => reward.rewardType));
-        const relevant = records.filter((reward) =>
-          this.honorRelevant(dto.type, reward.rewardType),
-        ).length;
-        const cooling = recent.some(
-          (item) =>
-            item.studentId === student.id &&
-            item.cooldownUntil &&
-            item.cooldownUntil > now,
-        );
-        return {
-          student,
-          relevant,
-          distinctRewardTypes: types.size,
-          participationEvents: records.length,
-          priorDisplays: recentCount.get(student.id) ?? 0,
-          cooling,
-        };
-      })
-      .filter(
-        (candidate) =>
-          candidate.relevant > 0 &&
-          (dto.type !== HonorType.TodayStar ||
-            candidate.distinctRewardTypes >= 2),
-      );
-    if (!candidates.length)
-      throw new ConflictException('当前课堂没有满足多维度条件的荣誉候选');
-    const available = candidates.filter((candidate) => !candidate.cooling);
-    if (!available.length)
-      throw new ConflictException(
-        '符合条件的幼儿仍在荣誉展示冷却期，请稍后轮换',
-      );
-    const chosen = [...available].sort(
-      (a, b) =>
-        a.priorDisplays - b.priorDisplays ||
-        b.relevant - a.relevant ||
-        b.distinctRewardTypes - a.distinctRewardTypes ||
-        b.participationEvents - a.participationEvents ||
-        a.student.id - b.student.id,
-    )[0];
-    const honor = await this.honors.save(
-      this.honors.create({
-        classroomRunId: run.id,
-        classId: run.classId,
-        studentId: chosen.student.id,
-        type: dto.type,
-        title: this.honorTitle(dto.type),
-        dimensions: JSON.stringify({
-          rewardTypes: chosen.distinctRewardTypes,
-          relevantEvents: chosen.relevant,
-          participationEvents: chosen.participationEvents,
-          rotationApplied: chosen.priorDisplays > 0 || chosen.cooling,
-        }),
-        status: HonorStatus.Draft,
-        teacherId: actor.sub,
-        requestId: dto.requestId,
-        confirmedBy: null,
-        confirmedAt: null,
-        cooldownUntil: new Date(
-          Date.now() + (dto.cooldownDays ?? 7) * 86_400_000,
-        ),
-      }),
-    );
-    return this.honorResponse(honor);
+    await this.teacherRun(actor, runId, false); void dto;
+    return rejectLegacyWrite('engagement.suggestHonor');
   }
 
   async publishHonor(
@@ -621,19 +339,8 @@ export class ClassroomEngagementService {
     honorId: number,
     dto: PublishHonorDto,
   ) {
-    this.requireTeacher(actor);
-    const honor = await this.honors.findOne({ where: { id: honorId } });
-    if (!honor) throw new NotFoundException('荣誉记录不存在');
-    await this.teacherRun(actor, honor.classroomRunId, false);
-    if (honor.status === HonorStatus.Published)
-      return this.honorResponse(honor);
-    if (honor.status !== HonorStatus.Draft)
-      throw new ConflictException('只有草稿荣誉可以发布');
-    honor.status = HonorStatus.Published;
-    honor.confirmedBy = actor.sub;
-    honor.confirmedAt = new Date();
-    if (dto.title) honor.title = dto.title.trim();
-    return this.honorResponse(await this.honors.save(honor));
+    this.requireTeacher(actor); void honorId; void dto;
+    return rejectLegacyWrite('engagement.publishHonor');
   }
 
   async listHonors(actor: JwtTeacherPayload, runId: number) {
@@ -696,137 +403,54 @@ export class ClassroomEngagementService {
     };
   }
 
-  async startBreak(
-    actor: JwtTeacherPayload,
-    runId: number,
-    dto: StartBreakDto,
-  ) {
-    const run = await this.teacherRun(actor, runId, true);
-    if (
-      ![ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(
-        run.status,
-      )
-    )
-      throw new ConflictException('只有运行或暂停中的课堂可以进入课间');
-    if (run.deviceId !== dto.deviceId)
-      throw new ForbiddenException('当前设备无课堂控制权');
-    const duplicate = await this.breaks.findOne({
-      where: { teacherId: actor.sub, requestId: dto.requestId },
-    });
-    if (duplicate) {
-      if (duplicate.classroomRunId !== run.id)
-        throw new ConflictException('requestId 已用于其他课间');
-      return this.breakResponse(duplicate);
-    }
-    let config: BreakConfig | null = null;
-    if (dto.configId) {
-      config = await this.breakConfigs.findOne({
-        where: { id: dto.configId, classId: run.classId, enabled: true },
-      });
-      if (!config)
-        throw new BadRequestException('课间配置不存在、已停用或不属于当前班级');
-    }
-    const type = config?.type ?? dto.type;
-    const title = config?.name ?? dto.title?.trim();
-    const durationSeconds = config?.durationSeconds ?? dto.durationSeconds;
-    if (!type || !title || !durationSeconds)
-      throw new BadRequestException('未选择配置时必须提供课间类型、标题和时长');
-
-    await this.snapshots.capture(run.id, ClassroomSnapshotReason.Timed, true, {
-      interactionState: {
-        enteringBreak: true,
-        savedStepIndex: run.currentStepIndex,
-        savedStatus: run.status,
-      },
-    });
-    let breakRun: BreakRun;
-    try {
-      breakRun = await this.dataSource.transaction(async (manager) => {
-        const current = await manager
-          .getRepository(ClassroomRun)
-          .findOne({ where: { id: run.id } });
-        if (!current) throw new NotFoundException('课堂运行不存在');
-        if (current.teacherId !== actor.sub)
-          throw new ForbiddenException('无权操作其他教师的课堂');
-        if (current.version !== dto.version)
-          throw new ConflictException('课堂版本冲突，请刷新后重试');
-        if (current.deviceId !== dto.deviceId)
-          throw new ForbiddenException('当前设备无课堂控制权');
-        if (
-          ![ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(
-            current.status,
-          )
-        )
-          throw new ConflictException('课堂当前不能进入课间');
-        const active = await manager.getRepository(BreakRun).findOne({
-          where: {
-            classroomRunId: run.id,
-            status: In([...ACTIVE_BREAK_STATUSES]),
-          },
-        });
-        if (active) throw new ConflictException('当前课堂已经存在有效课间');
-        const now = new Date();
-        const elapsed =
-          current.status === ClassroomRunStatus.Running && current.resumedAt
-            ? current.elapsedSeconds +
-              Math.max(
-                0,
-                Math.floor(
-                  (now.getTime() - current.resumedAt.getTime()) / 1000,
-                ),
-              )
-            : current.elapsedSeconds;
-        const savedStatus = current.status;
-        const savedVersion = current.version;
-        await manager.getRepository(ClassroomRun).update(
-          { id: current.id, version: current.version },
-          {
-            status: ClassroomRunStatus.Paused,
-            elapsedSeconds: elapsed,
-            pausedAt: now,
-            resumedAt: null,
-            version: current.version + 1,
-          },
-        );
-        return manager.getRepository(BreakRun).save(
-          manager.getRepository(BreakRun).create({
-            classroomRunId: current.id,
-            classId: current.classId,
-            configId: config?.id ?? null,
-            type,
-            title,
-            durationSeconds,
-            status: BreakRunStatus.Running,
-            savedRunStatus: savedStatus,
-            savedStepIndex: current.currentStepIndex,
-            savedRunVersion: savedVersion,
-            elapsedSeconds: 0,
-            startedAt: now,
-            resumedAt: now,
-            pausedAt: null,
-            endedAt: null,
-            teacherId: actor.sub,
-            requestId: dto.requestId,
-            version: 1,
-          }),
-        );
-      });
-    } catch (error) {
-      const repeated = await this.breaks.findOne({
-        where: { teacherId: actor.sub, requestId: dto.requestId },
-      });
-      if (repeated) return this.breakResponse(repeated);
-      if (this.isUniqueViolation(error))
+  async startBreak(actor: JwtTeacherPayload, runId: number, dto: StartBreakDto) {
+    await this.teacherRun(actor, runId, false);
+    const payload = { runId, deviceId: dto.deviceId, configId: dto.configId ?? null,
+      type: dto.type ?? null, title: dto.title?.trim() ?? null, durationSeconds: dto.durationSeconds ?? null };
+    const result = await this.snapshots.transactionRequired(async manager => {
+      const run = await this.breakRunAccess(manager, actor, runId);
+      if (run.deviceId !== dto.deviceId) throw new ForbiddenException('当前设备无课堂控制权');
+      const replay = await this.readBreakReceipt(manager, actor, runId, dto.requestId, 'start', payload);
+      if (replay) return manager.getRepository(BreakRun).findOneByOrFail({ id: replay.breakRunId, classroomRunId: runId });
+      // Historical requests remain read-only. Do not manufacture an Event for an old row.
+      const duplicate = await manager.getRepository(BreakRun).findOneBy({ teacherId: actor.sub, requestId: dto.requestId });
+      if (duplicate) {
+        if (duplicate.classroomRunId !== runId) throw new ConflictException('requestId 已用于其他课间');
+        return duplicate;
+      }
+      if (![ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(run.status))
+        throw new ConflictException('只有运行或暂停中的课堂可以进入课间');
+      if (run.version !== dto.version) throw new ConflictException('课堂版本冲突，请刷新后重试');
+      if (run.breakStartedAt || run.breakEndsAt ||
+          await manager.getRepository(BreakRun).existsBy({ classroomRunId: run.id, status: In([...ACTIVE_BREAK_STATUSES]) }))
         throw new ConflictException('当前课堂已经存在有效课间');
-      throw error;
-    }
-    await this.snapshots.capture(run.id, ClassroomSnapshotReason.Timed, true, {
-      interactionState: {
-        breakRunId: breakRun.id,
-        breakStatus: breakRun.status,
-      },
+      const config = dto.configId ? await manager.getRepository(BreakConfig).findOneBy({
+        id: dto.configId, classId: run.classId, enabled: true,
+      }) : null;
+      if (dto.configId && !config) throw new BadRequestException('课间配置不存在、已停用或不属于当前班级');
+      const type = config?.type ?? dto.type;
+      const title = config?.name ?? dto.title?.trim();
+      const durationSeconds = config?.durationSeconds ?? dto.durationSeconds;
+      if (!type || !title || !durationSeconds) throw new BadRequestException('未选择配置时必须提供课间类型、标题和时长');
+      const now = new Date();
+      const elapsedSeconds = run.status === ClassroomRunStatus.Running && run.resumedAt
+        ? run.elapsedSeconds + Math.max(0, Math.floor((now.getTime() - run.resumedAt.getTime()) / 1000))
+        : run.elapsedSeconds;
+      const changed = await manager.getRepository(ClassroomRun).update({
+        id: run.id, version: dto.version, status: run.status, deviceId: dto.deviceId, teacherId: actor.sub,
+      }, { status: ClassroomRunStatus.Paused, elapsedSeconds, pausedAt: now, resumedAt: null, version: run.version + 1 });
+      if (changed.affected !== 1) throw new ConflictException('课堂版本冲突，请刷新后重试');
+      const repo = manager.getRepository(BreakRun);
+      const saved = await repo.save(repo.create({ classroomRunId: run.id, classId: run.classId,
+        configId: config?.id ?? null, type, title, durationSeconds, status: BreakRunStatus.Running,
+        savedRunStatus: run.status, savedStepIndex: run.currentStepIndex, savedRunVersion: run.version,
+        elapsedSeconds: 0, startedAt: now, resumedAt: now, pausedAt: null, endedAt: null,
+        teacherId: actor.sub, requestId: dto.requestId, version: 1 }));
+      await this.writeBreakReceipt(manager, actor, run, saved, dto.requestId, 'start', payload);
+      await this.captureBreakRequired(manager, run, saved, ClassroomSnapshotReason.Timed);
+      return saved;
     });
-    return this.breakResponse(breakRun);
+    return this.breakResponse(result);
   }
 
   async pauseBreak(
@@ -846,67 +470,7 @@ export class ClassroomEngagementService {
   }
 
   async endBreak(actor: JwtTeacherPayload, id: number, dto: BreakOperationDto) {
-    this.requireTeacher(actor);
-    const breakRun = await this.breaks.findOne({ where: { id } });
-    if (!breakRun) throw new NotFoundException('课间运行不存在');
-    const run = await this.teacherRun(actor, breakRun.classroomRunId, false);
-    if (
-      ![BreakRunStatus.Running, BreakRunStatus.Paused].includes(breakRun.status)
-    )
-      return this.breakResponse(breakRun);
-    if (breakRun.version !== dto.version)
-      throw new ConflictException('课间版本冲突，请刷新后重试');
-    await this.dataSource.transaction(async (manager) => {
-      const currentBreak = await manager
-        .getRepository(BreakRun)
-        .findOneByOrFail({ id });
-      const currentRun = await manager
-        .getRepository(ClassroomRun)
-        .findOneByOrFail({ id: run.id });
-      if (currentBreak.version !== dto.version)
-        throw new ConflictException('课间版本冲突，请刷新后重试');
-      const now = new Date();
-      currentBreak.elapsedSeconds = this.currentBreakElapsed(currentBreak, now);
-      currentBreak.status = BreakRunStatus.Completed;
-      currentBreak.resumedAt = null;
-      currentBreak.pausedAt = null;
-      currentBreak.endedAt = now;
-      currentBreak.version += 1;
-      await manager.getRepository(BreakRun).save(currentBreak);
-      if (
-        !TERMINAL_CLASSROOM_RUN_STATUSES.includes(currentRun.status as never)
-      ) {
-        const restoreStatus =
-          currentBreak.savedRunStatus === ClassroomRunStatus.Running
-            ? ClassroomRunStatus.Running
-            : ClassroomRunStatus.Paused;
-        await manager.getRepository(ClassroomRun).update(
-          { id: currentRun.id, version: currentRun.version },
-          {
-            status: restoreStatus,
-            currentStepIndex: currentBreak.savedStepIndex,
-            pausedAt: restoreStatus === ClassroomRunStatus.Paused ? now : null,
-            resumedAt:
-              restoreStatus === ClassroomRunStatus.Running ? now : null,
-            version: currentRun.version + 1,
-          },
-        );
-      }
-    });
-    const updated = await this.breaks.findOneByOrFail({ id });
-    await this.snapshots.capture(
-      run.id,
-      ClassroomSnapshotReason.Recover,
-      true,
-      {
-        interactionState: {
-          breakRunId: updated.id,
-          breakStatus: updated.status,
-          restoredStepIndex: updated.savedStepIndex,
-        },
-      },
-    );
-    return this.breakResponse(updated);
+    return this.mutateBreak(actor, id, dto, 'end');
   }
 
   async activeBreak(actor: JwtTeacherPayload, runId: number) {
@@ -926,148 +490,141 @@ export class ClassroomEngagementService {
   }
 
   private async changeBreakStatus(
-    actor: JwtTeacherPayload,
-    id: number,
-    dto: BreakOperationDto,
-    target: BreakRunStatus,
+    actor: JwtTeacherPayload, id: number, dto: BreakOperationDto, target: BreakRunStatus,
+  ) {
+    return this.mutateBreak(actor, id, dto, target === BreakRunStatus.Paused ? 'pause' : 'resume');
+  }
+
+  private async mutateBreak(
+    actor: JwtTeacherPayload, id: number, dto: BreakOperationDto, operation: 'end' | 'pause' | 'resume',
   ) {
     this.requireTeacher(actor);
-    const breakRun = await this.breaks.findOne({ where: { id } });
-    if (!breakRun) throw new NotFoundException('课间运行不存在');
-    await this.teacherRun(actor, breakRun.classroomRunId, true);
-    if (breakRun.version !== dto.version)
-      throw new ConflictException('课间版本冲突，请刷新后重试');
-    if (
-      target === BreakRunStatus.Paused &&
-      breakRun.status !== BreakRunStatus.Running
-    )
-      throw new ConflictException('只有进行中的课间可以暂停');
-    if (
-      target === BreakRunStatus.Running &&
-      breakRun.status !== BreakRunStatus.Paused
-    )
-      throw new ConflictException('只有暂停的课间可以恢复');
-    const now = new Date();
-    if (target === BreakRunStatus.Paused) {
-      breakRun.elapsedSeconds = this.currentBreakElapsed(breakRun, now);
-      breakRun.pausedAt = now;
-      breakRun.resumedAt = null;
-    } else {
-      breakRun.pausedAt = null;
-      breakRun.resumedAt = now;
-    }
-    breakRun.status = target;
-    breakRun.version += 1;
-    return this.breakResponse(await this.breaks.save(breakRun));
-  }
-
-  private async appendGrowth(
-    manager: EntityManager,
-    input: {
-      classId: number;
-      classroomRunId: number | null;
-      rewardRecordId: number | null;
-      delta: number;
-      eventType: GrowthEventType;
-      reason: string;
-      teacherId: number;
-      requestId: string;
-    },
-  ) {
-    const repo = manager.getRepository(ClassGrowthRecord);
-    const latest = await repo.findOne({
-      where: { classId: input.classId },
-      order: { id: 'DESC' },
-    });
-    return repo.save(
-      repo.create({
-        ...input,
-        goalId: null,
-        balanceAfter: Math.max(0, (latest?.balanceAfter ?? 0) + input.delta),
-      }),
-    );
-  }
-
-  private async advanceGoals(
-    manager: EntityManager,
-    classId: number,
-    delta: number,
-    teacherId: number,
-    rewardRecordId: number | null,
-  ) {
-    const repo = manager.getRepository(CollectiveGoal);
-    const goals = await repo.find({
-      where: {
-        classId,
-        status: In([
-          CollectiveGoalStatus.Active,
-          CollectiveGoalStatus.Completed,
-        ]),
-      },
-    });
-    for (const goal of goals) {
-      const before = goal.currentValue;
-      goal.currentValue = Math.max(0, goal.currentValue + delta);
-      const completed = goal.currentValue >= goal.targetValue;
-      if (completed && goal.status !== CollectiveGoalStatus.Completed) {
-        goal.status = CollectiveGoalStatus.Completed;
-        goal.completedAt = new Date();
-        const latest = await manager
-          .getRepository(ClassGrowthRecord)
-          .findOne({ where: { classId }, order: { id: 'DESC' } });
-        await manager.getRepository(ClassGrowthRecord).save(
-          manager.getRepository(ClassGrowthRecord).create({
-            classId,
-            classroomRunId: null,
-            rewardRecordId,
-            goalId: goal.id,
-            delta: 0,
-            balanceAfter: latest?.balanceAfter ?? 0,
-            eventType: GrowthEventType.GoalCompleted,
-            reason: `共同目标“${goal.title}”完成`,
-            teacherId,
-            requestId: `goal-completed:${goal.id}:${rewardRecordId ?? Date.now()}`,
-          }),
-        );
-      } else if (
-        !completed &&
-        goal.status === CollectiveGoalStatus.Completed &&
-        delta < 0
-      ) {
-        goal.status = CollectiveGoalStatus.Active;
-        goal.completedAt = null;
+    const result = await this.snapshots.transactionRequired(async manager => {
+      const repo = manager.getRepository(BreakRun);
+      const current = await repo.findOneBy({ id });
+      if (!current) throw new NotFoundException('课间运行不存在');
+      const run = await this.breakRunAccess(manager, actor, current.classroomRunId);
+      const payload = { breakRunId: id };
+      const replay = await this.readBreakReceipt(manager, actor, run.id, dto.requestId, operation, payload);
+      if (replay) return current;
+      if (operation === 'end' && !ACTIVE_BREAK_STATUSES.includes(current.status as never)) return current;
+      if (operation !== 'end' && TERMINAL_CLASSROOM_RUN_STATUSES.includes(run.status as never))
+        throw new ConflictException('已结束课堂不能执行该操作');
+      if (current.version !== dto.version) throw new ConflictException('课间版本冲突，请刷新后重试');
+      if ((operation === 'pause' && current.status !== BreakRunStatus.Running) ||
+          (operation === 'resume' && current.status !== BreakRunStatus.Paused))
+        throw new ConflictException('课间状态冲突，请刷新后重试');
+      const now = new Date();
+      const next = { ...current, version: current.version + 1 };
+      if (operation === 'end') {
+        next.status = BreakRunStatus.Completed;
+        next.elapsedSeconds = this.currentBreakElapsed(current, now);
+        next.resumedAt = null;
+        next.pausedAt = null;
+        next.endedAt = now;
+        const restoreStatus = current.savedRunStatus === ClassroomRunStatus.Running
+          ? ClassroomRunStatus.Running : ClassroomRunStatus.Paused;
+        const changed = !TERMINAL_CLASSROOM_RUN_STATUSES.includes(run.status as never)
+          ? await manager.getRepository(ClassroomRun).update(
+          { id: run.id, teacherId: actor.sub, version: run.version, status: run.status },
+          { status: restoreStatus, currentStepIndex: current.savedStepIndex,
+            pausedAt: restoreStatus === ClassroomRunStatus.Paused ? now : null,
+            resumedAt: restoreStatus === ClassroomRunStatus.Running ? now : null, version: run.version + 1 },
+        ) : { affected: 1 };
+        if (changed.affected !== 1) throw new ConflictException('课堂版本冲突，请刷新后重试');
+      } else {
+        next.status = operation === 'pause' ? BreakRunStatus.Paused : BreakRunStatus.Running;
+        next.elapsedSeconds = this.currentBreakElapsed(current, now);
+        next.pausedAt = operation === 'pause' ? now : null;
+        next.resumedAt = operation === 'resume' ? now : null;
       }
-      if (
-        goal.currentValue !== before ||
-        goal.status === CollectiveGoalStatus.Completed
-      )
-        await repo.save(goal);
-    }
+      const changed = await repo.update({ id, version: dto.version, status: current.status }, next);
+      if (changed.affected !== 1) throw new ConflictException('课间版本冲突，请刷新后重试');
+      await this.writeBreakReceipt(manager, actor, run, next, dto.requestId, operation, payload);
+      await this.captureBreakRequired(manager, run, next,
+        operation === 'end' ? ClassroomSnapshotReason.Recover : ClassroomSnapshotReason.Timed);
+      return next;
+    });
+    return this.breakResponse(result);
   }
 
-  private async captureReward(runId: number, reward: RewardRecord) {
-    const active = await this.rewards.find({
-      where: { classroomRunId: runId, status: RewardRecordStatus.Active },
-    });
-    await this.snapshots.capture(runId, ClassroomSnapshotReason.Reward, false, {
-      rewardState: {
-        lastRewardId: reward.id,
-        activeRewardCount: active.length,
-        flowerCount: active.reduce((sum, item) => sum + item.flowerCount, 0),
-        classGrowthValue: active.reduce(
-          (sum, item) => sum + item.classGrowthValue,
-          0,
-        ),
-      },
-    });
+  private async breakRunAccess(manager: EntityManager, actor: JwtTeacherPayload, runId: number) {
+    this.requireTeacher(actor);
+    const run = await manager.getRepository(ClassroomRun).findOneBy({ id: runId });
+    if (!run) throw new NotFoundException('课堂运行不存在');
+    if (run.teacherId !== actor.sub) throw new ForbiddenException('无权操作其他教师的课堂');
+    const schoolClass = await manager.getRepository(SchoolClass).findOneBy({ id: run.classId });
+    if (!schoolClass) throw new NotFoundException('班级不存在');
+    if (actor.schoolId && schoolClass.schoolId && actor.schoolId !== schoolClass.schoolId)
+      throw new ForbiddenException('无权访问其他园所数据');
+    if (!this.access.isAdministrator(actor) && !await manager.getRepository(TeacherClass).existsBy({
+      teacherId: actor.sub, classId: run.classId,
+    })) throw new ForbiddenException('无权访问该班级');
+    return run;
   }
+
+  private breakDigest(operation: string, payload: Record<string, unknown>) {
+    return createHash('sha256').update(JSON.stringify({ operation, payload })).digest('hex');
+  }
+
+  private async readBreakReceipt(
+    manager: EntityManager, actor: JwtTeacherPayload, runId: number, requestId: string,
+    operation: string, payload: Record<string, unknown>,
+  ): Promise<{ breakRunId: number } | null> {
+    const event = await manager.getRepository(ClassroomEvent).findOneBy({
+      operatorType: actor.userType, operatorId: actor.sub, requestId,
+    });
+    if (!event) return null;
+    const receipt = this.parseObject(event.payload ?? '');
+    if (event.classroomRunId !== runId || event.result !== ClassroomEventResult.Success ||
+        receipt.kind !== 'legacy_break_control' || receipt.contractVersion !== 1 ||
+        receipt.operation !== operation || receipt.payloadDigest !== this.breakDigest(operation, payload) ||
+        typeof receipt.breakRunId !== 'number')
+      throw new ConflictException('requestId 已用于不同业务请求');
+    return { breakRunId: receipt.breakRunId };
+  }
+
+  private async writeBreakReceipt(
+    manager: EntityManager, actor: JwtTeacherPayload, run: ClassroomRun, breakRun: BreakRun,
+    requestId: string, operation: string, payload: Record<string, unknown>,
+  ) {
+    const repo = manager.getRepository(ClassroomEvent);
+    await repo.save(repo.create({
+      classroomRunId: run.id, operatorType: actor.userType, operatorId: actor.sub,
+      deviceId: run.deviceId, requestId, result: ClassroomEventResult.Success,
+      eventType: operation === 'start' ? ClassroomEventType.BreakStart
+        : operation === 'end' ? ClassroomEventType.BreakEnd : ClassroomEventType.Command,
+      payload: JSON.stringify({ kind: 'legacy_break_control', contractVersion: 1,
+        operation, payloadDigest: this.breakDigest(operation, payload), breakRunId: breakRun.id }),
+    }));
+  }
+
+  private async captureBreakRequired(
+    manager: EntityManager, run: ClassroomRun, breakRun: BreakRun, reason: ClassroomSnapshotReason,
+  ) {
+    const previous = await this.snapshots.loadLatestValid(run.id, manager);
+    await this.snapshots.captureRequired(run.id, reason, true, {
+      interactionState: { ...previous?.interactionState, breakRunId: breakRun.id,
+        breakStatus: breakRun.status, savedStepIndex: breakRun.savedStepIndex,
+        savedRunStatus: breakRun.savedRunStatus,
+        ...(breakRun.status === BreakRunStatus.Completed ? { restoredStepIndex: breakRun.savedStepIndex } : {}) },
+    }, manager);
+  }
+
+
+
+
+
+
 
   private async rewardResponse(reward: RewardRecord) {
     const [reversal, badge] = await Promise.all([
       this.reversals.findOne({ where: { rewardRecordId: reward.id } }),
       this.studentBadges.findOne({ where: { rewardRecordId: reward.id } }),
     ]);
-    return { ...reward, badge, reversal };
+    return { ...withRecordIdentity(reward, 'legacy_engagement', 'reward'),
+      badge: badge ? withRecordIdentity(badge, 'legacy_engagement', 'badge') : null,
+      reversal: reversal ? withRecordIdentity(reversal, 'legacy_engagement', 'reward_reversal') : null };
   }
 
   private async honorResponse(honor: HonorRecord) {
@@ -1079,7 +636,7 @@ export class ClassroomEngagementService {
           .getOne()
       : null;
     return {
-      ...honor,
+      ...withRecordIdentity(honor, 'legacy_engagement', 'honor'),
       dimensions: this.parseObject(honor.dimensions),
       student,
     };

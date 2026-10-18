@@ -54,6 +54,7 @@ import { Student } from './entities/student.entity';
 import { TeacherClass } from './entities/teacher-class.entity';
 import { AuditService } from './audit.service';
 import { PlatformAccessService } from './platform-access.service';
+import { serializeDatabaseWrite } from './database-write-coordinator';
 import { deviceHeartbeatTimeoutMs, deviceOnlineStatus } from './device-online-policy';
 import {
   BindingStatus,
@@ -262,35 +263,30 @@ export class PlatformService {
     dto: BindTeacherDto,
   ) {
     this.access.requireAdministrator(actor);
-    const schoolClass = await this.access.requireClassAccess(actor, classId);
-    const teacher = await this.teachers.findOne({
-      where: { id: dto.teacherId },
+    await this.access.requireClassAccess(actor, classId);
+    return serializeDatabaseWrite(this.dataSource, async () => {
+      if (this.dataSource.createQueryRunner().isTransactionActive)
+        throw new ConflictException('数据库事务忙，请重试绑定教师');
+      return this.dataSource.transaction(async manager => {
+        this.access.requireAdministrator(actor);
+        const schoolClass = await this.access.requireClassAccess(actor, classId, manager);
+        const teacher = await manager.getRepository(Teacher).findOneBy({ id: dto.teacherId });
+        if (!teacher) throw new NotFoundException('教师不存在');
+        if (schoolClass.schoolId && teacher.schoolId && schoolClass.schoolId !== teacher.schoolId)
+          throw new ConflictException('教师与班级不属于同一园所');
+        const repository = manager.getRepository(TeacherClass);
+        const existing = await repository.findOneBy({ teacherId: dto.teacherId, classId });
+        const saved = await repository.save(existing
+          ? repository.merge(existing, { role: dto.role })
+          : repository.create({ teacherId: dto.teacherId, classId, role: dto.role }));
+        await this.audit.write(actor, {
+          action: 'teacher_class.bind',
+          targetType: 'teacher_class',
+          targetId: saved.id,
+        }, manager);
+        return saved;
+      });
     });
-    if (!teacher) throw new NotFoundException('教师不存在');
-    if (
-      schoolClass.schoolId &&
-      teacher.schoolId &&
-      schoolClass.schoolId !== teacher.schoolId
-    )
-      throw new ConflictException('教师与班级不属于同一园所');
-    const existing = await this.teacherClasses.findOne({
-      where: { teacherId: dto.teacherId, classId },
-    });
-    const saved = await this.teacherClasses.save(
-      existing
-        ? this.teacherClasses.merge(existing, { role: dto.role })
-        : this.teacherClasses.create({
-            teacherId: dto.teacherId,
-            classId,
-            role: dto.role,
-          }),
-    );
-    await this.audit.write(actor, {
-      action: 'teacher_class.bind',
-      targetType: 'teacher_class',
-      targetId: saved.id,
-    });
-    return saved;
   }
 
   async unbindTeacher(
@@ -300,13 +296,22 @@ export class PlatformService {
   ): Promise<void> {
     this.access.requireAdministrator(actor);
     await this.access.requireClassAccess(actor, classId);
-    const result = await this.teacherClasses.delete({ classId, teacherId });
-    if (!result.affected) throw new NotFoundException('教师班级关系不存在');
-    await this.audit.write(actor, {
-      action: 'teacher_class.unbind',
-      targetType: 'class',
-      targetId: classId,
-      metadata: { teacherId },
+    await serializeDatabaseWrite(this.dataSource, async () => {
+      // Do not silently nest into an uncoordinated caller's SQLite transaction.
+      if (this.dataSource.createQueryRunner().isTransactionActive)
+        throw new ConflictException('数据库事务忙，请重试撤销授权');
+      await this.dataSource.transaction(async manager => {
+        this.access.requireAdministrator(actor);
+        await this.access.requireClassAccess(actor, classId, manager);
+        const result = await manager.getRepository(TeacherClass).delete({ classId, teacherId });
+        if (!result.affected) throw new NotFoundException('教师班级关系不存在');
+        await this.audit.write(actor, {
+          action: 'teacher_class.unbind',
+          targetType: 'class',
+          targetId: classId,
+          metadata: { teacherId },
+        }, manager);
+      });
     });
   }
 

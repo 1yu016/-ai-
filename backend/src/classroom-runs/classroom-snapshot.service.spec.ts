@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals';
 import type { Repository } from 'typeorm';
+import type { EntityManager } from 'typeorm';
 import {
   ClassroomSnapshotService,
   type ValidClassroomSnapshot,
@@ -18,6 +19,7 @@ describe('snapshot server-owned screenLifecycle protection', () => {
     let saved: ClassroomSnapshot | undefined;
     const runs = {
       manager: {
+        connection: {}, // DataSource identity shared by the extracted write coordinator.
         transaction: async (work: (manager: undefined) => unknown) =>
           work(undefined),
       },
@@ -60,6 +62,25 @@ describe('snapshot server-owned screenLifecycle protection', () => {
       .mockResolvedValue(previous);
     return { service, spy, snapshots, previous };
   }
+
+  it('required capture reuses the supplied active manager without opening another transaction', async () => {
+    const { service, previous } = setup();
+    const manager = { queryRunner: { isTransactionActive: true } } as EntityManager;
+    const capture = jest.spyOn(service, 'capture').mockResolvedValue(previous);
+    const transaction = jest.spyOn((service as any).runs.manager, 'transaction');
+    expect(await service.captureRequired(1, ClassroomSnapshotReason.ChangeStep, false, {}, manager)).toBe(previous);
+    expect(capture).toHaveBeenCalledWith(1, ClassroomSnapshotReason.ChangeStep, false, {}, manager);
+    expect(transaction).not.toHaveBeenCalled();
+    capture.mockResolvedValue(null);
+    await expect(service.captureRequired(1, ClassroomSnapshotReason.ChangeStep, false, {}, manager)).rejects.toMatchObject({ status: 409 });
+    await expect(service.captureRequired(1, ClassroomSnapshotReason.ChangeStep, false, {}, {} as EntityManager)).rejects.toThrow('active transaction manager');
+  });
+
+  it('best effort contains unexpected capture errors', async () => {
+    const { service } = setup();
+    jest.spyOn(service, 'capture').mockRejectedValue(new Error('auxiliary failure'));
+    await expect(service.captureBestEffort(1, ClassroomSnapshotReason.Timed, false)).resolves.toBeNull();
+  });
 
   it.each([
     { screenLifecycle: { phase: 'forged' } },
@@ -115,22 +136,28 @@ describe('snapshot server-owned screenLifecycle protection', () => {
       screenLifecycle: lifecycle,
       question: 'existing',
     });
-    expect(restored?.playerState).toEqual({ positionSeconds: 10 });
+    expect(restored?.playerState).toEqual({ positionSeconds: 10, autoPlay: false });
   });
 
-  it('keeps legacy snapshots free of new metadata and preserves ordinary replacement semantics', async () => {
+  it('keeps historical business projections unchanged during ordinary replacement', async () => {
     const { service, spy } = setup({ old: true });
     await service.capture(1, ClassroomSnapshotReason.Timed, false, {
       interactionState: {},
-      attendanceState: { absent: [2] },
-      rollCallState: {},
-      rewardState: { stars: 5 },
     });
     spy.mockRestore();
     const restored = await service.loadLatestValid(1);
     expect(restored?.interactionState).toEqual({});
-    expect(restored?.attendanceState).toEqual({ absent: [2] });
-    expect(restored?.rollCallState).toEqual({});
-    expect(restored?.rewardState).toEqual({ stars: 5 });
+    expect(restored?.attendanceState).toEqual({ present: [1] });
+    expect(restored?.rollCallState).toEqual({ lastStudentId: 1 });
+    expect(restored?.rewardState).toEqual({ stars: 2 });
+  });
+  it.each(['rewardState', 'attendanceState', 'rollCallState'])('ordinary capture and required capture reject %s before writes', async key => {
+    const { service, snapshots } = setup();
+    const patch = { [key]: {} };
+    await expect(service.capture(1, ClassroomSnapshotReason.Command, false, patch)).rejects.toMatchObject({ status: 409 });
+    await expect(service.capture(1, ClassroomSnapshotReason.Command, false, Object.create(patch))).rejects.toMatchObject({ status: 409 });
+    await expect(service.captureRequired(1, ClassroomSnapshotReason.Command, false, patch,
+      { queryRunner: { isTransactionActive: true } } as EntityManager)).rejects.toMatchObject({ status: 409 });
+    expect(snapshots.save).not.toHaveBeenCalled();
   });
 });

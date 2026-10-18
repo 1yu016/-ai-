@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AiCallLog } from './entities/ai-call-log.entity';
 import { AuditLog } from './entities/audit-log.entity';
@@ -36,9 +36,10 @@ export class AuditService {
     private readonly aiCallLogs: Repository<AiCallLog>,
   ) {}
 
-  async write(actor: JwtTeacherPayload, input: AuditInput): Promise<void> {
-    await this.auditLogs.save(
-      this.auditLogs.create({
+  async write(actor: JwtTeacherPayload, input: AuditInput, manager?: EntityManager): Promise<void> {
+    const repository = manager ? manager.getRepository(AuditLog) : this.auditLogs;
+    await repository.save(
+      repository.create({
         actorType: actor.userType,
         actorId: actor.sub,
         action: input.action,

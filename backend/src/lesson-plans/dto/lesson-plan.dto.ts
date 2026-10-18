@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
+  ArrayUnique,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -208,8 +209,10 @@ export class UpdateLessonRunProgressDto {
 
 export class AiLessonPlanDraftRequestDto {
   @IsOptional() @IsInt() @Min(2) @Max(2) schemaVersion?: number;
-  @IsOptional() @IsEnum(['plan_outline', 'step_optimization', 'student_text'])
-  taskType?: 'plan_outline' | 'step_optimization' | 'student_text';
+  @IsOptional() @IsEnum(['plan_outline', 'step_optimization', 'student_text', 'experience_optimization'])
+  taskType?: 'plan_outline' | 'step_optimization' | 'student_text' | 'experience_optimization';
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(5) @ArrayUnique()
+  @IsInt({ each: true }) @Min(1, { each: true }) referenceRunIds?: number[];
   @IsOptional() @IsInt() @Min(1) baseLessonPlanId?: number;
   @IsOptional() @IsInt() @Min(1) baseVersion?: number;
   @IsOptional() @IsInt() @Min(1) targetStepId?: number;
@@ -230,6 +233,8 @@ export class AiLessonPlanDraftRequestDto {
 }
 
 export class AiPreparationCandidateDto {
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(50) @ArrayUnique()
+  @IsString({ each: true }) @MaxLength(100, { each: true }) evidenceIds?: string[];
   @IsString() @MinLength(1) @MaxLength(200) title: string;
   @IsString() @MaxLength(3000) teacherInstructionSuggestion: string;
   @IsString() @MaxLength(1500) studentContentCandidate: string;

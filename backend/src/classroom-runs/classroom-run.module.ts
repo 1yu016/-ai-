@@ -16,6 +16,7 @@ import { PlatformModule } from '../platform/platform.module';
 import { ResourceModule } from '../resources/resource.module';
 import { ClassroomRunController } from './classroom-run.controller';
 import { ClassroomRunService } from './classroom-run.service';
+import { ClassroomCockpitService } from './classroom-cockpit.service';
 import { ClassroomEvent } from './entities/classroom-event.entity';
 import { ClassroomRunStepSnapshot } from './entities/classroom-run-step-snapshot.entity';
 import { ClassroomRun } from './entities/classroom-run.entity';
@@ -24,6 +25,7 @@ import { ClassroomDeviceTransfer } from './entities/classroom-device-transfer.en
 import { StudentRewardRecord } from './entities/student-reward-record.entity';
 import { ClassroomSnapshotService } from './classroom-snapshot.service';
 import { StudentRewardService } from './student-reward.service';
+import { ClassroomBusinessReceiptService } from './classroom-business-receipt.service';
 import { AvatarModule } from '../avatars/avatar.module';
 import { BreakRun } from '../classroom-engagement/entities/break-run.entity';
 import { ClassroomCommandRecord } from './entities/classroom-command-record.entity';
@@ -47,6 +49,9 @@ import { ClassroomRecordController } from './classroom-record.controller';
 import { ClassroomRecordService } from './classroom-record.service';
 import { ClassroomSummaryAiService } from './classroom-summary-ai.service';
 import { StudentArtworkRecord } from '../artworks/entities/student-artwork-record.entity';
+import { StudentGroup } from '../classroom-participation/entities/student-group.entity';
+import { StudentGroupMember } from '../classroom-participation/entities/student-group-member.entity';
+import { ClassroomRollCallService } from './classroom-roll-call.service';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
@@ -60,6 +65,8 @@ export const CLASSROOM_RUN_ENTITIES = [
   StudentAttendanceRecord,
   StudentAttendanceChange,
   ClassroomRollCallRecord,
+  StudentGroup,
+  StudentGroupMember,
   ClassGrowthGoal,
   ClassCollectiveRewardRecord,
   StudentQuestionRecord,
@@ -95,20 +102,24 @@ export const CLASSROOM_RUN_ENTITIES = [
     ClassroomRecordController,
   ],
   providers: [
+    ClassroomCockpitService,
     ScreenHandoffService,
     ScreenLifecycleService,
     ScreenPreparationService,
     ClassroomRunService,
     ClassroomSnapshotService,
     StudentRewardService,
+    ClassroomBusinessReceiptService,
     ClassroomCommandService,
     AttendanceService,
+    ClassroomRollCallService,
     StudentQuestionService,
     QuestionMapAiService,
     ClassroomRecordService,
     ClassroomSummaryAiService,
   ],
   exports: [
+    ClassroomRollCallService,
     ClassroomRunService,
     ClassroomSnapshotService,
     StudentRewardService,

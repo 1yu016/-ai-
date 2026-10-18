@@ -1,4 +1,16 @@
+import { enterTeachingFixture } from './helpers/teaching-phase-fixture';
+import { seedSnapshotFixture } from './helpers/snapshot-fixture';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { jest } from '@jest/globals';
+import { StudentRewardService } from '../src/classroom-runs/student-reward.service';
+import { ClassroomBusinessReceiptService } from '../src/classroom-runs/classroom-business-receipt.service';
+import { ClassroomSnapshotService } from '../src/classroom-runs/classroom-snapshot.service';
+import { ClassroomEvent } from '../src/classroom-runs/entities/classroom-event.entity';
+import { ClassGrowthGoal } from '../src/classroom-runs/entities/class-growth-goal.entity';
+import { ClassCollectiveRewardRecord } from '../src/classroom-runs/entities/class-collective-reward-record.entity';
+import { AuthUserType } from '../src/auth/entities/refresh-token-session.entity';
+import { ClassroomEventType, ClassroomEventResult, ClassroomSnapshotReason } from '../src/classroom-runs/classroom-run.types';
+import type { JwtTeacherPayload } from '../src/auth/auth.types';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
@@ -263,13 +275,13 @@ describe('Stage 7.3 student reward records (e2e)', () => {
     );
 
     const runs = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
-    const makeRun = (
+    const makeRun = async (
       ownerId: number,
       clsId: number,
       title: string,
       devId: number,
-    ) =>
-      runs.save(
+    ) => {
+      const saved = await runs.save(
         runs.create({
           lessonPlanId: plan.id,
           lessonPlanVersion: 1,
@@ -283,6 +295,9 @@ describe('Stage 7.3 student reward records (e2e)', () => {
           version: 1,
         }),
       );
+      await enterTeachingFixture(app, saved.id);
+      return saved;
+    };
     runId = (await makeRun(teacherId, classId, '认识数字1', deviceId)).id;
     foreignRunId = (
       await makeRun(otherTeacherId, foreignClassId, '隔壁课堂', deviceId2)
@@ -698,5 +713,219 @@ describe('Stage 7.3 student reward records (e2e)', () => {
     await request(app.getHttpServer()).get(`/classroom-runs/${runId}/reward-dashboard`).set(auth(otherToken)).expect(403);
     await request(app.getHttpServer()).post(`/classroom-runs/${runId}/collective-rewards`).set(auth(otherToken))
       .send({ requestId: rid('foreign-collective'), rewardCategory: 'cooperation', points: 1, reason: '越权' }).expect(403);
+  });
+
+  describe('0.5-3B canonical reward transactions', () => {
+    let id: number;
+    let goalId: number;
+    const actor = () => ({ sub: teacherId, userType: AuthUserType.Teacher, role: TeacherRole.Teacher,
+      schoolId: 'garden-reward' } as JwtTeacherPayload);
+    const service = () => app.get(StudentRewardService);
+    const runRepo = () => app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+    const tables = ['classroom_run', 'student_reward_record', 'class_collective_reward_record',
+      'class_growth_goal', 'classroom_event', 'classroom_snapshot'];
+    const capture = () => Promise.all(tables.map(t => runRepo().manager.query(`SELECT * FROM ${t} ORDER BY id`)));
+    beforeEach(async () => {
+      await runRepo().update({ classId, status: ClassroomRunStatus.Running }, { status: ClassroomRunStatus.Completed });
+      const original = await runRepo().findOneByOrFail({ id: runId });
+      const { id: _id, ...values } = original;
+      id = (await runRepo().save(runRepo().create({ ...values, status: ClassroomRunStatus.Running,
+        version: 1, startedAt: new Date(), endedAt: null }))).id;
+      await enterTeachingFixture(app, id);
+      goalId = (await service().createGrowthGoal(actor(), id, { requestId: rid('goal-3b'), title: '共同成长', targetPoints: 100 })).id;
+    });
+    afterEach(async () => {
+      await runRepo().update(id, { status: ClassroomRunStatus.Completed });
+    });
+
+    const operations = ['create', 'revoke', 'collective', 'collective-revoke'];
+    it.each(operations.flatMap(operation => ['record', 'event', 'snapshot', 'goal'].map(failure => ({ operation, failure }))))(
+      '$operation late $failure failure rolls back all facts, receipt, CAS and snapshot', async ({ operation, failure }) => {
+        let target = 0;
+        if (operation === 'revoke') target = (await service().createReward(actor(), id,
+          { requestId: rid('setup'), studentId, stars: 2, points: 3 })).record.id;
+        if (operation === 'collective-revoke') target = (await service().createCollectiveReward(actor(), id,
+          { requestId: rid('setup'), rewardCategory: 'cooperation' as any, points: 3, reason: '集体合作', goalId })).id;
+        const version = (await runRepo().findOneByOrFail({ id })).version;
+        const requestId = rid('fault-retry');
+        const execute = () => operation === 'create' ? service().createReward(actor(), id,
+          { requestId, version, studentId, stars: 2, points: 3 }) :
+          operation === 'revoke' ? service().revokeReward(actor(), id, target, requestId, '误点', version) :
+          operation === 'collective' ? service().createCollectiveReward(actor(), id,
+            { requestId, version, rewardCategory: 'cooperation' as any, points: 3, reason: '集体合作', goalId }) :
+            service().revokeCollectiveReward(actor(), id, target, requestId, '误点', version);
+        const before = await capture();
+        const targets = { record: operation.startsWith('collective') ? ClassCollectiveRewardRecord : StudentRewardRecord,
+          event: ClassroomEvent, snapshot: ClassroomSnapshot, goal: ClassGrowthGoal };
+        const save = Repository.prototype.save;
+        const managers = new Set<unknown>();
+        const fault = jest.spyOn(Repository.prototype, 'save').mockImplementation(async function(this: Repository<any>, value: any, options: any) {
+          if ([StudentRewardRecord, ClassCollectiveRewardRecord, ClassGrowthGoal, ClassroomEvent, ClassroomSnapshot].includes(this.metadata.target as any)) {
+            expect(this.manager.queryRunner?.isTransactionActive).toBe(true);
+            expect((this.manager.queryRunner as any).transactionDepth).toBe(1);
+            managers.add(this.manager);
+          }
+          const result = await (save as any).call(this, value, options);
+          if (this.metadata.target === targets[failure]) throw new Error(`late ${failure} failure`);
+          return result;
+        } as any);
+        try {
+          await expect(execute()).rejects.toThrow();
+          expect(await capture()).toEqual(before); expect(managers.size).toBe(1);
+        } finally { fault.mockRestore(); }
+        const result = await execute();
+        const committed = await capture();
+        expect(await execute()).toEqual(result);
+        expect(await capture()).toEqual(committed);
+        expect((await runRepo().findOneByOrFail({ id })).version).toBe(version + 1);
+      }, 10000,
+    );
+
+    it('lost response retries return the first immutable result, not a later cumulative total', async () => {
+      const body = { requestId: rid('lost-response'), studentId, stars: 1, rewardForms: ['flower', 'points'], points: 1 };
+      const first = await request(app.getHttpServer()).post(`/classroom-runs/${id}/rewards`).set(auth(token)).send(body).expect(201);
+      await service().createReward(actor(), id, { requestId: rid('later'), studentId, stars: 2 });
+      const before = await capture();
+      const retried = await request(app.getHttpServer()).post(`/classroom-runs/${id}/rewards`).set(auth(token))
+        .send({ ...body, rewardForms: ['points', 'flower'] }).expect(201);
+      expect(retried.body).toEqual(first.body); expect(await capture()).toEqual(before);
+      await request(app.getHttpServer()).post(`/classroom-runs/${id}/rewards`).set(auth(token))
+        .send({ ...body, points: 2 }).expect(409);
+      await request(app.getHttpServer()).post(`/classroom-runs/${id}/collective-rewards`).set(auth(token))
+        .send({ requestId: body.requestId, rewardCategory: 'cooperation', points: 1, reason: '同ID换操作' }).expect(409);
+      const receipts = app.get(ClassroomBusinessReceiptService);
+      const stored = await new ClassroomBusinessReceiptService().read(runRepo().manager, actor(), id, body.requestId,
+        'reward.create', receipts.digest(id, 'reward.create', { studentId, stars: 1, points: 1, rewardForms: ['flower', 'points'],
+          rewardCategory: 'progress', badgeCode: null, praiseTemplateId: null, praiseText: null, teacherConfirmedPraise: false, animationKey: null, reason: null }));
+      expect(stored!.result).toEqual(first.body);
+    });
+
+    it('rebuilds from formal records after corrupt or valid-but-wrong snapshots; revoke aligns history and goal', async () => {
+      const a = await service().createReward(actor(), id, { requestId: rid('a'), studentId, stars: 2, points: 3 });
+      const b = await service().createReward(actor(), id, { requestId: rid('b'), studentId, stars: 1, points: 2 });
+      const snapshotService = app.get(ClassroomSnapshotService);
+      const snapshotRepo = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
+      const latest = await snapshotRepo.findOneOrFail({ where: { classroomRunId: id }, order: { snapshotVersion: 'DESC' } });
+      await snapshotRepo.update(latest.id, { checksum: 'bad' });
+      const c = await service().createReward(actor(), id, { requestId: rid('c'), studentId, stars: 1, points: 1 });
+      expect(c.studentTotal).toBe(4);
+      await seedSnapshotFixture(snapshotService, id, ClassroomSnapshotReason.Timed, false, { rewardState: { [studentId]: 999 } });
+      await service().revokeReward(actor(), id, c.record.id, rid('revoke-c'), '教师纠错');
+      const restored = await snapshotService.loadLatestValid(id);
+      expect(restored!.rewardState[studentId]).toBe(3);
+      expect(restored!.interactionState.rewardPresentation).toBeUndefined();
+      const own = await rewards.find({ where: { classroomRunId: id } });
+      expect(own.filter(r => !r.revokedAt).reduce((sum, r) => sum + r.stars, 0)).toBe(3);
+      const goal = await app.get<Repository<ClassGrowthGoal>>(getRepositoryToken(ClassGrowthGoal)).findOneByOrFail({ id: goalId });
+      expect(goal.currentPoints).toBe(5);
+      const history = await request(app.getHttpServer()).get(`/classes/${classId}/rewards?pageSize=100`).set(auth(token)).expect(200);
+      expect(history.body.items.find((r: any) => r.id === c.record.id).revokedAt).toBeTruthy();
+      const classRows = await rewards.find({ where: { classId } });
+      expect(history.body.summary.totalStars).toBe(classRows.reduce((sum, r) => sum + (r.revokedAt ? 0 : r.stars), 0));
+      expect(a.record.id).not.toBe(b.record.id);
+    });
+
+    it('blocks stopped/transferred students for new awards, but can revoke their original record', async () => {
+      const students = app.get<Repository<Student>>(getRepositoryToken(Student));
+      const original = await students.findOneByOrFail({ id: studentId });
+      const award = await service().createReward(actor(), id, { requestId: rid('before-transfer'), studentId, stars: 1 });
+      try {
+        await students.update(studentId, { status: RecordStatus.Disabled });
+        await expect(service().createReward(actor(), id, { requestId: rid('disabled'), studentId })).rejects.toMatchObject({ status: 409 });
+        await students.update(studentId, { classId: foreignClassId });
+        await expect(service().createReward(actor(), id, { requestId: rid('transferred'), studentId })).rejects.toMatchObject({ status: 403 });
+        const revoked = await service().revokeReward(actor(), id, award.record.id, rid('after-transfer'), '误发');
+        expect(revoked.record.revokedAt).toBeTruthy();
+      } finally { await students.save(original); }
+    });
+
+    it('CAS conflicts write no facts; completed allows authorised replay only', async () => {
+      const before = await capture();
+      await expect(service().createReward(actor(), id, { requestId: rid('stale'), version: 999, studentId })).rejects.toMatchObject({ status: 409 });
+      expect(await capture()).toEqual(before);
+      const update = Repository.prototype.update;
+      const fault = jest.spyOn(Repository.prototype, 'update').mockImplementation(function(this: Repository<any>, criteria: any, values: any) {
+        return this.metadata.target === ClassroomRun && criteria.id === id ? Promise.resolve({ affected: 0 } as any) : (update as any).call(this, criteria, values);
+      } as any);
+      try {
+        await expect(service().createReward(actor(), id, { requestId: rid('cas-zero'), studentId })).rejects.toMatchObject({ status: 409 });
+        expect(await capture()).toEqual(before);
+      } finally { fault.mockRestore(); }
+      const body = { requestId: rid('terminal-replay'), studentId, stars: 1 };
+      const first = await service().createReward(actor(), id, body);
+      await runRepo().update(id, { status: ClassroomRunStatus.Completed });
+      expect(await service().createReward(actor(), id, body)).toEqual(first);
+      await expect(service().createReward(actor(), id, { ...body, requestId: rid('new-completed') })).rejects.toMatchObject({ status: 409 });
+      await expect(service().revokeReward(actor(), id, first.record.id, rid('completed-revoke'), '课后首次')).rejects.toMatchObject({ status: 409 });
+      await expect(service().createReward({ ...actor(), sub: otherTeacherId }, id, body)).rejects.toMatchObject({ status: 403 });
+    });
+
+    it('collective reward is one class fact; revoke clears projection and restores goal', async () => {
+      const count = await rewards.count();
+      const body = { requestId: rid('collective'), rewardCategory: 'cooperation' as any, points: 3, reason: '一起合作', goalId };
+      const result = await service().createCollectiveReward(actor(), id, body);
+      expect(await rewards.count()).toBe(count);
+      const snapshotService = app.get(ClassroomSnapshotService);
+      const previous = await snapshotService.loadLatestValid(id);
+      await snapshotService.capture(id, ClassroomSnapshotReason.Timed, false, { interactionState: {
+        ...previous!.interactionState, collectiveRewardPresentation: { recordId: result.id, points: 999 } } });
+      const requestId = rid('collective-revoke');
+      const revoked = await service().revokeCollectiveReward(actor(), id, result.id, requestId, '误点');
+      expect(await service().revokeCollectiveReward(actor(), id, result.id, requestId, '误点')).toEqual(revoked);
+      await expect(service().revokeCollectiveReward(actor(), id, result.id, requestId, '换原因')).rejects.toMatchObject({ status: 409 });
+      const current = await snapshotService.loadLatestValid(id);
+      expect(current!.interactionState.collectiveRewardPresentation).toBeUndefined();
+      expect(current!.interactionState.collectiveRewardState).toEqual({ recordIds: [], points: 0 });
+      const goal = await app.get<Repository<ClassGrowthGoal>>(getRepositoryToken(ClassGrowthGoal)).findOneByOrFail({ id: goalId });
+      expect(goal.currentPoints).toBe(0);
+    });
+
+    it('different personal business fields and revoke reasons conflict without writes', async () => {
+      const body = { requestId: rid('all-fields'), studentId, stars: 1, points: 1,
+        reason: '积极观察', rewardCategory: 'answer' as any,
+        rewardForms: ['flower', 'points', 'badge', 'voice_praise', 'animation'] as any,
+        badgeCode: 'observe', praiseText: '你的想法很有趣', teacherConfirmedPraise: true, animationKey: 'stars' };
+      const first = await service().createReward(actor(), id, body);
+      const baseline = await capture();
+      for (const patch of [{ studentId: student2Id }, { stars: 2 }, { points: 2 }, { reason: '不同原因' },
+        { rewardCategory: 'cooperation' }, { badgeCode: 'changed' }, { praiseText: '谢谢你认真观察' },
+        { animationKey: 'confetti' }, { teacherConfirmedPraise: false }])
+        await expect(service().createReward(actor(), id, { ...body, ...patch })).rejects.toMatchObject({ status: 409 });
+      expect(await capture()).toEqual(baseline);
+      const requestId = rid('revoke-fields');
+      await service().revokeReward(actor(), id, first.record.id, requestId, '误点');
+      const revoked = await capture();
+      await expect(service().revokeReward(actor(), id, first.record.id, requestId, '改变原因')).rejects.toMatchObject({ status: 409 });
+      expect(await capture()).toEqual(revoked);
+    });
+
+    it('ordinary command Event cannot impersonate a receipt; replay still checks current class permission', async () => {
+      const receipts = app.get(ClassroomBusinessReceiptService);
+      const events = app.get<Repository<ClassroomEvent>>(getRepositoryToken(ClassroomEvent));
+      const requestId = rid('not-receipt');
+      await events.save(events.create({ classroomRunId: id, eventType: ClassroomEventType.Command,
+        requestId: receipts.key(actor(), id, requestId), operatorType: AuthUserType.Teacher,
+        operatorId: teacherId, result: ClassroomEventResult.Success, payload: JSON.stringify({ operation: 'reward.create', result: { id: 999 } }) }));
+      const baseline = await capture();
+      await expect(service().createReward(actor(), id, { requestId, studentId })).rejects.toMatchObject({ status: 409 });
+      expect(await capture()).toEqual(baseline);
+      const body = { requestId: rid('permission-replay'), studentId };
+      await service().createReward(actor(), id, body);
+      const relations = app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass));
+      const original = await relations.findOneByOrFail({ teacherId, classId });
+      await relations.delete(original.id);
+      try { await expect(service().createReward(actor(), id, body)).rejects.toMatchObject({ status: 403 }); }
+      finally { await relations.save(original); }
+    });
+
+    it('revoke of a prior-goal reward updates that goal projection, not the newer goal', async () => {
+      const award = await service().createReward(actor(), id, { requestId: rid('old-goal'), studentId, stars: 1, points: 4 });
+      const next = await service().createGrowthGoal(actor(), id, { requestId: rid('next-goal'), title: '下一个目标', targetPoints: 10 });
+      await service().revokeReward(actor(), id, award.record.id, rid('old-goal-revoke'), '误点');
+      const goals = app.get<Repository<ClassGrowthGoal>>(getRepositoryToken(ClassGrowthGoal));
+      expect((await goals.findOneByOrFail({ id: goalId })).currentPoints).toBe(0);
+      expect((await goals.findOneByOrFail({ id: goalId })).status).toBe('archived');
+      expect((await goals.findOneByOrFail({ id: next.id })).currentPoints).toBe(0);
+    });
   });
 });

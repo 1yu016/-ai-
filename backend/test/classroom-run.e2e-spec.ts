@@ -1,8 +1,13 @@
+import { enterTeachingFixture } from './helpers/teaching-phase-fixture';
+import { seedSnapshotFixture } from './helpers/snapshot-fixture';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { jest } from '@jest/globals';
 import { firstValueFrom } from 'rxjs';
 import { ClassroomMobileService } from '../src/classroom-mobile/classroom-mobile.service';
 import { ClassroomSnapshotService } from '../src/classroom-runs/classroom-snapshot.service';
+import { ClassroomRunService } from '../src/classroom-runs/classroom-run.service';
+import { ClassroomRollCallService } from '../src/classroom-runs/classroom-roll-call.service';
+import { ExecuteClassroomCommandDto } from '../src/classroom-runs/dto/classroom-command.dto';
 import { ClassroomSummary } from '../src/classroom-runs/entities/classroom-summary.entity';
 import { ClassroomSummaryAiService } from '../src/classroom-runs/classroom-summary-ai.service';
 import { LessonPlanService } from '../src/lesson-plans/lesson-plan.service';
@@ -54,6 +59,7 @@ import { ClassroomRun } from '../src/classroom-runs/entities/classroom-run.entit
 import { ClassroomRunStepSnapshot } from '../src/classroom-runs/entities/classroom-run-step-snapshot.entity';
 import { ClassroomCommandRecord } from '../src/classroom-runs/entities/classroom-command-record.entity';
 import { Student } from '../src/platform/entities/student.entity';
+import { StudentRewardRecord } from '../src/classroom-runs/entities/student-reward-record.entity';
 import { StudentAttendanceRecord } from '../src/classroom-runs/entities/student-attendance-record.entity';
 import { StudentAttendanceChange } from '../src/classroom-runs/entities/student-attendance-change.entity';
 import { ClassroomRollCallRecord } from '../src/classroom-runs/entities/classroom-roll-call-record.entity';
@@ -136,6 +142,7 @@ describe('Task four classroom run state machine (e2e)', () => {
               TEST_TEACHER_NAME: '课堂老师',
               ARK_API_KEY: 'classroom-test-key',
               ARK_ENDPOINT_ID: 'classroom-test-model',
+              CLASSROOM_SUMMARY_AI_ENABLED: 'false',
             }),
           ],
         }),
@@ -531,7 +538,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     expect(await versions.count({ where: { lessonPlanId: first.body.id } })).toBe(1);
     expect(first.body.steps[0].actions[0].actionName).toBe('wave');
     expect(first.body.steps[0].recoveryPoint.name).toBe('重新观察');
-    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(first.body.id)).expect(201);
+    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(first.body.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const update = (suffix: string) => request(app.getHttpServer()).put(`/lesson-plans/${first.body.id}/authoring`).set(auth())
       .send({ ...body, version: 1, title: suffix, requestId: requestId(suffix) });
     const competing = await Promise.all([update('更新A'), update('更新B')]);
@@ -576,7 +583,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     const old = (await request(app.getHttpServer()).get(`/lesson-plans/${legacy.id}`).set(auth()).expect(200)).body;
     expect(old.steps[0].studentContent).toBeNull();
     expect(old.steps[0].contentReviewRequired).toBe(true);
-    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(legacy.id)).expect(201);
+    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(legacy.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(run.body.steps[0].content).toBe('');
     const saved = await request(app.getHttpServer()).put(`/lesson-plans/${legacy.id}/authoring`).set(auth()).send({
       title: old.title, theme: old.theme, ageGroup: old.ageGroup, objectives: old.objectives,
@@ -590,7 +597,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     expect(frozen.steps[0].content).toBe('');
     await request(app.getHttpServer()).post(`/classroom-runs/${run.body.id}/cancel`).set(auth())
       .send({ deviceId, version: run.body.version, requestId: requestId('isolate-cancel') }).expect(201);
-    const restarted = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(legacy.id)).expect(201);
+    const restarted = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(legacy.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(restarted.body.steps[0].content).toBe('');
     await request(app.getHttpServer()).post(`/classroom-runs/${restarted.body.id}/cancel`).set(auth())
       .send({ deviceId, version: restarted.body.version, requestId: requestId('isolate-cancel2') }).expect(201);
@@ -745,7 +752,7 @@ describe('Task four classroom run state machine (e2e)', () => {
 
   it('2C-1 builds read-only evidence with strict permissions and a privacy whitelist', async () => {
     const plan = await createPlan();
-    const one = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const one = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const list = () => request(app.getHttpServer()).get(`/lesson-plans/${plan.id}/reference-runs`).set(auth());
     expect((await list()).body.total).toBe(0);
     await request(app.getHttpServer()).post(`/classroom-runs/${one.body.id}/complete`).set(auth())
@@ -794,6 +801,398 @@ describe('Task four classroom run state machine (e2e)', () => {
     } finally { model.mockRestore(); summaryModel.mockRestore(); }
   });
 
+  it('A1 generates a read-only experience Draft through real permission/evidence/SQLite boundaries', async () => {
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
+    await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth())
+      .send({ deviceId, version: started.body.version, requestId: requestId('a1-complete') }).expect(201);
+    const versions = app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    const version = await versions.findOneByOrFail({ lessonPlanId: plan.id, versionNo: plan.version });
+    const targetStepId = JSON.parse(version.snapshotJson).steps[0].id;
+    const tables = ['lesson_plan', 'lesson_step', 'lesson_plan_version', 'classroom_run', 'classroom_summary', 'classroom_snapshot', 'classroom_event'];
+    const fingerprint = async () => Promise.all(tables.map(async table => ({ table,
+      rows: await versions.manager.query(`SELECT * FROM ${table} ORDER BY id`),
+    })));
+    const before = await fingerprint();
+    const ai = app.get(LessonPlanAiService) as any;
+    const configured = ai.configured; ai.configured = true;
+    let sent = '';
+    const model = jest.spyOn(ai.openai.chat.completions, 'create').mockImplementation(async (...args: any[]) => {
+      sent = args[0].messages[1].content;
+      const context = JSON.parse(sent);
+      const id = context.evidence.safeFacts.runs[0].facts[0].evidenceId;
+      return { choices: [{ message: { content: JSON.stringify({ candidates: [{ title: '观察练习',
+        teacherInstructionSuggestion: '可以尝试观察一个物体', studentContentCandidate: '',
+        rationale: '执行事实仅供备课参考，不能证明教学效果', durationSecondsSuggestion: 60, evidenceIds: [id] }], warnings: [] }) } }] };
+    });
+    const body = { schemaVersion: 2, taskType: 'experience_optimization', baseLessonPlanId: plan.id,
+      baseVersion: plan.version, targetStepId, referenceRunIds: [started.body.id],
+      theme: '数字', ageGroup: '4-5', domain: '科学', durationMinutes: 20, teachingObjectives: '观察数字', resourceIds: [] };
+    try {
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set('Authorization', `Bearer ${otherToken}`).send(body).expect(403);
+      expect(model).not.toHaveBeenCalled();
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send({ ...body, safeFacts: {} }).expect(400);
+      const response = await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send(body).expect(201);
+      expect(response.body.output.evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(response.body.provenanceSources[0]).toMatchObject({ draftId: response.body.id,
+        referenceRunIds: [started.body.id], sourceLessonVersions: [{ runId: started.body.id,
+          lessonPlanId: plan.id, versionNo: plan.version, versionId: version.id, snapshotDigest: expect.any(String) }] });
+      const loaded = await request(app.getHttpServer()).get(`/lesson-plans/ai-drafts/${response.body.id}`).set(auth()).expect(200);
+      expect(loaded.body.output).toEqual(response.body.output);
+      for (const forbidden of ['teacherReview', 'sourceManifest', 'payload', 'photoUrl', 'voiceUrl']) expect(sent).not.toContain(forbidden);
+      expect(await fingerprint()).toEqual(before);
+      await request(app.getHttpServer()).post(`/lesson-plans/ai-drafts/${response.body.id}/confirm`).set(auth()).send({}).expect(409);
+      expect(await fingerprint()).toEqual(before);
+    } finally { model.mockRestore(); ai.configured = configured; }
+  });
+
+  it('0.5-3D CommandBus delegates canonical roll-call once and replays the first selection', async () => {
+    const students = app.get<Repository<Student>>(getRepositoryToken(Student));
+    const people = await students.save([0, 1].map(index => students.create({ classId,
+      studentNo: requestId(`canonical-roll-${index}`), name: `点名幼儿${index}`, status: RecordStatus.Active })));
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth())
+      .send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
+    const id = started.body.id;
+    const body = { requestId: requestId('canonical-roll'), runId: id, deviceId,
+      expectedVersion: started.body.version, source: 'teacher_panel', operation: 'random_roll_call',
+      parameters: { studentIds: people.map(s => s.id), cooldownCount: 1, algorithmVersion: 'fair-v1' } };
+    const checkpoint = jest.spyOn(app.get(ClassroomRunService), 'checkpointControl');
+    const choose = jest.spyOn(app.get(ClassroomRollCallService) as any, 'chooseIndex').mockReturnValue(0);
+    try {
+      const first = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(first.body.result.student.id).toBe(people[0]!.id);
+      expect(first.body.classroomState.version).toBe(started.body.version + 1);
+      expect(checkpoint).not.toHaveBeenCalled(); expect(choose).toHaveBeenCalledTimes(1);
+      const events = await app.get<Repository<ClassroomEvent>>(getRepositoryToken(ClassroomEvent)).findBy({ classroomRunId: id });
+      expect(events.filter(e => e.eventType === ClassroomEventType.RollCall)).toHaveLength(1);
+      const receipt = events.find(e => e.eventType === ClassroomEventType.RollCall)!;
+      expect(JSON.parse(receipt.payload!)).toMatchObject({ kind: 'classroom_business_receipt', contractVersion: 1, operation: 'roll_call.random' });
+      const reordered = { ...body, parameters: { ...body.parameters, studentIds: [...body.parameters.studentIds].reverse() } };
+      const replay = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(reordered).expect(201);
+      expect(replay.body).toEqual(first.body); expect(choose).toHaveBeenCalledTimes(1);
+      for (const parameters of [{ ...body.parameters, cooldownCount: 2 }, { ...body.parameters, studentIds: [people[1]!.id] },
+        { ...body.parameters, groupId: 999 }, { ...body.parameters, algorithmVersion: 'fair-v2' }])
+        await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body, parameters }).expect(409);
+      await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body, operation: 'specified_roll_call',
+        parameters: { studentId: people[0]!.id } }).expect(409);
+      await students.update(people[0]!.id, { status: RecordStatus.Disabled });
+      const replayAfterDisable = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(replayAfterDisable.body).toEqual(first.body); expect(choose).toHaveBeenCalledTimes(1);
+      const specified = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body,
+        requestId: requestId('canonical-specified'), expectedVersion: first.body.classroomState.version,
+        operation: 'specified_roll_call', parameters: { studentId: people[1]!.id } }).expect(201);
+      expect(specified.body.result.student.id).toBe(people[1]!.id);
+      expect(checkpoint).not.toHaveBeenCalled(); expect(choose).toHaveBeenCalledTimes(1);
+      await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth())
+        .send({ deviceId, version: specified.body.classroomState.version, requestId: requestId('roll-complete') }).expect(201);
+      const afterEnd = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(afterEnd.body).toEqual(first.body);
+      await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body,
+        requestId: requestId('terminal-roll'), expectedVersion: specified.body.classroomState.version + 1 }).expect(409);
+      const relations = app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass));
+      const relation = await relations.findOneByOrFail({ teacherId, classId }); await relations.delete(relation.id);
+      try { await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(403); }
+      finally { await relations.save(relation); }
+      expect(await app.get<Repository<ClassroomRollCallRecord>>(getRepositoryToken(ClassroomRollCallRecord)).countBy({ classroomRunId: id })).toBe(2);
+    } finally {
+      checkpoint.mockRestore(); choose.mockRestore();
+      await students.update({ id: In(people.map(s => s.id)) }, { status: RecordStatus.Disabled });
+      const run = await app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).findOneByOrFail({ id });
+      if ([ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(run.status))
+        await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth())
+          .send({ deviceId, version: run.version, requestId: requestId('roll-cleanup') }).expect(201);
+    }
+  });
+
+  it('0.5-3C CommandBus attendance delegates once, replays sorted batches and rechecks access', async () => {
+    const students = app.get<Repository<Student>>(getRepositoryToken(Student));
+    const people = await students.save([0, 1].map(index => students.create({ classId,
+      studentNo: requestId(`canonical-attendance-${index}`), name: `考勤幼儿${index}`, status: RecordStatus.Active })));
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth())
+      .send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
+    const id = started.body.id;
+    const body = { requestId: requestId('canonical-attendance'), runId: id, deviceId,
+      expectedVersion: started.body.version, source: 'teacher_panel', operation: 'attendance_update',
+      parameters: { updates: people.map(s => ({ studentId: s.id, status: 'present', note: '教师确认' })) } };
+    const checkpoint = jest.spyOn(app.get(ClassroomRunService), 'checkpointControl');
+    try {
+      const first = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(first.body.classroomState.version).toBe(started.body.version + 1);
+      expect(first.body.result.committedRunVersion).toBe(started.body.version + 1);
+      expect(checkpoint).not.toHaveBeenCalled();
+      const events = await app.get<Repository<ClassroomEvent>>(getRepositoryToken(ClassroomEvent)).findBy({ classroomRunId: id });
+      const receipts = events.filter(e => e.eventType === ClassroomEventType.Attendance);
+      expect(receipts).toHaveLength(1);
+      expect(JSON.parse(receipts[0]!.payload!)).toMatchObject({ kind: 'classroom_business_receipt', contractVersion: 1 });
+      const reordered = { ...body, parameters: { updates: [...body.parameters.updates].reverse() } };
+      const replay = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(reordered).expect(201);
+      expect(replay.body).toEqual(first.body);
+      const commands = app.get<Repository<ClassroomCommandRecord>>(getRepositoryToken(ClassroomCommandRecord));
+      const transport = await commands.findOneByOrFail({ requestId: body.requestId });
+      const stable = (value: any): string => Array.isArray(value) ? `[${value.map(stable).join(',')}]`
+        : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stable(value[k])}`).join(',')}}`
+          : JSON.stringify(value) ?? 'null';
+      await commands.update(transport.id, { requestHash: createHash('sha256')
+        .update(stable(Object.assign(new ExecuteClassroomCommandDto(), body))).digest('hex') });
+      const legacyReplay = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(legacyReplay.body).toEqual(first.body);
+      await commands.update(transport.id, { requestHash: transport.requestHash });
+      await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body,
+        parameters: { updates: [{ ...body.parameters.updates[0], note: '不同备注' }, body.parameters.updates[1]] } }).expect(409);
+      const changes = app.get<Repository<StudentAttendanceChange>>(getRepositoryToken(StudentAttendanceChange));
+      expect(await changes.countBy({ classroomRunId: id })).toBe(2);
+      await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth())
+        .send({ deviceId, requestId: requestId('attendance-complete'), version: first.body.classroomState.version }).expect(201);
+      const afterEnd = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(afterEnd.body).toEqual(first.body);
+      await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body,
+        requestId: requestId('terminal-attendance'), expectedVersion: first.body.classroomState.version + 1 }).expect(409);
+      const relations = app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass));
+      const relation = await relations.findOneByOrFail({ teacherId, classId });
+      await relations.delete(relation.id);
+      try { await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(403); }
+      finally { await relations.save(relation); }
+      expect(await changes.countBy({ classroomRunId: id })).toBe(2);
+    } finally {
+      checkpoint.mockRestore();
+      await students.update({ id: In(people.map(s => s.id)) }, { status: RecordStatus.Disabled });
+      const run = await app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).findOneByOrFail({ id });
+      if ([ClassroomRunStatus.Running, ClassroomRunStatus.Paused].includes(run.status))
+        await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth())
+          .send({ deviceId, version: run.version, requestId: requestId('attendance-cleanup') }).expect(201);
+    }
+  });
+
+  it('0.5-3B formal CommandBus reward/revoke delegate once without an extra checkpoint', async () => {
+    const plan = await createPlan();
+    const actor = { sub: teacherId, userType: AuthUserType.Teacher, role: TeacherRole.Teacher,
+      schoolId: 'garden-run' } as JwtTeacherPayload;
+    const students = app.get<Repository<Student>>(getRepositoryToken(Student));
+    const student = await students.save(students.create({ classId, studentNo: requestId('reward-student'), name: '奖励验收', status: RecordStatus.Active }));
+    const service = app.get(ClassroomRunService);
+    const started = await service.start(actor, startBody(plan.id));
+    await enterTeachingFixture(app, started.id);
+    const rewards = app.get<Repository<StudentRewardRecord>>(getRepositoryToken(StudentRewardRecord));
+    const snapshotsService = app.get(ClassroomSnapshotService);
+    const checkpoints = jest.spyOn(service, 'checkpointControl');
+    const body = { requestId: requestId('bus-canonical-reward'), runId: started.id, deviceId,
+      targetDeviceId: deviceId, expectedVersion: started.version, source: 'teacher_panel', operation: 'reward_student',
+      parameters: { studentId: student.id, stars: 2, points: 3 } };
+    try {
+      const reward = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(reward.body.classroomState.version).toBe(started.version + 1);
+      expect(reward.body.result.committedRunVersion).toBe(started.version + 1);
+      expect(checkpoints).not.toHaveBeenCalled();
+      const replay = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(201);
+      expect(replay.body).toEqual(reward.body);
+      expect(await rewards.count({ where: { classroomRunId: started.id } })).toBe(1);
+      const receiptRows = await events.find({ where: { classroomRunId: started.id, eventType: ClassroomEventType.Command } });
+      expect(receiptRows).toHaveLength(1);
+      expect(JSON.parse(receiptRows[0].payload!)).toMatchObject({ kind: 'classroom_business_receipt', contractVersion: 1, operation: 'reward.create' });
+      const revoke = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...body,
+        requestId: requestId('bus-canonical-revoke'), expectedVersion: reward.body.classroomState.version,
+        operation: 'revoke_reward', parameters: { rewardRecordId: reward.body.result.record.id, reason: '误点' },
+      }).expect(201);
+      expect(revoke.body.classroomState.version).toBe(started.version + 2);
+      expect(checkpoints).not.toHaveBeenCalled();
+      const latest = await snapshotsService.loadLatestValid(started.id);
+      expect(latest!.rewardState[student.id]).toBe(0);
+      expect(latest!.interactionState.rewardPresentation).toBeUndefined();
+      const relation = app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass));
+      const saved = await relation.findOneByOrFail({ teacherId, classId });
+      await relation.delete(saved.id);
+      try { await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send(body).expect(403); }
+      finally { await relation.save(saved); }
+    } finally {
+      checkpoints.mockRestore();
+      await students.update(student.id, { status: RecordStatus.Disabled });
+      const current = await service.get(actor, started.id);
+      await service.complete(actor, started.id, { deviceId, version: current.version, requestId: requestId('bus-reward-cleanup') });
+    }
+  });
+
+  describe('0.5-2 required snapshot atomicity', () => {
+    const actor = () => ({ sub: teacherId, userType: AuthUserType.Teacher,
+      role: TeacherRole.Teacher, schoolId: 'garden-run' } as JwtTeacherPayload);
+    const cases = ['changeStep', 'startBreak', 'endBreak', 'timeout', 'recover', 'takeover', 'bind', 'unbind', 'control'] as const;
+    it.each(cases.flatMap(operation => ['event', 'snapshot'].map(failure => ({ operation, failure }))))(
+      '$operation rolls back a late $failure failure and retries once', async ({ operation, failure }) => {
+        const plan = await createPlan();
+        const service = app.get(ClassroomRunService);
+        const snapshotsService = app.get(ClassroomSnapshotService);
+        const runs = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+        const started = await service.start(actor(), startBody(plan.id));
+        await enterTeachingFixture(app, started.id);
+        const id = started.id;
+        let run = await runs.findOneByOrFail({ id });
+        let avatar: Awaited<ReturnType<typeof seedReadyAvatar>> | undefined;
+        if (operation === 'endBreak' || operation === 'timeout') {
+          await service.startBreak(actor(), id, { deviceId, version: run.version,
+            requestId: requestId('atomic-setup-break'), durationSeconds: 60 });
+          if (operation === 'timeout') await runs.update(id, { breakEndsAt: new Date(Date.now() - 1000) });
+          run = await runs.findOneByOrFail({ id });
+        }
+        if (operation === 'bind' || operation === 'unbind') {
+          avatar = await seedReadyAvatar(`atomic-${operation}-${failure}`);
+          if (operation === 'unbind') {
+            await service.setAvatarBinding(actor(), id, { deviceId, version: run.version,
+              requestId: requestId('atomic-setup-avatar'), characterId: avatar.character.id,
+              versionId: avatar.version.id, reason: '测试准备' });
+            run = await runs.findOneByOrFail({ id });
+          }
+        }
+        const requestIdValue = requestId(`atomic-${operation}`);
+        const dto = { deviceId, version: run.version, requestId: requestIdValue };
+        const execute = async () => {
+          if (operation === 'changeStep') return service.changeStep(actor(), id, { ...dto, stepIndex: 1 });
+          if (operation === 'startBreak') return service.startBreak(actor(), id, { ...dto, durationSeconds: 60 });
+          if (operation === 'endBreak') return service.endBreak(actor(), id, dto);
+          if (operation === 'timeout') return service.get(actor(), id);
+          if (operation === 'recover') return service.recover(actor(), id, dto);
+          if (operation === 'takeover') return service.takeover(actor(), id, { ...dto,
+            oldDeviceId: deviceId, newDeviceId: device2Id, teacherConfirmed: true, reason: '测试接管' });
+          if (operation === 'bind') return service.setAvatarBinding(actor(), id, { ...dto,
+            characterId: avatar!.character.id, versionId: avatar!.version.id, reason: '测试绑定' });
+          if (operation === 'unbind') return service.cancelAvatarBinding(actor(), id, { ...dto, reason: '测试取消' });
+          return service.checkpointControl(actor(), id, { ...dto, checkpointType: 'command' as any,
+            playerState: { presentationCommandId: requestIdValue, presentationMode: 'avatar' } });
+        };
+        const tables = ['classroom_run', 'classroom_event', 'classroom_snapshot',
+          'classroom_device_transfer', 'avatar_binding', 'avatar_config_history'];
+        const captureRows = () => Promise.all(tables.map(table => runs.manager.query(`SELECT * FROM ${table} ORDER BY id`)));
+        const before = await captureRows();
+        const save = Repository.prototype.save;
+        const observedManagers = new Set<unknown>();
+        const fault = jest.spyOn(Repository.prototype, 'save').mockImplementation(async function(this: Repository<any>, value: any, options: any) {
+          if (value.classroomRunId === id && [ClassroomEvent, ClassroomSnapshot].includes(this.metadata.target as any)) {
+            expect(this.manager.queryRunner?.isTransactionActive).toBe(true);
+            expect((this.manager.queryRunner as any).transactionDepth).toBe(1);
+            observedManagers.add(this.manager);
+          }
+          const result = await (save as any).call(this, value, options);
+          if (value.classroomRunId === id && this.metadata.target === (failure === 'event' ? ClassroomEvent : ClassroomSnapshot))
+            throw new Error(`injected late ${failure} persistence failure`);
+          return result;
+        } as any);
+        try {
+          await expect(execute()).rejects.toThrow();
+          expect(await captureRows()).toEqual(before);
+          expect(observedManagers.size).toBe(1);
+        } finally { fault.mockRestore(); }
+        try {
+          // Deadline makes a self-waiting snapshot queue a test failure, not an endless hang.
+          const result = await execute();
+          expect(result.version).toBe(run.version + 1);
+          const afterSuccess = await captureRows();
+          await execute();
+          expect(await captureRows()).toEqual(afterSuccess);
+          const stored = await runs.findOneByOrFail({ id });
+          const restored = await service.restore(actor(), id, stored.deviceId);
+          const latest = await snapshotsService.loadLatestValid(id);
+          expect(latest!.entity.runVersion).toBe(stored.version);
+          expect(latest!.entity.currentStepIndex).toBe(stored.currentStepIndex);
+          expect(restored.currentStepIndex).toBe(stored.currentStepIndex);
+        } finally {
+          const current = await runs.findOneByOrFail({ id });
+          await service.complete(actor(), id, { deviceId: current.deviceId, version: current.version,
+            requestId: requestId('atomic-cleanup') });
+        }
+      }, 10000,
+    );
+
+    it('CAS affected=0 writes no Event/Snapshot and the same requestId can retry', async () => {
+      const service = app.get(ClassroomRunService);
+      const plan = await createPlan();
+      const started = await service.start(actor(), startBody(plan.id));
+      await enterTeachingFixture(app, started.id);
+      const id = started.id;
+      const dto = { deviceId, version: started.version, requestId: requestId('atomic-cas'), stepIndex: 1 };
+      const runs = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+      const baseline = await Promise.all(['classroom_run', 'classroom_event', 'classroom_snapshot'].map(t => runs.manager.query(`SELECT * FROM ${t} ORDER BY id`)));
+      const original = Repository.prototype.update;
+      const cas = jest.spyOn(Repository.prototype, 'update').mockImplementation(function(this: Repository<any>, criteria: any, values: any) {
+        if (this.metadata.target === ClassroomRun && criteria.id === id) return Promise.resolve({ affected: 0 } as any);
+        return (original as any).call(this, criteria, values);
+      } as any);
+      try {
+        await expect(service.changeStep(actor(), id, dto)).rejects.toMatchObject({ status: 409 });
+        expect(await Promise.all(['classroom_run', 'classroom_event', 'classroom_snapshot'].map(t => runs.manager.query(`SELECT * FROM ${t} ORDER BY id`)))).toEqual(baseline);
+      } finally { cas.mockRestore(); }
+      const result = await service.changeStep(actor(), id, dto);
+      await service.complete(actor(), id, { deviceId, version: result.version, requestId: requestId('cas-cleanup') });
+    });
+
+    it('best-effort feedback/periodic failure does not terminate the classroom', async () => {
+      const service = app.get(ClassroomRunService);
+      const snapshotsService = app.get(ClassroomSnapshotService);
+      const plan = await createPlan();
+      const started = await service.start(actor(), startBody(plan.id));
+      await enterTeachingFixture(app, started.id);
+      const spy = jest.spyOn(snapshotsService, 'capture').mockRejectedValue(new Error('auxiliary storage failure'));
+      let result: any;
+      try {
+        result = await service.checkpoint(actor(), started.id, { deviceId, version: started.version,
+          requestId: requestId('best-effort'), checkpointType: 'command' as any, playerState: { currentTime: 10 } });
+        expect(result.status).toBe('running');
+        const repo = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
+        await repo.update({ classroomRunId: started.id }, { createdAt: new Date(Date.now() - 31000) });
+        spy.mockClear();
+        await expect(snapshotsService.saveActiveClassrooms()).resolves.toBeUndefined();
+        expect(spy).toHaveBeenCalledWith(started.id, ClassroomSnapshotReason.Timed, false, {});
+      } finally { spy.mockRestore(); }
+      await service.complete(actor(), started.id, { deviceId, version: result.version, requestId: requestId('aux-cleanup') });
+    });
+  });
+
+  it('0.5-1 HTTP checkpoints only accept correlated observations and preserve server controls', async () => {
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
+    const id = started.body.id;
+    const snapshotsService = app.get(ClassroomSnapshotService);
+    const original = await snapshotsService.loadLatestValid(id);
+    const state = { presentationCommandId: 'A', presentationMode: 'resource', presentationItemId: 'item-A',
+      resourceId: approvedResourceId, returnPoint: { pageIndex: 4 }, autoPlay: false, currentTime: 0 };
+    await snapshotsService.capture(id, ClassroomSnapshotReason.Timed, false, { playerState: state });
+    let version = started.body.version;
+    const post = async (playerState: any) => {
+      const result = await request(app.getHttpServer()).post(`/classroom-runs/${id}/checkpoints`).set(auth()).send({
+        deviceId, version, requestId: requestId('observation'), checkpointType: 'command', playerState,
+        interactionState: { screenLifecycle: { phase: 'summary', revision: 999 }, presentationQueues: { evil: [] } },
+        rewardState: { evil: 999 },
+      }).expect(201);
+      version = result.body.version;
+      return (await snapshotsService.loadLatestValid(id))!;
+    };
+    const good = await post({ presentationCommandId: 'A', presentationRevision: version,
+      presentationMode: 'avatar', presentationItemId: 'evil', commandId: 'evil', returnPoint: {},
+      currentTime: 12, pageIndex: 2, status: 'error', errorCode: 'LOAD_FAILED' });
+    expect(good.playerState).toMatchObject({ ...state, currentTime: 12, pageIndex: 2,
+      observation: { status: 'error', errorCode: 'LOAD_FAILED' } });
+    expect(good.playerState).not.toHaveProperty('commandId');
+    expect(good.interactionState).toEqual(original!.interactionState);
+    expect(good.rewardState).toEqual(original!.rewardState);
+    await snapshotsService.capture(id, ClassroomSnapshotReason.Timed, false, {
+      playerState: { ...state, presentationCommandId: 'B', presentationItemId: 'item-B', currentTime: 3 },
+    });
+    const revisionB = version;
+    const stale = await post({ presentationCommandId: 'A', presentationRevision: started.body.version,
+      resourceId: approvedResourceId, currentTime: 99, completed: true });
+    expect(stale.playerState.currentTime).toBe(3);
+    expect(stale.playedResourceIds).not.toContain(approvedResourceId);
+    const legacy = await post({ resourceId: approvedResourceId, currentTime: 88, presentationMode: 'avatar' });
+    expect(legacy.playerState.currentTime).toBe(3);
+    const wrongRevision = await post({ presentationCommandId: 'B', presentationRevision: revisionB - 1, currentTime: 77 });
+    expect(wrongRevision.playerState.currentTime).toBe(3);
+    const valid = await post({ presentationCommandId: 'B', presentationRevision: revisionB, currentTime: 5, completed: true });
+    expect(valid.playerState.currentTime).toBe(5);
+    expect(valid.playedResourceIds).toContain(approvedResourceId);
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth()).send({
+      deviceId, version, requestId: requestId('ownership-complete'),
+    }).expect(201);
+  });
+
   it('drives the classroom screen from server state and restores player snapshots', async () => {
     const idle = await request(app.getHttpServer())
       .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
@@ -806,7 +1205,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const classroom = await request(app.getHttpServer())
       .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
       .set(auth())
@@ -869,6 +1268,10 @@ describe('Task four classroom run state machine (e2e)', () => {
       { classroomRunId: started.body.id, stepIndex: 0 },
       { title: '观察导入' },
     );
+    await app.get(ClassroomSnapshotService).capture(started.body.id, ClassroomSnapshotReason.Timed, false, {
+      playerState: { presentationCommandId: 'screen-resource', resourceId: approvedResourceId,
+        presentationMode: 'resource', zoom: 1.25, volume: 0.6, autoPlay: false },
+    });
     const checkpoint = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/checkpoints`)
       .set(auth())
@@ -879,6 +1282,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         checkpointType: 'command',
         resourceId: approvedResourceId,
         playerState: {
+          presentationCommandId: 'screen-resource', presentationRevision: breakEnded.body.version,
           resourceId: approvedResourceId,
           status: 'paused',
           currentTime: 12.5,
@@ -1003,6 +1407,9 @@ describe('Task four classroom run state machine (e2e)', () => {
     expect(stream.data).toMatchObject({ phase: opening.phase, lifecycle: opening.lifecycle, classroomState: { id } });
     const paused = await request(app.getHttpServer()).post(`/classroom-runs/${id}/pause`).set(auth()).send({ deviceId, version: started.body.version, requestId: requestId('opening-pause') }).expect(201);
     expect((await read()).body).toMatchObject({ phase: 'paused', classroomState: { status: 'paused' }, lifecycle: { phase: 'opening' } });
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/complete`).set(auth()).send(dto).expect(409);
+    const resumeOpening = await request(app.getHttpServer()).post(`/classroom-runs/${id}/resume`).set(auth())
+      .send({ deviceId, version: paused.body.version, requestId: requestId('opening-resume-before-complete') }).expect(201);
     const completed = await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/complete`).set(auth()).send(dto).expect(201);
     expect(completed.body).toMatchObject({ phase: 'teaching', revision: 2 });
     const snapshots = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
@@ -1012,8 +1419,8 @@ describe('Task four classroom run state machine (e2e)', () => {
     expect(await snapshots.count({ where: { classroomRunId: id } })).toBe(count);
     await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/complete`).set(auth()).send({ ...dto, expectedRevision: 3 }).expect(409);
     const unchanged = await request(app.getHttpServer()).get(`/classroom-runs/${id}`).set(auth()).expect(200);
-    expect(unchanged.body).toMatchObject({ status: 'paused', currentStepIndex: 0, version: paused.body.version });
-    const resumed = await request(app.getHttpServer()).post(`/classroom-runs/${id}/resume`).set(auth()).send({ deviceId, version: paused.body.version, requestId: requestId('opening-resume') }).expect(201);
+    expect(unchanged.body).toMatchObject({ status: 'running', currentStepIndex: 0, version: resumeOpening.body.version });
+    const resumed = unchanged;
     expect((await read()).body.phase).toBe('teaching');
     await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth()).send({ deviceId, version: resumed.body.version, requestId: requestId('opening-end') }).expect(201);
     const second = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
@@ -1082,7 +1489,7 @@ describe('Task four classroom run state machine (e2e)', () => {
 
   it('SUMMARY expires, closes, and failed summary creation rolls complete back atomically', async () => {
     const plan = await createPlan();
-    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const active = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body;
     const complete = { deviceId, version: started.body.version, requestId: requestId('summary-rollback') };
     const spy = jest.spyOn(app.get(ScreenLifecycleService), 'createSummary').mockRejectedValueOnce(new Error('isolated summary failure'));
@@ -1094,7 +1501,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.parse(summary.lifecycle.expiresAt) + 1);
     try { expect((await read()).body.page).toBe('idle'); } finally { nowSpy.mockRestore(); }
     expect((await read()).body.page).toBe('idle');
-    const second = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const second = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const secondActive = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body;
     await request(app.getHttpServer()).post(`/classroom-runs/${second.body.id}/complete`).set(auth()).send({ deviceId, version: second.body.version, requestId: requestId('summary-close-end') }).expect(201);
     const state = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}&handoffId=${secondActive.handoff.id}`).set(auth()).expect(200)).body;
@@ -1179,7 +1586,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     await request(app.getHttpServer())
       .post('/classroom-commands')
       .set('Authorization', `Bearer ${adminToken}`)
@@ -1214,7 +1621,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(started.body).toMatchObject({
       lessonPlanId: plan.id,
       lessonPlanVersion: plan.version,
@@ -1266,9 +1673,11 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const runId = started.body.id as number;
-    // 教师A写入考勤+奖励快照，确保数据真实存在快照表中
+    // Server-owned fixture; ordinary HTTP checkpoints cannot forge formal interaction state.
+    await seedSnapshotFixture(app.get(ClassroomSnapshotService), runId, ClassroomSnapshotReason.Timed, false,
+      { attendanceState: { 1: 'present' }, rewardState: { 1: 2 } });
     await request(app.getHttpServer())
       .post(`/classroom-runs/${runId}/checkpoints`)
       .set(auth())
@@ -1349,12 +1758,12 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(body)
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const repeated = await request(app.getHttpServer())
       .post('/classroom-runs/start')
       .set(auth())
       .send(body)
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(repeated.body.id).toBe(first.body.id);
     expect(await events.countBy({ requestId: body.requestId })).toBe(1);
     const another = await createPlan();
@@ -1376,7 +1785,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const pauseRequestId = requestId('pause');
     const paused = await request(app.getHttpServer())
       .post(`/classroom-runs/${started.body.id}/pause`)
@@ -1437,7 +1846,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .send(
         startBody(plan.id, { classroomId: classroom2Id, deviceId: device2Id }),
       )
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const [pause, complete] = await Promise.all([
       request(app.getHttpServer())
         .post(`/classroom-runs/${started.body.id}/pause`)
@@ -1571,7 +1980,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     expect(started.body.avatarCharacterId).toBe(lessonAvatar.character.id);
     const pinnedAtStart = await request(app.getHttpServer())
       .get(
@@ -1655,7 +2064,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     it('runtime queue edits preserve player and lesson; explicit show tracks its item and survives restore', async () => {
       const plan = await createPlan();
       const original = await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth()).expect(200);
-      const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+      const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       const base = { runId: started.body.id, deviceId, source: 'teacher_panel' };
       const edited = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...base,
         requestId: requestId('queue-edit'), expectedVersion: started.body.version, operation: 'update_presentation_queue',
@@ -1688,7 +2097,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .post('/classroom-runs/start')
         .set(auth())
         .send(startBody(plan.id))
-        .expect(201);
+        .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       const rid = requestId('command-next');
       const body = {
         requestId: rid,
@@ -1750,7 +2159,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .post('/classroom-runs/start')
         .set(auth())
         .send(startBody(plan.id))
-        .expect(201);
+        .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       const conflict = await request(app.getHttpServer())
         .post('/classroom-commands')
         .set(auth())
@@ -1782,7 +2191,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .post('/classroom-runs/start')
         .set(auth())
         .send(startBody(plan.id))
-        .expect(201);
+        .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       await request(app.getHttpServer())
         .post('/classroom-commands')
         .set(auth())
@@ -1864,7 +2273,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .post('/classroom-runs/start')
         .set(auth())
         .send(startBody(plan.id))
-        .expect(201);
+        .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       let version = started.body.version as number;
       const attendanceRequestId = requestId('formal-attendance');
       const attendanceBody = {
@@ -2020,7 +2429,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .post('/classroom-runs/start')
       .set(auth())
       .send(startBody(plan.id))
-      .expect(201);
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
     const devices = app.get<Repository<Device>>(getRepositoryToken(Device));
     await devices.update(deviceId, {
       status: DeviceStatus.Online,
@@ -2166,7 +2575,7 @@ describe('Task four classroom run state machine (e2e)', () => {
         .post('/classroom-runs/start')
         .set(auth())
         .send(startBody(plan.id))
-        .expect(201);
+        .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
       return started.body as {
         id: number;
         version: number;

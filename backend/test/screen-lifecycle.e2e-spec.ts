@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { seedSnapshotFixture } from './helpers/snapshot-fixture';
 import { DataSource } from 'typeorm';
 import { ClassroomSnapshotService } from '../src/classroom-runs/classroom-snapshot.service';
 import { ScreenLifecycleService } from '../src/classroom-runs/screen-lifecycle.service';
@@ -77,7 +78,7 @@ describe('internal screen lifecycle storage (isolated SQLite)', () => {
     lifecycle = new ScreenLifecycleService(snapshots, {
       requireClassAccess: async () => ({}),
     } as unknown as PlatformAccessService);
-    await snapshots.capture(1, ClassroomSnapshotReason.Start, true, {
+    await seedSnapshotFixture(snapshots, 1, ClassroomSnapshotReason.Start, true, {
       interactionState: { question: 'original' },
       attendanceState: { present: [1] },
       rewardState: { stars: 3 },

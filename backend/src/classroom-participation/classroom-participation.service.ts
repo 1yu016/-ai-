@@ -1,3 +1,9 @@
+import { rejectLegacyWrite, withRecordIdentity } from '../classroom-runs/legacy-write-boundary';
+import { AttendanceService } from '../classroom-runs/attendance.service';
+import { AttendanceChangeSource as CanonicalAttendanceSource } from '../classroom-runs/entities/student-attendance-change.entity';
+import { AttendanceStatus as CanonicalAttendanceStatus } from '../classroom-runs/entities/student-attendance-record.entity';
+import { ClassroomRollCallService } from '../classroom-runs/classroom-roll-call.service';
+import { RollCallMode as CanonicalRollCallMode } from '../classroom-runs/entities/classroom-roll-call-record.entity';
 import {
   BadRequestException,
   ConflictException,
@@ -8,11 +14,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
+import { DataSource, In, IsNull, Repository } from 'typeorm';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import {
-  ClassroomSnapshotReason,
   TERMINAL_CLASSROOM_RUN_STATUSES,
 } from '../classroom-runs/classroom-run.types';
 import { ClassroomSnapshotService } from '../classroom-runs/classroom-snapshot.service';
@@ -21,13 +26,10 @@ import { PlatformAccessService } from '../platform/platform-access.service';
 import { Student } from '../platform/entities/student.entity';
 import { RecordStatus } from '../platform/platform.types';
 import {
-  AttendanceChangeSource,
   AttendanceStatus,
-  ROLL_CALL_ALGORITHM_VERSION,
   RollCallMode,
 } from './classroom-participation.types';
 import {
-  AttendanceEntryDto,
   AttendanceHistoryQueryDto,
   BatchAttendanceDto,
   ConfirmVoiceAttendanceDto,
@@ -86,6 +88,8 @@ export class ClassroomParticipationService {
     private readonly config: ConfigService,
     private readonly access: PlatformAccessService,
     private readonly snapshots: ClassroomSnapshotService,
+    private readonly canonicalAttendance: AttendanceService,
+    private readonly canonicalRollCalls: ClassroomRollCallService,
   ) {
     this.voiceSecret =
       this.config.get<string>('JWT_ACCESS_SECRET')?.trim() ||
@@ -99,14 +103,13 @@ export class ClassroomParticipationService {
     dto: SetAttendanceDto,
   ) {
     const run = await this.teacherRun(actor, runId, false);
-    const result = await this.persistAttendance(
-      actor,
-      run,
-      dto,
-      AttendanceChangeSource.Manual,
-    );
-    await this.captureAttendance(runId);
-    return result;
+    await this.assertNoLegacyAttendanceRequest(runId, dto.requestId);
+    const result = await this.canonicalAttendance.apply(actor, run, dto.requestId,
+      [{ studentId: dto.studentId, status: dto.status as unknown as CanonicalAttendanceStatus, note: dto.note }],
+      CanonicalAttendanceSource.Manual, { mode: 'single' });
+    const record = withRecordIdentity(result.items.find(r => r.studentId === dto.studentId)!, 'canonical', 'attendance');
+    return { ...record, note: result.updates[0]!.note, updatedBy: record.modifiedByTeacherId,
+      ...result, record };
   }
 
   async batchAttendance(
@@ -115,44 +118,20 @@ export class ClassroomParticipationService {
     dto: BatchAttendanceDto,
   ) {
     const run = await this.teacherRun(actor, runId, false);
-    const unique = new Set(dto.entries.map((entry) => entry.studentId));
-    if (unique.size !== dto.entries.length)
-      throw new BadRequestException('批量考勤中学生重复');
-    await this.requireStudentsInClass(run.classId, [...unique]);
+    await this.assertNoLegacyAttendanceRequest(runId, dto.requestId);
+    const result = await this.canonicalAttendance.apply(actor, run, dto.requestId,
+      dto.entries.map(entry => ({ ...entry, status: entry.status as unknown as CanonicalAttendanceStatus })),
+      CanonicalAttendanceSource.Batch, { mode: 'batch' });
+    return { ...result, items: result.updates.map(update => {
+      const record = withRecordIdentity(result.items.find(r => r.studentId === update.studentId)!, 'canonical', 'attendance');
+      return { ...record, note: update.note, updatedBy: record.modifiedByTeacherId };
+    }) };
+  }
 
-    const result = await this.dataSource.transaction(async (manager) => {
-      const prior = await manager.getRepository(AttendanceChangeLog).find({
-        where: { classroomRunId: run.id, requestId: dto.requestId },
-      });
-      if (prior.length) {
-        if (
-          prior.length !== dto.entries.length ||
-          prior.some((log) => !unique.has(log.studentId))
-        )
-          throw new ConflictException('requestId 已用于不同的批量考勤');
-        return manager.getRepository(AttendanceRecord).find({
-          where: { classroomRunId: run.id, studentId: In([...unique]) },
-          order: { studentId: 'ASC' },
-        });
-      }
-      const records: AttendanceRecord[] = [];
-      for (const entry of dto.entries) {
-        records.push(
-          await this.persistAttendanceInManager(
-            manager,
-            actor,
-            run,
-            entry,
-            dto.requestId,
-            AttendanceChangeSource.Batch,
-            null,
-          ),
-        );
-      }
-      return records;
-    });
-    await this.captureAttendance(runId);
-    return { items: result };
+  private async assertNoLegacyAttendanceRequest(runId: number, requestId: string) {
+    // A legacy audit has no canonical receipt. Never repeat it as a new fact.
+    if (await this.attendanceLogs.existsBy({ classroomRunId: runId, requestId }))
+      rejectLegacyWrite('participation.attendance.legacyRequest');
   }
 
   async listAttendance(actor: JwtTeacherPayload, runId: number) {
@@ -168,7 +147,7 @@ export class ClassroomParticipationService {
       classroomRunId: run.id,
       items: students.map((student) => ({
         student,
-        attendance: byStudent.get(student.id) ?? null,
+        attendance: byStudent.has(student.id) ? withRecordIdentity(byStudent.get(student.id)!, 'legacy_participation', 'attendance') : null,
       })),
     };
   }
@@ -185,15 +164,15 @@ export class ClassroomParticipationService {
       skip: (query.page - 1) * query.pageSize,
       take: query.pageSize,
     });
-    return { items, total, page: query.page, pageSize: query.pageSize };
+    return { items: items.map(r => withRecordIdentity(r, 'legacy_participation', 'attendance')), total, page: query.page, pageSize: query.pageSize };
   }
 
   async attendanceChangeLogs(actor: JwtTeacherPayload, runId: number) {
     await this.readableRun(actor, runId);
-    return this.attendanceLogs.find({
+    return (await this.attendanceLogs.find({
       where: { classroomRunId: runId },
       order: { id: 'DESC' },
-    });
+    })).map(r => withRecordIdentity(r, 'legacy_participation', 'attendance_change'));
   }
 
   async recognizeVoice(
@@ -276,31 +255,9 @@ export class ClassroomParticipationService {
     runId: number,
     dto: ConfirmVoiceAttendanceDto,
   ) {
-    const run = await this.teacherRun(actor, runId, true);
-    const payload = this.verifyVoiceToken(dto.confirmationToken);
-    if (payload.runId !== runId || payload.teacherId !== actor.sub)
-      throw new ForbiddenException('语音确认凭证不属于当前课堂或教师');
-    if (!payload.candidateIds.includes(dto.studentId))
-      throw new BadRequestException('确认的学生不在语音候选中');
-    const tokenHash = this.sha256(dto.confirmationToken);
-    const used = await this.attendanceLogs.findOne({
-      where: { confirmationTokenHash: tokenHash },
-    });
-    if (used) throw new ConflictException('语音确认凭证已使用');
-    const result = await this.persistAttendance(
-      actor,
-      run,
-      {
-        studentId: dto.studentId,
-        status: dto.status,
-        note: dto.note,
-        requestId: dto.requestId,
-      },
-      AttendanceChangeSource.VoiceConfirmed,
-      tokenHash,
-    );
-    await this.captureAttendance(runId);
-    return result;
+    await this.teacherRun(actor, runId, false);
+    void dto;
+    return rejectLegacyWrite('participation.confirmVoice');
   }
 
   async createGroup(
@@ -519,157 +476,20 @@ export class ClassroomParticipationService {
   }
 
   async rollCall(actor: JwtTeacherPayload, runId: number, dto: RollCallDto) {
-    const run = await this.teacherRun(actor, runId, true);
-    const duplicate = await this.rollCalls.findOne({
-      where: { classroomRunId: run.id, requestId: dto.requestId },
+    await this.teacherRun(actor, runId, false);
+    // Legacy fair-v1 cools before fairness and hashes requestId. Canonical
+    // fair-v1 applies fairness first and draws inside the transaction.
+    // Never substitute algorithms or fabricate a legacy candidateSnapshot.
+    if (dto.mode !== RollCallMode.TeacherSpecified || dto.groupId != null || dto.studentIds != null)
+      return rejectLegacyWrite('participation.rollCall.randomSemantics');
+    if (await this.rollCalls.existsBy({ classroomRunId: runId, requestId: dto.requestId }))
+      return rejectLegacyWrite('participation.rollCall.legacyRequest');
+    const result = await this.canonicalRollCalls.execute(actor, runId, dto.requestId, {
+      mode: CanonicalRollCallMode.Specified, studentId: dto.specifiedStudentId,
+      cooldownCount: dto.cooldownCount ?? 2, algorithmVersion: 'fair-v1',
     });
-    if (duplicate) return this.rollCallResponse(duplicate);
-
-    const allStudents = await this.classStudents(run.classId);
-    const allIds = new Set(allStudents.map((student) => student.id));
-    let scope = new Set(allIds);
-    let groupId: number | null = null;
-    if (dto.mode === RollCallMode.Range) {
-      await this.requireStudentsInClass(run.classId, dto.studentIds ?? []);
-      scope = new Set(dto.studentIds);
-    } else if (dto.mode === RollCallMode.Group) {
-      const group = await this.requireGroup(run.id, dto.groupId!);
-      groupId = group.id;
-      const members = await this.groupMembers.find({
-        where: { groupId: group.id, active: true },
-      });
-      scope = new Set(members.map((member) => member.studentId));
-    } else if (dto.mode === RollCallMode.TeacherSpecified) {
-      await this.requireStudentsInClass(run.classId, [dto.specifiedStudentId!]);
-      scope = new Set([dto.specifiedStudentId!]);
-    }
-
-    const attendance = await this.attendance.find({
-      where: { classroomRunId: run.id },
-    });
-    const attendanceByStudent = new Map(
-      attendance.map((record) => [record.studentId, record.status]),
-    );
-    const history = await this.rollCalls.find({
-      where: { classroomRunId: run.id },
-      order: { id: 'DESC' },
-    });
-    const cooldownCount = dto.cooldownCount ?? 2;
-    const recent = history
-      .slice(0, cooldownCount)
-      .map((record) => record.selectedStudentId);
-    const totalCounts = new Map<number, number>();
-    const lastCalls = new Map<number, Date>();
-    history.forEach((record) => {
-      totalCounts.set(
-        record.selectedStudentId,
-        (totalCounts.get(record.selectedStudentId) ?? 0) + 1,
-      );
-      if (!lastCalls.has(record.selectedStudentId))
-        lastCalls.set(record.selectedStudentId, record.createdAt);
-    });
-    const baseEligible = allStudents.filter((student) => {
-      const status = attendanceByStudent.get(student.id);
-      return (
-        scope.has(student.id) &&
-        status !== AttendanceStatus.Absent &&
-        status !== AttendanceStatus.Leave
-      );
-    });
-    if (!baseEligible.length)
-      throw new ConflictException('没有可点名的在场幼儿');
-    let pool = baseEligible.filter((student) => !recent.includes(student.id));
-    const cooldownRelaxed = pool.length === 0;
-    if (cooldownRelaxed) pool = baseEligible;
-    const minimumCount = Math.min(
-      ...pool.map((student) => totalCounts.get(student.id) ?? 0),
-    );
-    pool = pool.filter(
-      (student) => (totalCounts.get(student.id) ?? 0) === minimumCount,
-    );
-    const selected = [...pool].sort(
-      (a, b) =>
-        this.stableNumber(`${dto.requestId}:${a.id}`) -
-        this.stableNumber(`${dto.requestId}:${b.id}`),
-    )[0];
-
-    let record: RollCallRecord;
-    try {
-      record = await this.dataSource.transaction(async (manager) => {
-        const recordRepo = manager.getRepository(RollCallRecord);
-        const repeated = await recordRepo.findOne({
-          where: { classroomRunId: run.id, requestId: dto.requestId },
-        });
-        if (repeated) return repeated;
-        const saved = await recordRepo.save(
-          recordRepo.create({
-            classroomRunId: run.id,
-            classId: run.classId,
-            teacherId: actor.sub,
-            requestId: dto.requestId,
-            mode: dto.mode,
-            groupId,
-            selectedStudentId: selected.id,
-            algorithmVersion: ROLL_CALL_ALGORITHM_VERSION,
-            cooldownCount,
-            source:
-              dto.mode === RollCallMode.TeacherSpecified
-                ? 'teacher'
-                : 'fair_random',
-          }),
-        );
-        await manager.getRepository(RollCallCandidateSnapshot).save(
-          allStudents.map((student) => {
-            const status = attendanceByStudent.get(student.id);
-            let exclusionReason: string | null = null;
-            let eligible = true;
-            if (!scope.has(student.id)) {
-              eligible = false;
-              exclusionReason = 'outside_scope';
-            } else if (status === AttendanceStatus.Absent) {
-              eligible = false;
-              exclusionReason = 'absent';
-            } else if (status === AttendanceStatus.Leave) {
-              eligible = false;
-              exclusionReason = 'leave';
-            } else if (!cooldownRelaxed && recent.includes(student.id)) {
-              eligible = false;
-              exclusionReason = 'cooldown';
-            }
-            return manager.getRepository(RollCallCandidateSnapshot).create({
-              rollCallRecordId: saved.id,
-              studentId: student.id,
-              eligible,
-              exclusionReason,
-              recentCallCount: recent.filter((id) => id === student.id).length,
-              totalCallCount: totalCounts.get(student.id) ?? 0,
-              lastCalledAt: lastCalls.get(student.id) ?? null,
-              selected: student.id === selected.id,
-            });
-          }),
-        );
-        return saved;
-      });
-    } catch (error) {
-      const repeated = await this.rollCalls.findOne({
-        where: { classroomRunId: run.id, requestId: dto.requestId },
-      });
-      if (repeated) return this.rollCallResponse(repeated);
-      throw error;
-    }
-    await this.snapshots.capture(
-      run.id,
-      ClassroomSnapshotReason.RollCall,
-      true,
-      {
-        rollCallState: {
-          recordId: record.id,
-          selectedStudentId: record.selectedStudentId,
-          algorithmVersion: record.algorithmVersion,
-        },
-      },
-    );
-    return this.rollCallResponse(record);
+    return { ...result, ...withRecordIdentity({ id: result.recordId }, 'canonical', 'roll_call'),
+      classroomRunId: runId, mode: dto.mode, selectedStudent: result.student };
   }
 
   async listRollCalls(actor: JwtTeacherPayload, runId: number) {
@@ -685,96 +505,11 @@ export class ClassroomParticipationService {
     };
   }
 
-  private async persistAttendance(
-    actor: JwtTeacherPayload,
-    run: ClassroomRun,
-    dto: SetAttendanceDto,
-    source: AttendanceChangeSource,
-    confirmationTokenHash: string | null = null,
-  ) {
-    await this.requireStudentsInClass(run.classId, [dto.studentId]);
-    return this.dataSource.transaction((manager) =>
-      this.persistAttendanceInManager(
-        manager,
-        actor,
-        run,
-        dto,
-        dto.requestId,
-        source,
-        confirmationTokenHash,
-      ),
-    );
-  }
 
-  private async persistAttendanceInManager(
-    manager: EntityManager,
-    actor: JwtTeacherPayload,
-    run: ClassroomRun,
-    entry: AttendanceEntryDto,
-    requestId: string,
-    source: AttendanceChangeSource,
-    confirmationTokenHash: string | null,
-  ) {
-    const logRepo = manager.getRepository(AttendanceChangeLog);
-    const duplicate = await logRepo.findOne({
-      where: { classroomRunId: run.id, studentId: entry.studentId, requestId },
-    });
-    if (duplicate)
-      return manager
-        .getRepository(AttendanceRecord)
-        .findOneByOrFail({ id: duplicate.attendanceRecordId });
-    const repo = manager.getRepository(AttendanceRecord);
-    let record = await repo.findOne({
-      where: { classroomRunId: run.id, studentId: entry.studentId },
-    });
-    const previousStatus = record?.status ?? null;
-    if (!record)
-      record = repo.create({
-        classroomRunId: run.id,
-        classId: run.classId,
-        studentId: entry.studentId,
-      });
-    Object.assign(record, {
-      status: entry.status,
-      note: entry.note?.trim() || null,
-      updatedBy: actor.sub,
-    });
-    record = await repo.save(record);
-    await logRepo.save(
-      logRepo.create({
-        attendanceRecordId: record.id,
-        classroomRunId: run.id,
-        classId: run.classId,
-        studentId: entry.studentId,
-        previousStatus,
-        newStatus: entry.status,
-        source,
-        actorType: actor.userType,
-        actorId: actor.sub,
-        requestId,
-        confirmationTokenHash,
-        reason: entry.note?.trim() || null,
-      }),
-    );
-    return record;
-  }
 
-  private async captureAttendance(runId: number) {
-    const records = await this.attendance.find({
-      where: { classroomRunId: runId },
-    });
-    const counts = Object.values(AttendanceStatus).reduce<
-      Record<string, number>
-    >((result, status) => {
-      result[status] = records.filter(
-        (record) => record.status === status,
-      ).length;
-      return result;
-    }, {});
-    await this.snapshots.capture(runId, ClassroomSnapshotReason.Timed, false, {
-      attendanceState: { counts, updatedAt: new Date().toISOString() },
-    });
-  }
+
+
+
 
   private async teacherRun(
     actor: JwtTeacherPayload,
@@ -893,7 +628,7 @@ export class ClassroomParticipationService {
       order: { studentId: 'ASC' },
     });
     return {
-      id: record.id,
+      ...withRecordIdentity({ id: record.id }, 'legacy_participation', 'roll_call'),
       classroomRunId: record.classroomRunId,
       mode: record.mode,
       selectedStudent: student,

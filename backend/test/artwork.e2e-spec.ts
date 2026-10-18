@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { enterTeachingFixture } from './helpers/teaching-phase-fixture';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
@@ -76,6 +77,8 @@ describe('student artwork review (e2e)', () => {
     await app.get<Repository<DeviceBinding>>(getRepositoryToken(DeviceBinding)).save({ deviceId, classroomId: classroom.id, classId, boundByType: AuthUserType.Teacher, boundBy: teacherId, boundAt: new Date(), status: BindingStatus.Active, unboundAt: null });
     runId = (await app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).save({ lessonPlanId: 1, lessonPlanVersion: 1, teacherId, classId, classroomId: classroom.id, deviceId, avatarVersionId: null, avatarCharacterId: null, title: '画春天', status: ClassroomRunStatus.Running, currentStepIndex: 0, startedAt: new Date(), pausedAt: null, resumedAt: new Date(), endedAt: null, breakStartedAt: null, breakEndsAt: null, breakContentType: null, breakDurationSeconds: null, breakProtectionAt: null, breakContext: null, elapsedSeconds: 0, version: 1 })).id;
   });
+
+  beforeAll(async () => { await enterTeachingFixture(app, runId); });
 
   afterAll(async () => {
     for (const key of createdKeys) await unlink(`${ARTWORK_UPLOAD_DIRECTORY}/${key}`).catch(() => undefined);

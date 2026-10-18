@@ -19,6 +19,8 @@ import { TeacherRole } from '../auth/entities/teacher.entity';
 import OpenAI from 'openai';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuditService } from '../platform/audit.service';
+import { LessonEvidenceService } from './lesson-evidence.service';
+import type { ExperienceProvenanceV1 } from './lesson-experience.contract';
 import {
   AiLessonPlanDraftOutputDto,
   AiLessonPlanDraftRequestDto,
@@ -76,6 +78,7 @@ export class LessonPlanAiService {
     @InjectRepository(LessonPlanVersion) private readonly versions?: Repository<LessonPlanVersion>,
     @InjectRepository(LessonAiDraft) private readonly drafts?: Repository<LessonAiDraft>,
     private readonly resources?: ResourceService,
+    private readonly evidence?: LessonEvidenceService,
   ) {
     const apiKey = config.get<string>('ARK_API_KEY')?.trim();
     this.model = config.get<string>('ARK_ENDPOINT_ID')?.trim() ?? '';
@@ -108,6 +111,15 @@ export class LessonPlanAiService {
     if (!!input.baseLessonPlanId !== !!input.baseVersion) throw new BadRequestException('教案与基础版本必须同时提供');
     if (input.taskType !== 'plan_outline' && (!input.baseLessonPlanId || !input.targetStepId))
       throw new BadRequestException('局部任务必须指定教案、版本和步骤');
+    const experience = input.taskType === 'experience_optimization';
+    if (experience ? !input.referenceRunIds?.length : input.referenceRunIds !== undefined)
+      throw new BadRequestException('参考课堂仅用于经验优化且不能为空');
+    if (input.referenceRunIds && (input.referenceRunIds.length > 5 ||
+        new Set(input.referenceRunIds).size !== input.referenceRunIds.length))
+      throw new BadRequestException('参考课堂不能重复且最多五节');
+    const pack = experience ? await this.evidence!.build(actor, input.baseLessonPlanId!, {
+      baseVersion: input.baseVersion!, runIds: input.referenceRunIds!,
+    }) : null;
     let base: Record<string, any> | null = null;
     if (input.baseLessonPlanId) {
       const plan = await this.plans!.findOneBy({ id: input.baseLessonPlanId });
@@ -116,6 +128,8 @@ export class LessonPlanAiService {
       if (plan.version !== input.baseVersion) throw new ConflictException('教案版本已变化，请刷新后生成');
       const version = await this.versions!.findOneBy({ lessonPlanId: plan.id, versionNo: input.baseVersion });
       if (!version) throw new ConflictException('基础版本不存在');
+      if (experience && plan.currentVersionId !== version.id)
+        throw new ConflictException('当前教案版本指针与基础版本不一致');
       base = JSON.parse(version.snapshotJson);
       if (input.targetStepId && !base!.steps.some((s: any) => s.id === input.targetStepId))
         throw new BadRequestException('步骤不属于基础教案版本');
@@ -134,19 +148,56 @@ export class LessonPlanAiService {
         .filter((s: any) => !input.targetStepId || s.id === input.targetStepId)
         .map((s: any) => ({ id: s.id, title: s.title, teacherInstruction: s.instruction,
           studentContent: base!.contentBoundary === 1 ? s.content : '', durationSeconds: s.durationSeconds })) } : null,
-      resources };
+      resources, ...(pack ? { evidence: { safeFacts: pack.safeFacts, ruleVersion: pack.ruleVersion } } : {}) };
+    // Extra defence only, not complete anonymisation. Never log this context.
+    if (experience && (UNSAFE_GENERATED_CONTENT.test(JSON.stringify(context)) ||
+        UNSAFE_CHILD_CONTENT.test(JSON.stringify(context)) || /\b1[3-9]\d{9}\b/.test(JSON.stringify(context))))
+      throw new BadRequestException('备课上下文包含不适宜或隐私风险内容，请复核');
     const started = Date.now();
     let stage = 'configuration';
     try {
       if (!this.configured) throw new ServiceUnavailableException('AI未配置');
       stage = 'model_request';
       const completion = await this.openai.chat.completions.create({ model: this.model,
-        messages: [{ role: 'system', content: CANDIDATE_PROMPT }, { role: 'user', content: JSON.stringify(context) }],
+        messages: [{ role: 'system', content: CANDIDATE_PROMPT + (experience ?
+          '\n这是经验辅助任务。每个候选必须增加evidenceIds字符串数组，只能引用safeFacts.facts中的evidenceId。事件次数、暂停和时长不代表参与度、兴趣、能力或教学效果。只能建议教师尝试，不得声称效果提升、证明有效或评定优秀教案。历史步骤不对应当前步骤，不得按名称或下标关联。证据不足时明确说明限制。' : '') }, { role: 'user', content: JSON.stringify(context) }],
         temperature: 0.3, max_tokens: 3000, stream: false });
       stage = 'output_validation';
       const parsed = this.parseCandidates(completion.choices[0]?.message?.content ?? '', input.resourceIds);
+      if (pack) {
+        const allowed = new Set(pack.safeFacts.runs.flatMap(run => run.facts.map(f => f.evidenceId)));
+        for (const candidate of parsed.candidates) {
+          if (!candidate.evidenceIds?.length || candidate.evidenceIds.some(id => !allowed.has(id)))
+            throw new BadRequestException('AI引用了缺失或不存在的证据编号');
+        }
+        if (/(?:证明有效|效果提升|教学效果更好|幼儿更喜欢|参与度更高|优秀教案)/.test(JSON.stringify(parsed)))
+          throw new BadRequestException('AI将执行事实推断为教学效果');
+        stage = 'evidence_revalidation';
+        const current = await this.plans!.findOneBy({ id: input.baseLessonPlanId! });
+        const version = await this.versions!.findOneBy({ lessonPlanId: input.baseLessonPlanId!, versionNo: input.baseVersion! });
+        if (!current || current.deletedAt || current.version !== input.baseVersion ||
+            current.currentVersionId !== version?.id)
+          throw new ConflictException('生成期间教案版本已变化，请刷新重试');
+        const refreshed = await this.evidence!.build(actor, input.baseLessonPlanId!, {
+          baseVersion: input.baseVersion!, runIds: input.referenceRunIds!,
+        });
+        if (refreshed.digest !== pack.digest) throw new ConflictException('生成期间参考证据已变化，请重新生成');
+      } else if (parsed.candidates.some(c => c.evidenceIds !== undefined)) {
+        throw new BadRequestException('普通候选不能携带课堂证据');
+      }
+      const evidenceMetadata = pack ? {
+        evidenceDigest: pack.digest, ruleVersion: pack.ruleVersion,
+        referenceRunIds: pack.safeFacts.runs.map(r => r.runId),
+        sourceLessonVersions: pack.sourceManifest.map(s => ({ runId: s.runId,
+          lessonPlanId: input.baseLessonPlanId!, versionNo: s.lessonPlanVersion,
+          versionId: s.historicalVersionId, snapshotDigest: s.historicalVersionDigest })),
+        sourceReferences: pack.safeFacts.runs.flatMap(run => run.facts.map(fact => ({
+          ...fact, runId: run.runId, lessonPlanVersion: run.lessonPlanVersion,
+        }))), limitations: pack.warnings,
+      } : {};
       const output = { schemaVersion: 2, taskType: input.taskType, baseLessonPlanId: context.baseLessonPlanId,
         baseVersion: context.baseVersion, targetStepId: context.targetStepId,
+        ...evidenceMetadata,
         candidates: parsed.candidates.map(c => ({ ...c, candidateId: randomUUID() })), warnings: parsed.warnings };
       stage = 'audit';
       await this.audit.writeAi({ actor, feature: 'lesson_preparation_candidate', provider: this.providerName,
@@ -154,17 +205,27 @@ export class LessonPlanAiService {
         metadata: { schemaVersion: 2, taskType: input.taskType } });
       stage = 'draft_storage';
       const draft = await this.drafts!.save(this.drafts!.create({ teacherId: actor.sub, schoolId: actor.schoolId ?? null,
-        inputJson: JSON.stringify(context), outputJson: JSON.stringify(output), provider: this.providerName,
+        inputJson: JSON.stringify({ ...context, ...evidenceMetadata }), outputJson: JSON.stringify(output), provider: this.providerName,
         model: this.modelName, status: LessonAiDraftStatus.Generated, latencyMs: Date.now() - started,
         promptTokens: completion.usage?.prompt_tokens ?? null, completionTokens: completion.usage?.completion_tokens ?? null,
         totalTokens: completion.usage?.total_tokens ?? null }));
-      return { ...draft, output };
+      const provenanceSources: ExperienceProvenanceV1[] = pack ? output.candidates.map(candidate => ({
+        contractVersion: 1, draftId: draft.id, candidateId: candidate.candidateId,
+        evidenceDigest: pack.digest, referenceRunIds: pack.safeFacts.runs.map(r => r.runId),
+        sourceLessonVersions: evidenceMetadata.sourceLessonVersions!,
+      })) : [];
+      return { ...draft, output, ...(pack ? { provenanceSources } : {}) };
     } catch (error) {
+      if (stage === 'evidence_revalidation') throw error;
       const code = stage === 'model_request' ? this.errorCode(error) : stage;
       this.logger.warn(`AI候选失败 stage=${stage} code=${code} latencyMs=${Date.now() - started}`);
-      await this.drafts!.save(this.drafts!.create({ teacherId: actor.sub, schoolId: actor.schoolId ?? null,
-        inputJson: JSON.stringify(context), outputJson: null, provider: this.providerName, model: this.modelName,
-        status: LessonAiDraftStatus.Failed, latencyMs: Date.now() - started, errorMessage: `AI候选生成失败:${code}` }));
+      try {
+        await this.drafts!.save(this.drafts!.create({ teacherId: actor.sub, schoolId: actor.schoolId ?? null,
+          inputJson: JSON.stringify(context), outputJson: null, provider: this.providerName, model: this.modelName,
+          status: LessonAiDraftStatus.Failed, latencyMs: Date.now() - started, errorMessage: `AI候选生成失败:${code}` }));
+      } catch {
+        this.logger.warn('AI失败记录保存失败；人工备课入口保持独立');
+      }
       throw new ServiceUnavailableException('AI备课暂时不可用，人工备课仍可继续');
     }
   }
