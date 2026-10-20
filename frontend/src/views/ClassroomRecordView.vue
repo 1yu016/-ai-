@@ -15,6 +15,7 @@ import {
 import { apiErrorMessage, apiErrorStatus } from '@/api/http'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import BackButton from '@/components/BackButton.vue'
+import { useUserStore } from '@/stores/user'
 import {
   confirmClassroomSummary,
   discardClassroomSummary,
@@ -29,12 +30,13 @@ import {
 } from '@/services/classroomRecords'
 
 const route = useRoute()
+const user = useUserStore()
 const runId = computed(() => Number(route.params.runId))
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const forbidden = ref(false)
-const run = ref<{ title: string; status: string; startedAt: string | null; endedAt: string | null } | null>(null)
+const run = ref<{ id: number; teacherId?: number; title: string; status: string; startedAt: string | null; endedAt: string | null } | null>(null)
 const timeline = ref<ClassroomTimelineItem[]>([])
 const draft = ref<ClassroomSummaryDraft | null>(null)
 const formal = ref<FormalClassroomSummary | null>(null)
@@ -50,7 +52,19 @@ const timelinePage = ref(1)
 const timelinePageSize = 12
 
 const isFormal = computed(() => Boolean(formal.value))
-const canEdit = computed(() => run.value?.status === 'completed' && Boolean(draft.value || formal.value) && draft.value?.status !== 'discarded')
+const canEdit = computed(() => {
+  const actor = user.teacherInfo
+  const teacherId = actor?.teacherId ?? actor?.userId
+  return !loading.value && !saving.value && !error.value && !forbidden.value
+    && actor?.userType === 'teacher' && Number.isInteger(teacherId)
+    && run.value?.id === runId.value && run.value.teacherId === teacherId
+    && run.value.status === 'completed'
+    && draft.value?.classroomRunId === runId.value
+    && Number.isInteger(draft.value.id) && draft.value.id > 0
+    && ['pending', 'confirmed'].includes(draft.value.status)
+    && (!formal.value || (formal.value.classroomRunId === runId.value && formal.value.draftId === draft.value.id
+      && Number.isInteger(formal.value.id) && formal.value.id > 0))
+})
 const savedContent = ref('')
 const dirty = computed(() => canEdit.value && savedContent.value !== JSON.stringify(form))
 
@@ -97,7 +111,9 @@ async function load() {
     timeline.value = timelineData.items
     draft.value = summaryData.draft
     formal.value = summaryData.formalSummary
-    if (!draft.value && timelineData.run.status === 'completed') {
+    if (!draft.value && !formal.value && timelineData.run.status === 'completed'
+      && user.teacherInfo?.userType === 'teacher'
+      && timelineData.run.teacherId === (user.teacherInfo.teacherId ?? user.teacherInfo.userId)) {
       draft.value = await ensureClassroomSummaryDraft(runId.value)
     }
     applyContent(formal.value ?? draft.value)
@@ -114,6 +130,7 @@ function updateList(key: 'interestPoints' | 'commonQuestions' | 'teachingStrateg
 }
 
 async function confirm() {
+  if (!canEdit.value) return
   if (!form.classroomSummary.trim() || !form.participation.trim()) {
     ElMessage.warning('请填写课堂摘要和参与情况')
     return
@@ -139,12 +156,14 @@ async function confirm() {
 }
 
 async function discard() {
+  if (!canEdit.value || formal.value || draft.value?.status !== 'pending') return
   try {
     await ElMessageBox.confirm('放弃后，该AI草稿不会成为正式课堂记录。', '放弃总结草稿', {
       type: 'warning',
       confirmButtonText: '确认放弃',
       cancelButtonText: '继续编辑',
     })
+    if (!canEdit.value) return
     await discardClassroomSummary(runId.value)
     if (draft.value) draft.value.status = 'discarded'
     savedContent.value = JSON.stringify(form)
@@ -238,7 +257,7 @@ function changeTimelinePage(next: number) {
         <label>常见问题（每行一项）<ElInput :model-value="form.commonQuestions.join('\n')" type="textarea" :rows="3" :disabled="!canEdit" @update:model-value="updateList('commonQuestions', String($event))" /></label>
         <label>教学策略建议（每行一项）<ElInput :model-value="form.teachingStrategies.join('\n')" type="textarea" :rows="4" :disabled="!canEdit" @update:model-value="updateList('teachingStrategies', String($event))" /></label>
         <div class="summary-actions">
-          <ElButton v-if="!formal && draft?.status === 'pending'" @click="discard">放弃草稿</ElButton>
+          <ElButton v-if="canEdit && !formal && draft?.status === 'pending'" @click="discard">放弃草稿</ElButton>
           <ElButton v-if="canEdit" type="primary" :loading="saving" @click="confirm">
             {{ formal ? '保存正式总结修改' : '确认成为正式总结' }}
           </ElButton>

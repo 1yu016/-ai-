@@ -2,6 +2,15 @@
 // 约定：vrm 为后续阶段预留，当前后端 model_format 枚举仅 glb/gltf。
 export type AvatarModelFormat = 'glb' | 'gltf' | 'vrm'
 
+// One resolved, server-owned identity; a scene/provider must not mutate it.
+export interface AvatarIdentity {
+  classId: number | null
+  runId: number | null
+  deviceId: number | null
+  characterId: number | null
+  versionId: number | null
+}
+
 export interface AvatarVoiceConfig {
   provider: string
   voiceId: string

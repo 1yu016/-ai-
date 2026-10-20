@@ -4,6 +4,9 @@ import type { ActiveRun } from '@/services/classroomCheckpoint'
 
 defineProps<{
   run: ActiveRun | null
+  canPause?: boolean
+  canResume?: boolean
+  canChangeStep?: boolean
   currentStep: string
   online: boolean
   pendingCommandCount: number
@@ -44,9 +47,9 @@ function submit() {
     <section class="panel">
       <h2>快捷控制</h2>
       <div class="control-grid">
-        <button @click="emit('remote', 'pause')">⏸ 暂停</button>
-        <button @click="emit('remote', 'resume')">▶ 恢复</button>
-        <button @click="emit('remote', 'next')">下一环节 →</button>
+        <button :disabled="!canPause" @click="emit('remote', 'pause')">⏸ 暂停</button>
+        <button :disabled="!canResume" @click="emit('remote', 'resume')">▶ 恢复</button>
+        <button :disabled="!canChangeStep" @click="emit('remote', 'next')">下一环节 →</button>
       </div>
       <p class="muted">
         「随机点名」「课间模式」请在考勤与奖励页使用其专属入口；

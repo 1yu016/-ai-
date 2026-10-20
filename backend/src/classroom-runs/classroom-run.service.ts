@@ -1024,10 +1024,10 @@ export class ClassroomRunService {
   }
 
   /** Internal TypeScript entry only. Never selected by request body fields. */
-  async checkpointControl(actor: JwtTeacherPayload, id: number, dto: ClassroomCheckpointDto) {
+  async checkpointControl(actor: JwtTeacherPayload, id: number, dto: ClassroomCheckpointDto, transactionManager?: EntityManager) {
     if ((['rewardState', 'attendanceState', 'rollCallState'] as const).some(key => dto[key] !== undefined))
       throw new ConflictException({ code: 'BUSINESS_PROJECTION_OWNERSHIP', message: 'checkpoint不能写业务投影' });
-    return this.writeCheckpoint(actor, id, dto, true);
+    return this.writeCheckpoint(actor, id, dto, true, transactionManager);
   }
 
   private async writeCheckpoint(
@@ -1035,6 +1035,7 @@ export class ClassroomRunService {
     id: number,
     dto: ClassroomCheckpointDto,
     trustedControl: boolean,
+    transactionManager?: EntityManager,
   ) {
     this.requireTeacher(actor);
     const duplicate = await this.findDuplicate(
@@ -1046,6 +1047,7 @@ export class ClassroomRunService {
     if (duplicate) {
       const current = await this.ownedRun(actor, id);
       this.assertCurrentDevice(current, dto.deviceId);
+      if (transactionManager) throw new ConflictException('该requestId已有课堂事件但缺少正式命令结果，不能推断执行成功');
       return this.restore(actor, id, dto.deviceId);
     }
     const run = await this.ownedRun(actor, id);
@@ -1104,6 +1106,11 @@ export class ClassroomRunService {
     };
     // Both roots share the existing snapshot transaction gate. Observation
     // sampling remains best effort OUTSIDE this Run/Event transaction.
+    if (transactionManager) {
+      if (!trustedControl || !transactionManager.queryRunner?.isTransactionActive) throw new Error('Internal control requires an active transaction');
+      await write(transactionManager);
+      return this.readCommandState(actor, id, transactionManager);
+    }
     await this.snapshotService.transactionRequired(write);
     if (!trustedControl) {
       await this.snapshotService.captureBestEffort(
@@ -1112,6 +1119,22 @@ export class ClassroomRunService {
       );
     }
     return this.restore(actor, id, dto.deviceId);
+  }
+
+  /** Internal read projection: no timers, restore, lifecycle writes or queue entry. */
+  async readCommandState(actor: JwtTeacherPayload, id: number, manager: EntityManager) {
+    const run = await manager.getRepository(ClassroomRun).findOneByOrFail({ id });
+    this.assertOwner(actor, run);
+    await this.access.requireClassAccess(actor, run.classId, manager, { readOnly: true });
+    const steps = await manager.getRepository(ClassroomRunStepSnapshot).find({ where: { classroomRunId: id }, order: { stepIndex: 'ASC' } });
+    const latest = await this.snapshotService.loadLatestValid(id, manager);
+    return {
+      ...this.response(run, steps, await this.readObjectives(actor, run)),
+      latestSnapshotVersion: latest?.entity.snapshotVersion ?? null,
+      attendanceState: latest?.attendanceState ?? {}, rollCallState: latest?.rollCallState ?? {},
+      rewardState: latest?.rewardState ?? {}, interactionState: latest?.interactionState ?? {},
+      playerRecoverySuggestion: latest?.playerState ?? {},
+    };
   }
 
   async setAvatarBinding(

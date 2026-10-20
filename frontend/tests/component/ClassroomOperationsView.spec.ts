@@ -15,7 +15,7 @@ const students = {
     ],
   },
 }
-const run = { id: 9, version: 3, deviceId: 2, status: 'running', currentStepIndex: 0, steps: [{ title: '问候' }] }
+const run = { allowedActions: ['reward', 'roll_call', 'attendance_new', 'attendance_correction', 'start_break', 'end_break', 'pause', 'resume', 'change_step'], id: 9, version: 3, deviceId: 2, status: 'running', currentStepIndex: 0, steps: [{ title: '问候' }] }
 
 async function mountOps() {
   const router = createRouter({

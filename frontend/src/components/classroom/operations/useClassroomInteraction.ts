@@ -32,6 +32,8 @@ export function useClassroomInteraction(
   props: ClassroomInteractionPropsLike,
   emit: ClassroomInteractionEmit,
 ) {
+  // Resolve this component's Pinia while setup context exists, not after an async command.
+  const store = useLessonRunStore()
   // 启用学生：排除已停用，保证点名/奖励都在当前班真实学生范围内。
   const displayStudents = computed(() =>
     props.students.filter((s) => s.status !== 'disabled'),
@@ -51,13 +53,14 @@ export function useClassroomInteraction(
 
   const nameOf = (student: Student) => studentDisplayName(student)
 
+  const sameRun = () => props.run?.id === store.run?.id && props.run?.deviceId === store.run?.deviceId && props.run?.version === store.run?.version
   const interactionLocked = computed(
     () => props.disabled || !props.run || props.busy || rolling.value || submitting.value,
   )
   const canReward = computed(
     () =>
       !interactionLocked.value &&
-      !submitting.value &&
+      sameRun() && store.can('reward') && !submitting.value &&
       props.selectedStudentId != null,
   )
 
@@ -66,7 +69,7 @@ export function useClassroomInteraction(
   }
 
   async function randomRoll() {
-    if (interactionLocked.value) return
+    if (interactionLocked.value || !sameRun() || !store.can('roll_call')) return
     const run = props.run
     if (!run || !displayStudents.value.length) return
     rolling.value = true
@@ -74,13 +77,15 @@ export function useClassroomInteraction(
     try {
       const response = await executeClassroomCommand<{ student: { id: number } }>(run, 'random_roll_call', { source: 'teacher_panel' })
       if (props.run?.id !== run.id) return
-      const store = useLessonRunStore()
-      if (store.run?.id === run.id && response.classroomState.version >= store.run.version) store.adoptRun(response.classroomState)
+      const refresh = store.applyCommandResult(response, run)
       const picked = displayStudents.value.find(student => student.id === response.result?.student?.id)
       if (!picked) throw new Error('点名已记录，但幼儿资料尚未加载，请刷新当前班级学生列表。')
       setSelected(picked.id)
       emit('random-roll', picked)
+      // The committed selection is independent of subsequent state synchronization.
+      if (refresh) await refresh
     } catch (cause) {
+      await store.handleTeacherRejection(cause)
       errorMsg.value = apiErrorMessage(cause, '点名失败，请重试。')
     } finally { rolling.value = false }
   }
@@ -104,6 +109,7 @@ export function useClassroomInteraction(
       message.value = `已奖励${student ? nameOf(student) : `幼儿 ${studentId}`} ${stars} 朵小红花`
       emit('rewarded', result.record)
     } catch (e) {
+      await store.handleTeacherRejection(e)
       // 失败不 +1、不丢选中，仅提示重试。
       errorMsg.value = apiErrorMessage(e, '奖励失败，请重试。')
       message.value = ''
@@ -127,6 +133,7 @@ export function useClassroomInteraction(
     nameOf,
     interactionLocked,
     canReward,
+    canRoll: computed(() => !interactionLocked.value && sameRun() && store.can('roll_call')),
     // 动作
     setSelected,
     randomRoll,

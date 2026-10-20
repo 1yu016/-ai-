@@ -150,6 +150,7 @@ export class AvatarConfigurationService {
     classId: number,
     dto: SetAvatarBindingDto,
   ) {
+    this.access.requireAdministrator(actor);
     await this.access.requireClassAccess(actor, classId);
     return this.setBinding(actor, AvatarBindingScope.Class, classId, dto, {
       classId,
@@ -187,6 +188,7 @@ export class AvatarConfigurationService {
     classId: number,
     reason: string,
   ) {
+    this.access.requireAdministrator(actor);
     await this.access.requireClassAccess(actor, classId);
     return this.cancelBinding(
       actor,

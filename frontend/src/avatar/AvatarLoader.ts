@@ -1,10 +1,11 @@
 import * as THREE from 'three'
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
-import { VRM, VRMLoaderPlugin } from '@pixiv/three-vrm'
+import { VRM, VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 import type { AvatarModelFormat } from './types'
 import { AvatarActionResolver, type AvatarActionName } from './action/AvatarActionResolver'
 import { ExpressionController, type AvatarExpressionName } from './expression/ExpressionController'
 import { BlinkController } from './expression/BlinkController'
+import { VrmVisualController } from './animation/VrmVisualController'
 
 // 统一模型接口：无论 VRM / GLB / 程序化占位，渲染层只依赖这些能力。
 // playAnimation / setExpression 只接收名字，不处理鉴权与解析细节。
@@ -24,9 +25,12 @@ export interface AvatarLoadedModel {
 // 禁止在组件/URL 中直接处理凭证。
 export interface AvatarLoadContext {
   getToken?: () => string | null
+  signal?: AbortSignal
 }
 
 export function disposeAvatarObject(root: THREE.Object3D) {
+  const geometries = new Set<THREE.BufferGeometry>()
+  const disposedMaterials = new Set<THREE.Material>()
   const disposedTextures = new Set<THREE.Texture>()
   const disposeTexture = (value: unknown) => {
     if (!(value instanceof THREE.Texture) || disposedTextures.has(value)) return
@@ -35,9 +39,11 @@ export function disposeAvatarObject(root: THREE.Object3D) {
   }
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
-      obj.geometry?.dispose?.()
+      if (obj.geometry && !geometries.has(obj.geometry)) { geometries.add(obj.geometry); obj.geometry.dispose() }
       const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
       for (const material of materials) {
+        if (disposedMaterials.has(material)) continue
+        disposedMaterials.add(material)
         for (const value of Object.values(material)) disposeTexture(value)
         const uniforms = (material as THREE.ShaderMaterial).uniforms
         if (uniforms) {
@@ -62,6 +68,7 @@ async function fetchAsset(url: string, context?: AvatarLoadContext): Promise<Arr
   const token = context?.getToken?.()?.trim() || null
   const response = await fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    signal: context?.signal,
   })
   if (!response.ok) throw new Error(`模型资源下载失败：HTTP ${response.status}`)
   return response.arrayBuffer()
@@ -76,7 +83,7 @@ function parseGltf(buffer: ArrayBuffer): Promise<GLTF> {
 function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedModel {
   const animations = gltf.animations ?? []
   const mixer = new THREE.AnimationMixer(gltf.scene)
-  const resolver = new AvatarActionResolver(animations)
+  const resolver = new AvatarActionResolver(animations, { fallbackToFirst: false })
   const blink = new BlinkController(0)
 
   const morphMeshes: THREE.Mesh[] = []
@@ -100,6 +107,9 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
   }
 
   let currentExpression: AvatarExpressionName | null = null
+  let activeAction: THREE.AnimationAction | null = null
+  let speaking = false
+  let visualTime = 0
 
   return {
     root: gltf.scene,
@@ -108,15 +118,24 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
     mixer,
     update(deltaSeconds: number, timeSeconds: number) {
       mixer.update(deltaSeconds)
+      visualTime += deltaSeconds
+      for (const keyword of ExpressionController.targets('talk')) applyMorph(keyword, speaking ? 0.15 + 0.5 * Math.pow(Math.sin(visualTime * 11), 2) : 0)
       for (const keyword of ExpressionController.targets('blink')) {
         applyMorph(keyword, Math.max(0, 1 - blink.eyeOpen(timeSeconds * 1000)))
       }
     },
     playAnimation(actionName: AvatarActionName): boolean {
-      const clip = resolver.resolve(actionName)
+      speaking = actionName === 'talk'
+      const clip = resolver.resolve(actionName) ?? resolver.resolve('idle')
       if (!clip) return false
-      mixer.stopAllAction()
-      mixer.clipAction(clip, gltf.scene).play()
+      const next = mixer.clipAction(clip, gltf.scene)
+      if (next !== activeAction) {
+        next.reset().setLoop(['wave', 'happy', 'encourage', 'goodbye'].includes(actionName) ? THREE.LoopOnce : THREE.LoopRepeat, Infinity)
+        next.clampWhenFinished = true
+        next.fadeIn(0.2).play()
+        activeAction?.fadeOut(0.2)
+        activeAction = next
+      }
       return true
     },
     setExpression(name: AvatarExpressionName, value: number): boolean {
@@ -132,6 +151,8 @@ function buildGltfModel(gltf: GLTF, format: AvatarModelFormat): AvatarLoadedMode
       return applied
     },
     resetExpressions() {
+      speaking = false
+      for (const keyword of ExpressionController.targets('talk')) applyMorph(keyword, 0)
       if (currentExpression) {
         for (const keyword of ExpressionController.targets(currentExpression)) applyMorph(keyword, 0)
         currentExpression = null
@@ -162,7 +183,7 @@ function buildVrmModel(vrm: VRM): AvatarLoadedModel {
   const root = vrm.scene
   const animations: THREE.AnimationClip[] = []
   const mixer = new THREE.AnimationMixer(root)
-  const resolver = new AvatarActionResolver(animations)
+  const visual = new VrmVisualController(vrm)
   let currentExpression: AvatarExpressionName | null = null
 
   return {
@@ -172,14 +193,11 @@ function buildVrmModel(vrm: VRM): AvatarLoadedModel {
     mixer,
     // VRM：驱动骨架/springBone/lookAt 等（three-vrm 官方 update）
     update(deltaSeconds: number) {
+      visual.update(deltaSeconds)
       vrm.update(deltaSeconds)
     },
     playAnimation(actionName: AvatarActionName): boolean {
-      const clip = resolver.resolve(actionName)
-      if (!clip) return false
-      mixer.stopAllAction()
-      mixer.clipAction(clip, root).play()
-      return true
+      return visual.play(actionName)
     },
     setExpression(name: AvatarExpressionName, value: number): boolean {
       const manager = vrm.expressionManager
@@ -201,6 +219,7 @@ function buildVrmModel(vrm: VRM): AvatarLoadedModel {
       return true
     },
     resetExpressions() {
+      visual.reset()
       const manager = vrm.expressionManager
       if (manager && currentExpression) {
         const previous = VRM_PRESET[currentExpression]
@@ -263,6 +282,8 @@ export async function VRMBufferLoader(buffer: ArrayBuffer): Promise<AvatarLoaded
   })
   const vrm = gltf.userData.vrm as VRM | undefined
   if (!vrm) throw new Error('模型不包含合法的 VRM 数据')
+  // Normalize the legacy VRM 0.x forward axis; providers share the same camera convention.
+  VRMUtils.rotateVRM0(vrm)
   return buildVrmModel(vrm)
 }
 

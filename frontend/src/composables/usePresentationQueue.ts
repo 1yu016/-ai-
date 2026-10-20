@@ -20,14 +20,14 @@ export function usePresentationQueue() {
   async function save(next: PresentationItem[]) {
     if (!store.run || saving.value) return
     saving.value = true; error.value = ''
-    try { await store.command('update_presentation_queue', { stepIndex: store.run.currentStepIndex, items: next }, 'teacher_panel') }
+    try { await store.teacherCommand('update_presentation_queue', { stepIndex: store.run.currentStepIndex, items: next }, 'teacher_panel') }
     catch (cause) { error.value = apiErrorMessage(cause, '课堂队列保存失败，请重试。') }
     finally { saving.value = false }
   }
   async function show(item: PresentationItem, play = false) {
     if (!store.run || saving.value || !item.enabled) return
     saving.value = true; error.value = ''
-    try { await store.command(item.kind === 'avatar' ? 'set_presentation' : play ? 'play_resource' : 'open_resource', item.kind === 'avatar' ? { mode: 'avatar', presentationItemId: item.id } : { resourceId: item.resourceId, presentationItemId: item.id }, 'teacher_panel', store.run.deviceId) }
+    try { await store.teacherCommand(item.kind === 'avatar' ? 'set_presentation' : play ? 'play_resource' : 'open_resource', item.kind === 'avatar' ? { mode: 'avatar', presentationItemId: item.id } : { resourceId: item.resourceId, presentationItemId: item.id }, 'teacher_panel', store.run.deviceId) }
     catch (cause) { error.value = apiErrorMessage(cause, '展示指令发送失败，请重试。') }
     finally { saving.value = false }
   }
@@ -46,9 +46,9 @@ export function usePresentationQueue() {
   async function media(operation: 'pause_media' | 'resume_media') {
     if (!store.run || saving.value) return
     saving.value = true; error.value = ''
-    try { await store.command(operation, undefined, 'teacher_panel', store.run.deviceId) }
+    try { await store.teacherCommand(operation, undefined, 'teacher_panel', store.run.deviceId) }
     catch (cause) { error.value = apiErrorMessage(cause, '媒体控制失败，请重试。') }
     finally { saving.value = false }
   }
-  return { items, saving, error, save, show, move, replace, activeItemId, previousItem, nextItem, media }
+  return { canShow: computed(() => store.can('resource_start')), canEdit: computed(() => store.can('queue_edit')), canPause: computed(() => store.can('safe_stop')), canResume: computed(() => store.can('resource_start')), items, saving, error, save, show, move, replace, activeItemId, previousItem, nextItem, media }
 }

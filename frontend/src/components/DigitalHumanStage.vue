@@ -1,15 +1,12 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
-import { useLessonRunStore } from '@/stores/lessonRun'
-import { useUserStore } from '@/stores/user'
 
 // 仅在 WebGL 可用、且模型加载未失败时挂载 3D 组件；three 走独立 chunk
 const ThreeAvatarStage = defineAsyncComponent(() => import('./avatar/ThreeAvatarStage.vue'))
 
 const store = useDigitalHumanStore()
-const userStore = useUserStore()
 const { action, visible, compact, fallback, roleName, roleId, roles, error, webglSupported, modelState } = storeToRefs(store)
 
 const actionText: Record<string, string> = { idle: '准备好一起学习啦', listen: '我在认真听哦', think: '让我想一想', talk: '我来和你说一说', happy: '太棒啦', question: '你发现了吗', encourage: '再试一次，你可以的', wave: '我们开始吧', goodbye: '下次再见' }
@@ -39,23 +36,15 @@ function detectWebGL(): boolean {
   }
 }
 store.setWebglSupported(detectWebGL())
-onMounted(async () => {
-  // 游客聊天使用内置安全角色，不请求受保护的角色库接口，避免 401
-  // 把公开聊天错误地重定向到登录页。
-  if (userStore.isLogin) void store.loadRoles()
-  // 课堂运行时：resolve 当前课堂应使用的角色与模型，失败时保持内置占位形象，不阻塞课堂。
-  const run = useLessonRunStore().run
-  if (run) await store.loadRuntime({ lessonPlanId: run.lessonPlanId, classroomRunId: run.id, deviceId: run.deviceId })
-})
-
-const show3d = computed(() => webglSupported.value && modelState.value !== 'error')
+const show3d = computed(() => webglSupported.value && modelState.value !== 'error'
+  && (!store.classroomContext || Boolean(store.runtime)))
 function listen() { store.transition({ type: 'teacher_command', command: 'listen' }) }
 </script>
 
 <template>
-  <aside v-if="visible" class="digital-human" :class="{ compact, speaking: action === 'talk', opening: props.opening, immersive: props.mode === 'immersive' }" aria-label="数字人课堂助手">
+  <aside v-if="visible" class="digital-human" :data-avatar-identity="store.identityKey" :data-avatar-character="store.runtime?.character?.id ?? 'fallback'" :class="{ compact, paused: store.renderingPaused, speaking: action === 'talk', opening: props.opening, immersive: props.mode === 'immersive' }" aria-label="数字人课堂助手">
     <!-- 普通课堂：说话气泡贴在人物附近 -->
-    <div v-if="!props.opening" class="speech"><span>{{ actionText[action] }}</span><small v-if="error">{{ error }}</small></div>
+    <div v-if="!props.opening" class="speech"><span>{{ actionText[action] }}</span><small v-if="error">{{ store.classroomContext ? '数字人暂时休息，课堂可以继续' : error }}</small></div>
 
     <ThreeAvatarStage v-if="show3d" :opening="props.opening" :far="props.far" :framing="props.framing" @pointerdown="listen" />
     <div v-else-if="fallback" class="avatar" :class="`action-${action}`" role="img" :aria-label="props.opening ? 'AI 教学伙伴' : roleName">
@@ -64,7 +53,7 @@ function listen() { store.transition({ type: 'teacher_command', command: 'listen
     <div v-else class="loading" aria-label="数字人加载中">{{ props.opening ? 'AI 教学伙伴正在准备…' : '加载中…' }}</div>
 
     <!-- 开场/卡片模式：隐藏 development 角色选择器与资产名，仅保留正式互动区 -->
-    <div v-if="!props.opening && props.controls" class="role-controls">
+    <div v-if="!props.opening && props.controls && !store.classroomContext" class="role-controls">
       <select :value="roleId" aria-label="选择数字人角色" @change="store.selectRole(($event.target as HTMLSelectElement).value)">
         <option v-for="role in roles" :key="role.id" :value="role.id">{{ role.name }}</option>
       </select>
@@ -132,6 +121,7 @@ function listen() { store.transition({ type: 'teacher_command', command: 'listen
 .role-controls select { max-width: 92px; border: 1px solid #E8DED1; border-radius: 99px; padding: 4px 6px; background: #fff; color: #6b584c; font-size: 11px; }
 .role-name { pointer-events: auto; border: 0; border-radius: 99px; padding: 5px 12px; background: #FFF8EE; color: #6b584c; font-size: 12px; cursor: pointer; }
 .speaking .avatar { animation: bounce .45s ease-in-out infinite alternate; }
+.paused .avatar { animation-play-state: paused; }
 .action-listen .face { transform: translateY(2px); }
 .action-wave { transform: rotate(-3deg); }
 .digital-human.immersive {

@@ -45,6 +45,8 @@ const category = ref('')
 const status = ref('')
 const characters = ref<AvatarCharacterListItem[]>([])
 const selected = ref<AvatarCharacterDetail | null>(null)
+let selectionGeneration = 0
+let previewGeneration = 0
 const classes = ref<SchoolClass[]>([])
 const plans = ref<LessonPlan[]>([])
 const previewUrls = reactive<Record<number, string>>({})
@@ -75,15 +77,21 @@ function clearNotice() { error.value = ''; message.value = '' }
 function report(cause: unknown, fallback: string) { console.error(fallback, cause); error.value = apiErrorMessage(cause, fallback) }
 
 function revokePreviews() {
+  previewGeneration++
   Object.values(previewUrls).forEach((url) => URL.revokeObjectURL(url))
   Object.keys(previewUrls).forEach((key) => delete previewUrls[Number(key)])
 }
 
 async function loadProtectedPreviews(detail: AvatarCharacterDetail) {
   revokePreviews()
+  const generation = previewGeneration
   const imageAssets = detail.versions.flatMap((version) => version.assets).filter((asset) => asset.assetType === 'preview' || asset.assetType === 'fallback_2d')
   await Promise.all(imageAssets.map(async (asset) => {
-    try { previewUrls[asset.id] = URL.createObjectURL(await fetchAvatarAsset(asset.id)) }
+    try {
+      const data = await fetchAvatarAsset(asset.id)
+      if (generation !== previewGeneration) return
+      previewUrls[asset.id] = URL.createObjectURL(data)
+    }
     catch (cause) { console.error('数字人预览图加载失败：', cause) }
   }))
 }
@@ -100,9 +108,13 @@ function applyDetail(detail: AvatarCharacterDetail) {
 }
 
 async function selectCharacter(id: number) {
+  const generation = ++selectionGeneration
+  selected.value = null
+  revokePreviews()
   clearNotice(); loading.value = true
   try {
     const detail = await getAvatarCharacter(id)
+    if (generation !== selectionGeneration) return
     applyDetail(detail)
     const ready = detail.versions.find((item) => item.status === 'ready')
     if (ready) {
@@ -117,8 +129,8 @@ async function selectCharacter(id: number) {
         sourceScope: 'preview',
       })
     }
-  } catch (cause) { report(cause, '角色详情加载失败，请稍后重试。') }
-  finally { loading.value = false }
+  } catch (cause) { if (generation === selectionGeneration) report(cause, '角色详情加载失败，请稍后重试。') }
+  finally { if (generation === selectionGeneration) loading.value = false }
 }
 
 async function loadCharacters() {
@@ -191,6 +203,7 @@ function previewVoice() {
 function playAction(action: DigitalHumanAction) { digitalHuman.playAction(action) }
 
 async function bind(scope: 'class' | 'lesson' | 'run') {
+  if (scope === 'class' && !isAdmin.value) { error.value = '班级数字人由管理员配置，教师直接使用班级形象。'; return }
   if (!selected.value || !selectedReadyVersion.value || !selectedCanUse.value) { error.value = '只有已发布且存在可用版本的角色可以绑定。'; return }
   clearNotice(); saving.value = true
   const input = { characterId: selected.value.id, versionId: selectedReadyVersion.value.id, reason: '教师在角色管理页面配置' }
@@ -262,7 +275,7 @@ onMounted(async () => {
     lessonPlans.fetchList().then(() => { plans.value = [...lessonPlans.items] }),
   ])
 })
-onBeforeUnmount(() => { revokePreviews(); stopBrowserSpeech(); digitalHuman.setAction('idle') })
+onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpeech(); digitalHuman.setAction('idle') })
 </script>
 
 <template>
@@ -326,7 +339,8 @@ onBeforeUnmount(() => { revokePreviews(); stopBrowserSpeech(); digitalHuman.setA
 
         <div class="panel bindings">
           <h2>课堂使用范围</h2><p v-if="!selectedCanUse" class="notice warning">该角色尚未发布或缺少可用版本，不能绑定课堂。</p>
-          <div class="binding-row"><select v-model.number="bindingForm.classId"><option :value="0">选择班级</option><option v-for="item in classes" :key="item.id" :value="item.id">{{ item.name }}</option></select><button class="button" :disabled="!selectedCanUse || saving" @click="bind('class')">设为班级默认角色</button></div>
+            <p v-if="!isAdmin" class="notice">班级数字人由管理员配置，教师直接使用班级形象。</p>
+            <div class="binding-row"><select v-model.number="bindingForm.classId"><option :value="0">选择班级</option><option v-for="item in classes" :key="item.id" :value="item.id">{{ item.name }}</option></select><button class="button" :disabled="!isAdmin || !selectedCanUse || saving" @click="bind('class')">设为班级默认角色</button></div>
           <div class="binding-row"><select v-model.number="bindingForm.lessonPlanId"><option :value="0">选择教案</option><option v-for="item in plans" :key="item.id" :value="item.id">{{ item.title }}</option></select><button class="button" :disabled="!selectedCanUse || saving" @click="bind('lesson')">设为教案角色</button></div>
           <div class="binding-row"><span>{{ currentRun ? `当前课堂：${currentRun.lessonTitle}` : '当前没有进行中的课堂' }}</span><button class="button" :disabled="!selectedCanUse || !currentRun || saving" @click="bind('run')">临时用于当前课堂</button></div>
         </div>

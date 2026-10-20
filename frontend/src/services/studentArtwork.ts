@@ -117,3 +117,41 @@ export async function deliverArtworkReview(payload: {
   })
   return data
 }
+
+export type ArtworkDeliveryContext = { requestId: string; runId: number; deviceId: number }
+export type ArtworkCommandSubmission = 'submitted' | 'reported_failure' | 'unknown'
+export type ArtworkDeliveryStatus = { display: ArtworkCommandSubmission; speech: ArtworkCommandSubmission }
+
+/** Command receipts describe server processing, never device receipt/playback. */
+export function artworkCommandSubmission(value: unknown, context: ArtworkDeliveryContext, channel: 'display' | 'speech'): ArtworkCommandSubmission {
+  if (!value || typeof value !== 'object') return 'unknown'
+  const item = value as Record<string, unknown>
+  if (item.requestId !== `${context.requestId}:${channel === 'display' ? 'display' : 'tts'}` ||
+      (item.runId ?? item.classroomRunId) !== context.runId || item.targetDeviceId !== context.deviceId ||
+      item.operation !== (channel === 'display' ? 'display_artwork' : 'speak_text')) return 'unknown'
+  if (item.status === 'success') return 'submitted'
+  if (item.status === 'failure' || item.status === 'conflict') return 'reported_failure'
+  return 'unknown'
+}
+
+export function artworkDeliveryStatus(value: { display?: unknown; speech?: unknown }, context: ArtworkDeliveryContext): ArtworkDeliveryStatus {
+  return { display: artworkCommandSubmission(value.display, context, 'display'), speech: artworkCommandSubmission(value.speech, context, 'speech') }
+}
+
+/** Bounded read-only reconciliation. A missing/Processing receipt does not prove failure. */
+export async function queryArtworkDelivery(context: ArtworkDeliveryContext): Promise<ArtworkDeliveryStatus> {
+  const read = async (channel: 'display' | 'speech') => {
+    const id = `${context.requestId}:${channel === 'display' ? 'display' : 'tts'}`
+    try {
+      const { data } = await http.get(`/classroom-commands/${encodeURIComponent(id)}`)
+      return artworkCommandSubmission(data, context, channel)
+    } catch { return 'unknown' as const }
+  }
+  const [display, speech] = await Promise.all([read('display'), read('speech')])
+  return { display, speech }
+}
+
+export function artworkDeliveryMessage(status: ArtworkDeliveryStatus): string {
+  const labels = { submitted: '命令已提交', reported_failure: '服务端返回失败', unknown: '提交结果未知' }
+  return `作品展示：${labels[status.display]}；评价朗读：${labels[status.speech]}。实际展示和朗读未确认（无设备 ACK 或关联播放反馈）。请核对课堂状态，勿重复提交。`
+}

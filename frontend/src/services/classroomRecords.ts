@@ -38,7 +38,7 @@ export type FormalClassroomSummary = ClassroomSummaryContent & {
 
 export async function getClassroomTimeline(runId: number) {
   const { data } = await http.get<{
-    run: { id: number; title: string; status: string; startedAt: string | null; endedAt: string | null }
+    run: { id: number; teacherId?: number; title: string; status: string; startedAt: string | null; endedAt: string | null }
     items: ClassroomTimelineItem[]
   }>(`/classroom-runs/${runId}/timeline`)
   return data

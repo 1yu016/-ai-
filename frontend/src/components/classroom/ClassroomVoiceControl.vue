@@ -12,6 +12,7 @@ defineProps<{
   busy: boolean
   isActive: boolean
   pendingConfirmation?: string
+  unresolvedRequestId?: string | null
 }>()
 
 const commandInput = defineModel<string>('commandInput', { default: '' })
@@ -21,6 +22,7 @@ const emit = defineEmits<{
   (e: 'toggleVoiceRecording'): void
   (e: 'confirmCommand'): void
   (e: 'cancelCommand'): void
+  (e: 'queryCommand'): void
 }>()
 
 const preferences = useVoiceCommandPreferenceStore()
@@ -73,6 +75,10 @@ async function addSynonym() {
     </div>
     <span v-if="commandFeedback" class="feedback command">{{ commandFeedback }}</span>
     <span v-if="voiceFeedback" class="feedback voice">{{ voiceFeedback }}</span>
+    <div v-if="unresolvedRequestId" role="status">
+      原请求 {{ unresolvedRequestId }} 的结果待确认。
+      <ElButton @click="emit('queryCommand')">查询原指令结果</ElButton>
+    </div>
     <div v-if="pendingConfirmation" class="confirm-card">
       <strong>请教师确认：{{ pendingConfirmation }}</strong>
       <div><ElButton type="primary" @click="emit('confirmCommand')">确认执行</ElButton><ElButton @click="emit('cancelCommand')">取消</ElButton></div>

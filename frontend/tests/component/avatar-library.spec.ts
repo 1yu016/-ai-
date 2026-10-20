@@ -6,6 +6,7 @@ import {
   listAvatarCharacters,
 } from '@/api/avatar'
 import { useUserStore } from '@/stores/user'
+import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import AvatarLibraryView from '@/views/AvatarLibraryView.vue'
 
 vi.mock('@/components/ManagementLayout.vue', () => ({
@@ -82,6 +83,16 @@ async function mountPage(admin = false) {
 }
 
 describe('数字人角色库页面', () => {
+  it('removes stale binding controls immediately while the next identity loads', async () => {
+    const wrapper = await mountPage(true)
+    let finish!: (value: typeof detail) => void
+    vi.mocked(getAvatarCharacter).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await wrapper.find('.role-card').trigger('click')
+    expect(wrapper.find('.bindings').exists()).toBe(false)
+    finish({ ...detail, name: '新加载角色' }); await flushPromises()
+    expect(useDigitalHumanStore().roleName).toBe('新加载角色')
+    wrapper.unmount()
+  })
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()

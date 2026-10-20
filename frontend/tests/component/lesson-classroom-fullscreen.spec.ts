@@ -15,7 +15,7 @@ const duoDuo = {
   status: 'active', createdAt: '', updatedAt: '',
 }
 const runPayload = {
-  id: 9, lessonPlanId: 3, classId: 1, deviceId: 1, version: 2,
+  id: 9, lessonPlanId: 3, allowedActions: ['query', 'change_step', 'resource_start', 'media_control', 'safe_stop', 'reward', 'roll_call', 'attendance_new', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'pause', 'resume', 'complete', 'cancel', 'start_break', 'end_break', 'queue_edit', 'tts'], classId: 1, deviceId: 1, version: 2,
   status: 'running', currentStepIndex: 0, title: '认识数字1',
   steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '今天我们一起认识数字1', resourceId: null, durationSeconds: 60 }],
   elapsedSeconds: 5, startedAt: '2026-10-02T07:00:00.000Z', updatedAt: '2026-10-02T08:00:00.000Z',
@@ -68,7 +68,7 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
           const items = opts.rewards ?? []
           return { data: { items, total: items.length, runTitle: '认识数字1' } } as never
         }
-        return { data: { ...runPayload, interactionState: opening ? { screenLifecycle: lifecycle } : {} } } as never
+        return { data: { ...runPayload, allowedActions: opening ? ['query', 'complete_opening', 'skip_opening', 'pause', 'complete', 'cancel', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke'] : runPayload.allowedActions, interactionState: opening ? { screenLifecycle: lifecycle } : {} } } as never
       }
       if (/\/students/.test(u)) return { data: { items: [duoDuo], total: 1 } } as never
       return { data: {} } as never

@@ -10,7 +10,7 @@ import LessonClassroomView from '@/views/LessonClassroomView.vue'
 const NOW = new Date('2026-10-02T08:00:00.000Z')
 const runPayload = (over: Record<string, unknown> = {}) => ({
   id: 9,
-  lessonPlanId: 3,
+  lessonPlanId: 3, allowedActions: ['query', 'change_step', 'resource_start', 'media_control', 'safe_stop', 'reward', 'roll_call', 'attendance_new', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'pause', 'resume', 'complete', 'cancel', 'start_break', 'end_break', 'queue_edit', 'tts'],
   deviceId: 1,
   version: 2,
   status: 'running',

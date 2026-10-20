@@ -10,6 +10,7 @@ const students = [
 function factory(overrides: Record<string, unknown> = {}) {
   return mount(AttendancePanel, {
     props: {
+      canRoll: true, canReward: true, canNewAttendance: true, canCorrectAttendance: true,
       students,
       attendance: {},
       selectedStudent: null,

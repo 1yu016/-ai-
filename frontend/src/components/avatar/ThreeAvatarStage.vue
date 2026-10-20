@@ -20,6 +20,7 @@ import { useUserStore } from '@/stores/user'
 const store = useDigitalHumanStore()
 const { action, expression, compact, roleId } = storeToRefs(store)
 const mountEl = ref<HTMLElement | null>(null)
+const renderStatus = ref<'loading' | 'ready' | 'fallback'>('loading')
 // opening：开场舞台使用更远的相机机位，确保看到完整身体；不影响普通课堂参数。
 // far：数字人大屏模式，同样使用宽松取景（配合 fit 取景），但保留普通 UI（字幕/角色控制由上层控制）。
 const props = defineProps<{ opening?: boolean; far?: boolean; framing?: 'default' | 'screen' }>()
@@ -45,6 +46,7 @@ let fpsFrames = 0
 let fpsBadCount = 0
 let currentAction: DigitalHumanAction = 'idle'
 let loadGeneration = 0
+let loadAbort: AbortController | null = null
 
 // 程序化占位角色的可动部件引用
 const parts = { head: null as THREE.Object3D | null, mouth: null as THREE.Object3D | null, armR: null as THREE.Object3D | null, armL: null as THREE.Object3D | null }
@@ -194,11 +196,9 @@ function playAction(actionName: DigitalHumanAction) {
       if (!currentModel.playAnimation(canonicalAction) && actionName !== 'idle') {
         currentModel.playAnimation('idle')
         currentAction = 'idle'
-        store.setAction('idle')
       }
     } catch {
       currentAction = 'idle'
-      store.setAction('idle')
       try { currentModel.playAnimation('idle') } catch { /* 动作失败不能中断课堂 */ }
     }
   }
@@ -323,7 +323,8 @@ function frameCamera() {
 
 function startRenderLoop() {
   if (!renderer || !camera || !mountEl.value) return
-  renderer.setAnimationLoop(document.hidden ? null : loop)
+  renderer.render(scene!, camera)
+  renderer.setAnimationLoop(document.hidden || store.renderingPaused ? null : loop)
   lastTime = 0
   fpsWindowStart = 0
   fpsFrames = 0
@@ -343,7 +344,8 @@ function startRenderLoop() {
 
 function handleVisibilityChange() {
   if (!renderer || disposed) return
-  if (document.hidden) {
+  if (document.hidden || store.renderingPaused) {
+    currentModel?.resetExpressions()
     renderer.setAnimationLoop(null)
     lastTime = 0
     return
@@ -352,12 +354,15 @@ function handleVisibilityChange() {
   fpsWindowStart = 0
   fpsFrames = 0
   fpsBadCount = 0
+  playAction(store.action)
+  currentModel?.setExpression(store.expression, 1)
   renderer.setAnimationLoop(loop)
 }
 
 async function init() {
   const generation = ++loadGeneration
   if (disposed) return
+  renderStatus.value = 'loading'
   store.setModelState('loading')
   if (!mountEl.value) return
   try {
@@ -396,8 +401,9 @@ async function init() {
   const isKindergartenRole =
     roleId.value === 'garden' || roleCategory === 'kindergarten_custom'
 
-  if (isBearRole) {
+  if (isBearRole && !store.runtime?.model.modelUrl) {
     root = buildProceduralBear()
+    renderStatus.value = 'fallback'
     scene.add(root)
     fitCameraToObject(root)
     store.setModelState('loaded')
@@ -406,8 +412,9 @@ async function init() {
     return
   }
 
-  if (isKindergartenRole) {
+  if (isKindergartenRole && !store.runtime?.model.modelUrl) {
     root = buildProcedural()
+    renderStatus.value = 'fallback'
     scene.add(root)
     fitCameraToObject(root)
     store.setModelState('loaded')
@@ -424,7 +431,8 @@ async function init() {
     ? [[runtimeModelUrl, runtimeFormat], [DEFAULT_MODEL_URL, 'glb']]
     : [[DEFAULT_MODEL_URL, 'glb']]
   // 受保护资产：只向 loader 提供 token，Authorization 组装与 fetch 全部在 AvatarLoader 内部完成。
-  const loadContext: AvatarLoadContext = { getToken: () => useUserStore().accessToken }
+  loadAbort = new AbortController()
+  const loadContext: AvatarLoadContext = { getToken: () => useUserStore().accessToken, signal: loadAbort.signal }
 
   for (const [url, format] of candidates) {
     if (disposed || generation !== loadGeneration) return
@@ -435,6 +443,7 @@ async function init() {
         return
       }
       bindModel(model)
+      renderStatus.value = runtimeModelUrl && url === runtimeModelUrl ? 'ready' : 'fallback'
       store.setModelState('loaded')
       playAction(store.action)
       currentModel?.setExpression(store.expression ?? 'neutral', 1)
@@ -442,11 +451,13 @@ async function init() {
       startRenderLoop()
       return
     } catch {
+      if (disposed || generation !== loadGeneration) return
       // 本级别模型加载失败，尝试下一候选。
     }
   }
-  if (disposed) return
-  root = buildProcedural()
+  if (disposed || generation !== loadGeneration) return
+  root = isBearRole ? buildProceduralBear() : buildProcedural()
+  renderStatus.value = 'fallback'
   scene.add(root)
   fitCameraToObject(root)
   store.setModelState('loaded')
@@ -463,6 +474,7 @@ function disposeScene() {
 function disposeAll() {
   if (disposed) return
   loadGeneration += 1
+  loadAbort?.abort(); loadAbort = null
   disposed = true
   resizeObserver?.disconnect()
   resizeObserver = null
@@ -478,6 +490,7 @@ function disposeAll() {
     try { currentModel.dispose() } catch { /* 忽略模型清理异常 */ }
   }
   currentModel = null
+  parts.head = null; parts.mouth = null; parts.armL = null; parts.armR = null
   root = null
   disposeScene()
   renderer = null
@@ -490,6 +503,7 @@ watch([roleId, () => store.runtime?.model?.modelUrl], () => {
   disposed = false
   void init()
 })
+watch(() => store.renderingPaused, handleVisibilityChange)
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -502,7 +516,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="mountEl" class="three-avatar-stage" :class="{ compact }" aria-label="3D 数字人模型">
+  <div ref="mountEl" class="three-avatar-stage" :data-render-status="renderStatus" :data-render-paused="store.renderingPaused" :class="{ compact }" aria-label="3D 数字人模型">
     <span class="interact-zone" aria-hidden="true"></span>
   </div>
 </template>

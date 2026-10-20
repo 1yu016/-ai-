@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { isAxiosError } from 'axios'
 import { apiErrorMessage } from '@/api/http'
 import { platformApi, type Consent, type Student } from '@/api/platform'
 import {
@@ -9,6 +10,11 @@ import {
   generateArtworkAiDraft,
   uploadStudentArtwork,
   validateArtworkFile,
+  artworkDeliveryStatus,
+  artworkDeliveryMessage,
+  queryArtworkDelivery,
+  type ArtworkDeliveryContext,
+  type ArtworkDeliveryStatus,
   type StudentArtwork,
 } from '@/services/studentArtwork'
 
@@ -42,8 +48,13 @@ const aiDraft = ref('')
 const teacherComment = ref('')
 const confirmSaving = ref(false)
 const delivering = ref(false)
-const delivered = ref(false)
+const deliveryAttempted = ref(false)
+const checkingDelivery = ref(false)
+let deliveryContext: ArtworkDeliveryContext | null = null
+let knownDelivery: ArtworkDeliveryStatus = { display: 'unknown', speech: 'unknown' }
+let disposed = false
 const deliveryMessage = ref('')
+const deliveryRestriction = ref('')
 const consentLoading = ref(false)
 const consentError = ref('')
 const consents = ref<Consent[]>([])
@@ -227,30 +238,60 @@ async function confirmComment() {
 }
 
 async function deliver() {
-  if (!artwork.value || !props.deviceId || !props.runVersion) return
+  if (delivering.value || deliveryAttempted.value || stage.value !== 'confirmed' || !artwork.value?.confirmedAt || !artwork.value.teacherComment || !props.deviceId || !props.runVersion) return
   delivering.value = true
   deliveryMessage.value = ''
+  deliveryRestriction.value = ''
   try {
+    await loadAuthorization(artwork.value.studentId)
+    if (disposed || !artworkAuthorized.value) {
+      deliveryMessage.value = '照片和作品授权未确认，未发送展示或朗读命令。'
+      return
+    }
+    deliveryContext = { requestId: globalThis.crypto?.randomUUID?.() ?? `artwork-${Date.now()}-${Math.random().toString(36).slice(2)}`, runId: props.runId, deviceId: props.deviceId }
+    deliveryAttempted.value = true
     const result = await deliverArtworkReview({
       artworkId: artwork.value.id,
-      requestId: globalThis.crypto?.randomUUID?.() ?? `artwork-${Date.now()}`,
+      requestId: deliveryContext.requestId,
       deviceId: props.deviceId,
       targetDeviceId: props.deviceId,
       expectedVersion: props.runVersion,
     })
-    delivered.value = true
-    deliveryMessage.value = result.display && result.speech
-      ? '服务端已确认：作品展示和教师评价朗读均已送达大屏。'
-      : '服务端已确认投递结果，请查看大屏状态。'
-    ElMessage.success('作品和教师评价已投递到课堂大屏。')
-  } catch (e) {
-    ElMessage.error(apiErrorMessage(e, '投递失败，请刷新课堂状态后重试。'))
+    if (disposed) return
+    const status = artworkDeliveryStatus(result, deliveryContext)
+    showDelivery(status)
+    if (status.display === 'unknown' || status.speech === 'unknown') await checkDelivery()
+  } catch (error) {
+    if (isAxiosError(error) && error.response?.status === 403 && error.response.data?.code === 'ARTWORK_CONSENT_REQUIRED')
+      deliveryRestriction.value = '作品授权已撤销，新的展示或朗读已被拒绝；已提交命令的结果请分别核对。'
+    if (!disposed && deliveryContext) {
+      showDelivery({ display: 'unknown', speech: 'unknown' })
+      await checkDelivery()
+    }
   } finally {
     delivering.value = false
   }
 }
 
+function showDelivery(status: ArtworkDeliveryStatus) {
+  // A later failed read cannot erase a previously confirmed submission.
+  for (const channel of ['display', 'speech'] as const) {
+    if (knownDelivery[channel] !== 'submitted' && status[channel] !== 'unknown') knownDelivery[channel] = status[channel]
+  }
+  deliveryMessage.value = artworkDeliveryMessage(knownDelivery)
+}
+
+async function checkDelivery() {
+  if (!deliveryContext || checkingDelivery.value || disposed) return
+  checkingDelivery.value = true
+  try {
+    const status = await queryArtworkDelivery(deliveryContext)
+    if (!disposed) showDelivery(status)
+  } finally { checkingDelivery.value = false }
+}
+
 function startOver() {
+  if (delivering.value || checkingDelivery.value) return
   stopCamera()
   resetObjectUrl()
   file.value = null
@@ -260,11 +301,15 @@ function startOver() {
   teacherComment.value = ''
   stage.value = 'file_pick'
   errorText.value = ''
-  delivered.value = false
+  deliveryAttempted.value = false
+  deliveryContext = null
+  knownDelivery = { display: 'unknown', speech: 'unknown' }
   deliveryMessage.value = ''
+  deliveryRestriction.value = ''
 }
 
 function onUnmount() {
+  disposed = true
   stopCamera()
   resetObjectUrl()
 }
@@ -360,13 +405,15 @@ onBeforeUnmount(onUnmount)
         <button
           v-if="deviceId && runVersion"
           class="button"
-          :disabled="delivering || delivered"
+          :disabled="delivering || deliveryAttempted"
           @click="deliver"
         >
-          {{ delivered ? '已投递到大屏' : delivering ? '投递中…' : '在大屏展示并朗读' }}
+          {{ delivering ? '正在提交命令…' : deliveryAttempted ? '已提交请求，请核对结果' : '在大屏展示并朗读' }}
         </button>
-        <p v-if="deliveryMessage" class="delivery-result">{{ deliveryMessage }}</p>
-        <button class="ghost" @click="startOver">再评价一件作品</button>
+        <p v-if="deliveryRestriction" class="bad" role="alert">{{ deliveryRestriction }}</p>
+        <p v-if="deliveryMessage" class="delivery-result" role="status">{{ deliveryMessage }}</p>
+        <button v-if="deliveryAttempted" class="ghost" :disabled="delivering || checkingDelivery" @click="checkDelivery">{{ checkingDelivery ? '正在查询…' : '只查询命令结果（不重发）' }}</button>
+        <button class="ghost" :disabled="delivering || checkingDelivery" @click="startOver">再评价一件作品</button>
       </div>
     </template>
   </section>

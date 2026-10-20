@@ -151,7 +151,12 @@ http.interceptors.response.use(
     if (error.response?.status === 401 && !isAuthEndpoint(path)) {
       redirectExpiredSession()
     }
-    if (error.response?.status === 403 && !isAuthEndpoint(path)) {
+    // A consent rejection may follow an already committed display command.
+    // Keep the panel alive to query both original command IDs; never resend.
+    const body = error.response?.data
+    const artworkConsentRejected = /^\/artworks\/\d+\/deliver$/.test(path) &&
+      body !== null && typeof body === 'object' && 'code' in body && body.code === 'ARTWORK_CONSENT_REQUIRED'
+    if (error.response?.status === 403 && !isAuthEndpoint(path) && !artworkConsentRejected) {
       redirectForbidden()
     }
     return Promise.reject(error)

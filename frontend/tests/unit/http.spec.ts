@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { USER_STORAGE_KEYS, useUserStore } from '@/stores/user'
 import { pinia } from '@/stores'
 import { apiErrorMessage, http } from '@/api/http'
+import router from '@/router'
 
 function response(config: AxiosRequestConfig): AxiosResponse {
   return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config: config as AxiosResponse['config'] }
@@ -63,6 +64,20 @@ describe('HTTP interceptors', () => {
   beforeEach(() => {
     useUserStore(pinia).$dispose()
     localStorage.clear()
+  })
+
+  it.each([
+    ['/artworks/1/deliver', false],
+    ['/resources', true],
+  ])('keeps consent outcome reconciliation local only on artwork delivery: %s', async (url, redirects) => {
+    const original = router.currentRoute.value
+    router.currentRoute.value = { ...original, name: 'classroom-insights', fullPath: '/classroom/insights' }
+    const replace = vi.spyOn(router, 'replace').mockResolvedValue(undefined)
+    const error = { config: { url }, response: { status: 403, data: { code: 'ARTWORK_CONSENT_REQUIRED', message: '授权已撤销' } }, isAxiosError: true }
+    try {
+      await expect(http.post(url, {}, { adapter: async () => Promise.reject(error) })).rejects.toBe(error)
+      expect(replace).toHaveBeenCalledTimes(redirects ? 1 : 0)
+    } finally { replace.mockRestore(); router.currentRoute.value = original }
   })
 
   it('injects bearer token and visitor id only where required', async () => {

@@ -21,7 +21,7 @@ function state(active = true, paused = false): ClassroomScreenState {
   return { page: active ? 'classroom' : 'idle', deviceId: 1, serverNow: new Date(++now * 1000).toISOString(), classroomState: active ? {
     id: 45, lessonPlanId: 1, deviceId: 1, classId: 1, version: 1, status: paused ? 'paused' : 'running', title: '当前课堂',
     currentStepIndex: 0, steps: [{ stepIndex: 0, title: '当前步骤', type: 'resource', content: '观察', durationSeconds: 60, resourceId: null }],
-    startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), playerRecoverySuggestion: { resourceId: 3, status: 'playing' },
+    startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), playerRecoverySuggestion: { resourceId: 3, status: 'playing', presentationCommandId: 'screen-A', presentationRevision: 1 },
   } : null }
 }
 async function setup(initial: ClassroomScreenState) {
@@ -38,6 +38,41 @@ async function setup(initial: ClassroomScreenState) {
   return { wrapper, heartbeat, run: useLessonRunStore(), player: useResourcePlayerStore() }
 }
 describe('screen terminal lifecycle', () => {
+  it('debounced feedback keeps the original sample and command identity', async () => {
+    const { wrapper, player } = await setup(state())
+    vi.mocked(http.post).mockClear()
+    player.setProgress(7, 30); player.setStatus('playing')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1800)
+    expect(http.post).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(http.post).mock.calls[0]![1]).toMatchObject({ deviceId: 1, playerState: {
+      presentationCommandId: 'screen-A', presentationRevision: 1, currentTime: 7, status: 'playing',
+    } })
+    wrapper.unmount()
+  })
+  it('a queued A timer cannot be relabelled as B when the resource is unchanged', async () => {
+    const { wrapper, player } = await setup(state())
+    vi.mocked(http.post).mockClear()
+    player.setProgress(99); await flushPromises()
+    const next = state(); next.classroomState!.version = 2
+    Object.assign(next.classroomState!.playerRecoverySuggestion!, { presentationCommandId: 'screen-B', presentationRevision: 2 })
+    await mocks.onState!(next); await flushPromises()
+    await vi.advanceTimersByTimeAsync(1800)
+    const calls = vi.mocked(http.post).mock.calls
+    for (const [, body] of calls) {
+      expect(body).not.toMatchObject({ playerState: { presentationCommandId: 'screen-B', currentTime: 99 } })
+      expect(body).not.toMatchObject({ playerState: { presentationCommandId: 'screen-A' } })
+    }
+    expect(player.origin?.presentationCommandId).toBe('screen-B')
+    wrapper.unmount()
+  })
+  it('unmount cancels queued player feedback', async () => {
+    const { wrapper, player } = await setup(state())
+    vi.mocked(http.post).mockClear()
+    player.setProgress(99); await flushPromises()
+    wrapper.unmount(); await vi.advanceTimersByTimeAsync(1800)
+    expect(http.post).not.toHaveBeenCalled()
+  })
   it('shows explicit student text and never falls back to teacher instruction', async () => {
     const initial = state();
     initial.classroomState!.playerRecoverySuggestion = undefined;
@@ -56,6 +91,19 @@ describe('screen terminal lifecycle', () => {
   });
   beforeEach(() => { vi.useFakeTimers(); localStorage.clear(); now = 0; mocks.resource.mockReset() })
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks() })
+  it('a live play command autoplays after the screen already adopted a run without media', async () => {
+    const initial = state();
+    initial.classroomState!.playerRecoverySuggestion = undefined;
+    const { wrapper, player } = await setup(initial);
+    expect(player.currentResource).toBeNull();
+    const next = state();
+    next.classroomState!.playerRecoverySuggestion = { resourceId: 3, status: 'playing', operation: 'play_resource',
+      presentationCommandId: 'screen-play', presentationRevision: 1, updatedAt: new Date().toISOString() };
+    await mocks.onState!(next); await flushPromises();
+    expect(player.currentResource?.id).toBe(3);
+    expect(player.autoPlayOnOpen).toBe(true);
+    wrapper.unmount();
+  });
   it('restores static SUMMARY with handoff only, expires and does not load media', async () => {
     const summary: ClassroomScreenState = { ...state(false), page: 'summary', phase: 'summary',
       handoff: { id: 'server-lease' }, summary: { runId: 45, courseTitle: '认识数字1', endedAt: new Date().toISOString() },
@@ -199,7 +247,7 @@ describe('screen terminal lifecycle', () => {
     const { wrapper, run } = await setup(state())
     let resolve!: (response: unknown) => void
     vi.spyOn(http, 'post').mockImplementationOnce(() => new Promise(r => { resolve = r }) as never)
-    const result = run.savePlayerState({ currentTime: 2 })
+    const result = run.savePlayerState({ currentTime: 2 }, useResourcePlayerStore().origin)
     const old = state().classroomState!
     await mocks.onState!(state(false))
     resolve({ data: { ...old, version: 2 } }); await result; await flushPromises()

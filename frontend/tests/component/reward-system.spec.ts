@@ -1,3 +1,5 @@
+import { createPinia, setActivePinia } from 'pinia'
+import { useLessonRunStore } from '@/stores/lessonRun'
 import ElementPlus from 'element-plus'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -15,7 +17,10 @@ const dashboard = {
 }
 
 describe('奖励体系与班级成长乐园', () => {
-  beforeEach(() => vi.restoreAllMocks())
+  beforeEach(() => {
+    vi.restoreAllMocks(); setActivePinia(createPinia())
+    useLessonRunStore().adoptRun({ id: 9, deviceId: 1, version: 1, status: 'running', allowedActions: ['reward'], lessonPlanId: 1, title: '合成课堂', steps: [], currentStepIndex: 0, startedAt: '', updatedAt: '' })
+  })
 
   it('展示共同目标、多维荣誉和正向说明，不渲染负面榜单', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: dashboard } as never)

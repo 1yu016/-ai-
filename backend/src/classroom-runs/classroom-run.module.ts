@@ -119,6 +119,7 @@ export const CLASSROOM_RUN_ENTITIES = [
     ClassroomSummaryAiService,
   ],
   exports: [
+    ClassroomCockpitService,
     ClassroomRollCallService,
     ClassroomRunService,
     ClassroomSnapshotService,

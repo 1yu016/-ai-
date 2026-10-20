@@ -55,28 +55,30 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   let reconnectTimer: number | null = null
   let reconnectAttempt = 0
   let stopped = true
-  let serverClockOffsetMs = 0
+  let serverClock: { epochMs: number; monotonicMs: number } | null = null
   let requireFullRefresh = true
 
   const connected = computed(() => connection.value === 'online')
   const canControl = computed(() => connected.value && !!state.value?.screen.online)
 
   function setSession(value: ClassroomControlSession) {
+    if (session.value?.token !== value.token) serverClock = null
     session.value = value
     sessionStorage.setItem(CLASSROOM_CONTROL_SESSION_KEY, JSON.stringify(value))
   }
 
   function serverNowMs() {
-    return Date.now() + serverClockOffsetMs
+    return serverClock ? serverClock.epochMs + performance.now() - serverClock.monotonicMs : NaN
   }
 
   function isSessionExpired() {
-    return !session.value || Date.parse(session.value.expiresAt) <= serverNowMs()
+    // Before a server sample, a fast phone clock must not destroy a valid session.
+    return !session.value || (serverClock !== null && Date.parse(session.value.expiresAt) <= serverNowMs())
   }
 
   function updateAuthoritativeState(next: MobileClassroomState) {
     const serverNow = Date.parse(next.serverNow)
-    if (Number.isFinite(serverNow)) serverClockOffsetMs = serverNow - Date.now()
+    if (Number.isFinite(serverNow)) serverClock = { epochMs: serverNow, monotonicMs: performance.now() }
     state.value = next
     if (!next.controlActive || ['completed', 'cancelled', 'failed'].includes(next.classroom.status)) {
       lastError.value = '课堂已结束，手机控制权限已失效。'
@@ -135,6 +137,11 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       if (requireFullRefresh) {
         await refreshState()
         if (stopped || !session.value) return
+        if (isSessionExpired()) {
+          connection.value = 'expired'
+          stop(true)
+          return
+        }
         requireFullRefresh = false
       }
       const response = await fetch(apiUrl('/classroom-mobile/events'), {
@@ -239,9 +246,14 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     const currentSession = session.value
     const currentState = state.value
     if (!currentSession || !currentState) throw new Error('课堂控制状态尚未同步')
+    if (!serverClock) {
+      const sample = Date.parse(currentState.serverNow)
+      if (!Number.isFinite(sample)) throw new Error('服务器时间尚未同步，请刷新课堂状态')
+      serverClock = { epochMs: sample, monotonicMs: performance.now() }
+    }
     if (!currentState.screen.online) throw new Error('大屏离线，指令不会发送')
     const requestId = classroomRequestId(`mobile-${operation}`)
-    const issuedAt = new Date().toISOString()
+    const issuedAt = new Date(serverNowMs()).toISOString()
     const ttlMs = 30_000
     const expiresAtMs = Date.parse(issuedAt) + ttlMs
     const entry: MobileCommandStatus = {
@@ -354,6 +366,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   }
 
   function clearLocalSession() {
+    serverClock = null
     session.value = null
     state.value = null
     sessionStorage.removeItem(CLASSROOM_CONTROL_SESSION_KEY)

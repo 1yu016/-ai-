@@ -10,7 +10,7 @@ const store = useLessonRunStore()
 const resources = useCourseResourceStore()
 const resource = ref<CourseResource | null>(null)
 const snapshot = computed(() => store.run?.playerRecoverySuggestion)
-const { previousItem, nextItem, show, saving, media, error } = usePresentationQueue()
+const { canShow, canPause, canResume, previousItem, nextItem, show, saving, media, error } = usePresentationQueue()
 let sequence = 0
 watch(() => snapshot.value?.resourceId, async id => {
   const current = ++sequence; resource.value = null
@@ -30,9 +30,9 @@ watch(() => snapshot.value?.resourceId, async id => {
     </div>
     <p v-if="error" role="alert">{{ error }}</p>
     <footer>
-      <ElButton :disabled="saving || !previousItem" @click="previousItem && show(previousItem)">上一项</ElButton>
-      <ElButton :disabled="saving || !resource || snapshot?.presentationMode === 'avatar'" @click="media(snapshot?.status === 'playing' ? 'pause_media' : 'resume_media')">{{ snapshot?.status === 'playing' ? '暂停播放' : '继续播放' }}</ElButton>
-      <ElButton :disabled="saving || !nextItem" @click="nextItem && show(nextItem)">下一项</ElButton>
+      <ElButton :disabled="saving || !canShow || !previousItem" @click="previousItem && show(previousItem)">上一项</ElButton>
+      <ElButton :disabled="saving || !(snapshot?.status === 'playing' ? canPause : canResume) || !resource || snapshot?.presentationMode === 'avatar'" @click="media(snapshot?.status === 'playing' ? 'pause_media' : 'resume_media')">{{ snapshot?.status === 'playing' ? '暂停播放' : '继续播放' }}</ElButton>
+      <ElButton :disabled="saving || !canShow || !nextItem" @click="nextItem && show(nextItem)">下一项</ElButton>
       <slot />
     </footer>
   </section>

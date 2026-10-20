@@ -57,11 +57,38 @@ describe('real GLB model (RobotExpressive)', () => {
 })
 
 describe('real VRM model (AliciaSolid 0.51)', () => {
+  it('D2 procedural wave changes real normalized/raw bones and speech changes real morph weights', async () => {
+    const model = await VRMBufferLoader(await fixtureBuffer('AliciaSolid_vrm-0.51.vrm'))
+    const capture = () => {
+      const values: number[] = []
+      model.root.traverse(node => values.push(...node.quaternion.toArray()))
+      return values
+    }
+    model.playAnimation('idle'); model.update(0.05, 0)
+    const before = capture()
+    model.playAnimation('wave')
+    for (let i = 0; i < 20; i++) model.update(0.05, i * 0.05)
+    expect(capture()).not.toEqual(before)
+    const morphs = () => {
+      const values: number[] = []
+      model.root.traverse(node => { const weights = (node as unknown as { morphTargetInfluences?: number[] }).morphTargetInfluences; if (weights) values.push(...weights) })
+      return values
+    }
+    const silent = morphs()
+    model.playAnimation('talk'); model.update(0.05, 2)
+    expect(morphs()).not.toEqual(silent)
+    const talking = capture()
+    expect(talking.every(Number.isFinite)).toBe(true)
+    model.resetExpressions(); model.playAnimation('idle'); model.update(0.05, 3)
+    expect(morphs()).toEqual(silent)
+    model.dispose()
+  })
   it('parses a VRM 0.x model into the unified interface', async () => {
     const buffer = await fixtureBuffer('AliciaSolid_vrm-0.51.vrm')
     const model = await VRMBufferLoader(buffer)
     expect(model.root).toBeTruthy()
     expect(model.format).toBe('vrm')
+    expect(Math.abs(model.root.rotation.y)).toBeCloseTo(Math.PI)
     expect(model.mixer).toBeTruthy()
     // VRM 0.x 具备 ExpressionManager：happy 表情可被设置
     expect(model.setExpression('happy', 1)).toBe(true)

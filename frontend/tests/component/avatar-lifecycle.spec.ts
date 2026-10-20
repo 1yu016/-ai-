@@ -106,5 +106,38 @@ describe('ThreeAvatarStage lifecycle', () => {
     expect(second.dispose).toHaveBeenCalledTimes(1)
     expect(renderer.dispose).toHaveBeenCalledTimes(1)
   })
+
+  it('late successful loading is disposed after a role switch, and PAUSED stops the actual renderer loop', async () => {
+    let finish!: (value: ReturnType<typeof model>) => void
+    const old = model(), current = model()
+    runtime.load.mockImplementationOnce(() => new Promise(r => { finish = r })).mockResolvedValueOnce(current)
+    const store = useDigitalHumanStore()
+    const wrapper = mount(ThreeAvatarStage)
+    await flushPromises()
+    store.selectRole('garden')
+    await flushPromises()
+    finish(old); await flushPromises()
+    expect(old.dispose).toHaveBeenCalledTimes(1)
+    store.setClassroomPaused(true); await flushPromises()
+    expect(runtime.renderers.at(-1)!.setAnimationLoop).toHaveBeenLastCalledWith(null)
+    store.setClassroomPaused(false); await flushPromises()
+    expect(runtime.renderers.at(-1)!.setAnimationLoop).toHaveBeenLastCalledWith(expect.any(Function))
+    wrapper.unmount()
+  })
+
+  it('late failed loading cannot start fallback for a newer identity', async () => {
+    let reject!: (error: Error) => void
+    const current = model()
+    runtime.load.mockImplementationOnce(() => new Promise((_resolve, failure) => { reject = failure })).mockResolvedValueOnce(current)
+    const store = useDigitalHumanStore(), wrapper = mount(ThreeAvatarStage)
+    await flushPromises()
+    store.previewRuntime({ character: { id: 99, name: '当前班角色' }, model: { versionId: 99, modelFormat: 'glb', modelUrl: '/avatars/assets/99/content', engineVersion: 'avatar-engine-1' }, voice: null, personality: null, sourceScope: 'class', reason: null, fallbackLevel: null })
+    await flushPromises()
+    reject(Error('late old model failure')); await flushPromises()
+    expect(runtime.load).toHaveBeenCalledTimes(2)
+    expect(store.modelState).toBe('loaded')
+    expect(current.dispose).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 })
 

@@ -2,7 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { listAvatarCharacters, resolveAvatar } from '@/api/avatar'
 import type { ResolveAvatarContext, ResolveAvatarResponse } from '@/api/avatar'
-import type { AvatarModelFormat, AvatarRuntimeConfig } from '@/avatar/types'
+import type { AvatarIdentity, AvatarModelFormat, AvatarRuntimeConfig } from '@/avatar/types'
 import { AvatarStateMachine, type AvatarState, type AvatarStateEvent } from '@/avatar/state/AvatarStateMachine'
 import type { AvatarExpressionName } from '@/avatar/expression/ExpressionController'
 
@@ -23,9 +23,15 @@ export const DIGITAL_HUMAN_ROLES: AvatarRole[] = [
 ]
 
 // 业务状态机单例：组件只发事件，不直接指定动作；渲染层只消费快照。
-const avatarMachine = new AvatarStateMachine()
 
 export const useDigitalHumanStore = defineStore('digitalHuman', () => {
+  const avatarMachine = new AvatarStateMachine()
+  const classroomContext = ref<ResolveAvatarContext | null>(null)
+  const renderingPaused = ref(false)
+  let runtimeGeneration = 0
+  let runtimeRequest: Promise<void> | null = null
+  let runtimeKey = ''
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
   const action = ref<DigitalHumanAction>('idle')
   const currentState = ref<AvatarState>('idle')
   // 当前表情（状态机 snapshot.expression 的权威输出，渲染层直接消费）
@@ -55,10 +61,17 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   function playAction(next: DigitalHumanAction) { setAction(next) }
   // 状态机入口：业务事件 → 状态/动作/表情；组件不再执行播放判断。
   function transition(event: AvatarStateEvent) {
+    if (renderingPaused.value && event.type !== 'settle' && event.type !== 'tts_end' && event.type !== 'step_change') return avatarMachine.snapshot()
+    clearTimeout(settleTimer)
     const snap = avatarMachine.transition(event)
     currentState.value = snap.state
     expression.value = snap.expression
     setAction(snap.action as DigitalHumanAction)
+    if (event.type === 'lesson_opening') setAction('wave')
+    if (['happy', 'encourage', 'question', 'goodbye'].includes(snap.state)) {
+      const owner = runtimeGeneration
+      settleTimer = setTimeout(() => { if (owner === runtimeGeneration) transition({ type: 'settle' }) }, 2800)
+    }
     return snap
   }
   function onStateChange(callback: (next: AvatarState) => void) {
@@ -75,6 +88,7 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   function hide() { visible.value = false }
   function setCompact(value: boolean) { compact.value = value }
   function selectRole(id: string) {
+    if (classroomContext.value) return
     const role = roles.value.find((item) => item.id === id)
     if (!role) return
     roleId.value = role.id
@@ -117,7 +131,7 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
       const remoteRoles = result.items.map((role) => ({ id: String(role.id), name: role.name, category: role.category ?? null, description: role.description ?? null, status: role.status ?? null }))
       if (remoteRoles.length) {
         roles.value = remoteRoles
-        if (!roles.value.some((role) => role.id === roleId.value)) selectRole(remoteRoles[0]!.id)
+        if (!classroomContext.value && !runtime.value && !roles.value.some((role) => role.id === roleId.value)) selectRole(remoteRoles[0]!.id)
       }
     } catch {
       // 角色库不可用时保留本地角色，不能阻塞课堂进入。
@@ -126,17 +140,43 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
 
   // 课堂运行时解析：获取当前课堂应使用的角色与模型配置。
   // 后端按 System < 班级 < 教案 < 课堂 作用域解析，失败时保持 fallback=true（2D 或内置占位模型）。
-  async function loadRuntime(context: ResolveAvatarContext) {
-    try {
-      const data = await resolveAvatar(context)
-      runtime.value = toRuntimeConfig(data)
-    } catch {
-      // resolve 失败不能阻塞课堂：保留现有默认/占位形象。
-      runtime.value = null
-    }
+  function loadRuntime(context: ResolveAvatarContext): Promise<void> {
+    const key = JSON.stringify([context.classId ?? null, context.classroomRunId ?? null, context.deviceId ?? null, context.lessonPlanId ?? null])
+    if (key === runtimeKey && runtimeRequest) return runtimeRequest
+    const generation = ++runtimeGeneration
+    runtimeKey = key
+    classroomContext.value = { ...context }
+    runtime.value = null
+    roleId.value = 'flower'; roleName.value = '课堂小助手'
+    modelState.value = 'idle'; error.value = ''; fallback.value = true
+    transition({ type: 'settle' })
+    runtimeRequest = (async () => {
+      try {
+        const data = await resolveAvatar(context)
+        if (generation !== runtimeGeneration) return
+        runtime.value = toRuntimeConfig(data)
+        roleId.value = data.character ? String(data.character.id) : 'flower'
+        roleName.value = data.character?.name ?? '课堂小助手'
+      } catch {
+        if (generation !== runtimeGeneration) return
+        runtime.value = null
+        setFallback('数字人暂时不可用，课堂可以继续')
+      }
+    })()
+    return runtimeRequest
+  }
+
+  const identity = computed<AvatarIdentity>(() => ({ classId: classroomContext.value?.classId ?? null,
+    runId: classroomContext.value?.classroomRunId ?? null, deviceId: classroomContext.value?.deviceId ?? null,
+    characterId: runtime.value?.character?.id ?? null, versionId: runtime.value?.model.versionId ?? null }))
+  const identityKey = computed(() => JSON.stringify(identity.value))
+  function setClassroomPaused(paused: boolean) {
+    renderingPaused.value = paused
+    if (paused) transition({ type: 'settle' })
   }
 
   function previewRuntime(config: AvatarRuntimeConfig) {
+    runtimeGeneration++; runtimeKey = ''; runtimeRequest = null; classroomContext.value = null
     runtime.value = config
     if (config.character) {
       roleId.value = String(config.character.id)
@@ -147,7 +187,7 @@ export const useDigitalHumanStore = defineStore('digitalHuman', () => {
   }
 
   function setFallback(message = '') { fallback.value = true; loading.value = false; error.value = message; action.value = 'idle'; currentState.value = 'idle'; expression.value = 'neutral' }
-  function reset() { avatarMachine.reset(); currentState.value = 'idle'; expression.value = 'neutral'; action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; selectRole('flower') }
+  function reset() { runtimeGeneration++; runtimeKey = ''; runtimeRequest = null; classroomContext.value = null; renderingPaused.value = false; avatarMachine.reset(); currentState.value = 'idle'; expression.value = 'neutral'; action.value = 'idle'; visible.value = true; compact.value = false; loading.value = false; error.value = ''; modelState.value = 'idle'; runtime.value = null; roleId.value = 'flower'; roleName.value = '课堂小助手' }
 
-  return { action, currentState, expression, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, previewRuntime, setFallback, reset }
+  return { classroomContext, identity, identityKey, renderingPaused, setClassroomPaused, action, currentState, expression, visible, compact, fallback, roleName, roleId, roles, loading, error, webglSupported, modelState, isSpeaking, runtime, setAction, playAction, transition, onStateChange, setWebglSupported, setModelState, show, hide, setCompact, selectRole, loadRoles, loadRuntime, previewRuntime, setFallback, reset }
 })

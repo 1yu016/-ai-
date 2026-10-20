@@ -1948,7 +1948,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(403);
     await request(app.getHttpServer())
       .post(`/avatars/bindings/classes/${classId}`)
-      .set(auth())
+      .set('Authorization', `Bearer ${adminToken}`)
       .send({
         characterId: classAvatar.character.id,
         versionId: classAvatar.version.id,

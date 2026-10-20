@@ -7,12 +7,7 @@ import { ElButton, ElDrawer, ElMessage, ElMessageBox, ElTag } from 'element-plus
 import LivePresentationPreview from '@/components/classroom/LivePresentationPreview.vue'
 import PresentationQueuePanel from '@/components/classroom/PresentationQueuePanel.vue'
 import { apiErrorMessage, http } from '@/api/http'
-import {
-  pauseBrowserSpeech,
-  playExclusiveAudio,
-  resumeBrowserSpeech,
-  stopBrowserSpeech,
-} from '@/services/browserSpeech'
+import { useTeachingSpeech } from '@/composables/useTeachingSpeech'
 import { platformApi, type Student, type RewardLeaderboardItem } from '@/api/platform'
 import ResourcePlayer from '@/components/ResourcePlayer.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
@@ -28,12 +23,14 @@ import ClassroomAssistantPanel from '@/components/classroom/ClassroomAssistantPa
 import ClassroomDirectorPanel from '@/components/classroom/ClassroomDirectorPanel.vue'
 import ClassroomVoiceControl from '@/components/classroom/ClassroomVoiceControl.vue'
 import ClassroomPartnerPanel from '@/components/classroom/ClassroomPartnerPanel.vue'
+import ClassroomDialoguePanel from '@/components/classroom/ClassroomDialoguePanel.vue'
 import ClassRewardDrawer from '@/components/classroom/ClassRewardDrawer.vue'
 import { useLessonRunStore } from '@/stores/lessonRun'
 import { useClassroomAssistantStore, type AssistantTool } from '@/stores/classroomAssistant'
 import { useCourseResourceStore } from '@/stores/courseResource'
 import { useUserStore } from '@/stores/user'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
+import { useClassroomAvatar } from '@/composables/useClassroomAvatar'
 import { isRecordingSupported, webmToWav, RECORDING_MIME_TYPE } from '@/services/recordingAudio'
 import {
   AI_COMMAND_FAILURE_HINT,
@@ -58,6 +55,8 @@ import type { ResourceCommandResult } from '@/classroom/command/ResourceCommand'
 import type { CourseResource } from '@/stores/courseResource'
 import { useVoiceCommandPreferenceStore } from '@/stores/voiceCommandPreference'
 import type { TeacherVoiceCommandMatch } from '@/classroom/command/TeacherVoiceCommandRouter'
+import { TeacherInstructionSession } from '@/classroom/command/TeacherInstructionSession'
+import { commandCapability } from '@/services/classroomCapabilities'
 import {
   listRunRewards,
   type RewardRecord,
@@ -72,6 +71,7 @@ const voiceDrawerOpen = ref(false)
 const moreDrawerOpen = ref(false)
 const allowDebugPanel = computed(() => import.meta.env.DEV && route.query.debug === '1')
 const digitalHuman = useDigitalHumanStore()
+useClassroomAvatar(() => store.run?.id === Number(route.params.runId) ? store.run : null)
 const classroomCommand = useClassroomCommandStore()
 const resourcePlayer = useResourcePlayerStore()
 const voicePreferences = useVoiceCommandPreferenceStore()
@@ -89,8 +89,44 @@ const commandInput = ref(''); const commandFeedback = ref(''); const commandRunI
 const resourceCommandResult = ref<ResourceCommandResult | null>(null)
 const voiceRecState = ref<'idle' | 'recording' | 'recognizing'>('idle'); const voiceFeedback = ref('')
 const pendingVoiceCommand = ref<TeacherVoiceCommandMatch | null>(null)
-const assistantSpeechLoading = ref(false); const assistantSpeaking = ref(false); const assistantSpeechPaused = ref(false); const draftAccepted = ref(false)
-let assistantSpeechSequence = 0
+const unresolvedInstruction = ref<string | null>(null)
+const teacherInstructions = new TeacherInstructionSession({
+  context: () => {
+    const r = store.run
+    return r ? { id: r.id, classId: Number(r.classId), deviceId: r.deviceId, version: r.version, currentStepIndex: r.currentStepIndex, status: r.status, breakActive: store.isBreakActive } : null
+  },
+  currentResource: () => store.currentResource,
+  students: async classId => {
+    const all: Student[] = []
+    for (let page = 1; page <= 100; page++) {
+      const { data } = await platformApi.students({ classId, page, pageSize: 100 })
+      all.push(...data.items)
+      if (all.length >= data.total) return all
+    }
+    throw new Error('学生列表不完整，请使用正式面板选择。')
+  },
+  check: match => {
+    const action = commandCapability(match.operation)
+    if (!action) throw new Error('该操作没有已确认的能力映射。')
+    store.requireAction(action)
+  },
+  execute: (match, requestId) => {
+    const parameters = { ...match.parameters }
+    if (match.operation === 'set_volume' && typeof parameters.volumeDelta === 'number') {
+      parameters.volume = Math.max(0, Math.min(1, resourcePlayer.volume + parameters.volumeDelta))
+      delete parameters.volumeDelta
+    }
+    return store.teacherCommand(match.operation, parameters, 'teacher_panel', store.run?.deviceId, requestId)
+  },
+  query: async requestId => (await http.get(`/classroom-commands/${encodeURIComponent(requestId)}`)).data,
+  adopt: (result, origin) => store.applyCommandResult(result, origin),
+})
+async function queryTeacherInstruction() {
+  const result = await teacherInstructions.query()
+  commandFeedback.value = result.message
+  unresolvedInstruction.value = teacherInstructions.unresolvedRequestId
+}
+const draftAccepted = ref(false)
 const childRecording = ref(false); const childRequestingMicrophone = ref(false); const childRecognizing = ref(false)
 let childMediaRecorder: MediaRecorder | null = null; let childMediaStream: MediaStream | null = null; let childAudioChunks: Blob[] = []; let childRecordingGeneration = 0; let componentUnmounted = false
 // 左侧环节导航折叠：纯前端状态，禁止调用 backend / 修改 ClassroomRun / snapshot。较窄屏幕默认收起。
@@ -127,9 +163,8 @@ const interactionStudents = ref<Student[]>([])
 const selectedStudentId = ref<number | null>(null)
 // 禁交互条件：非 running（paused/completed/cancelled/failed）或课间中或操作忙时。
 // 后端 rewards 权限仍作为最终保障，这里仅做前端体验层禁用。
-const interactionDisabled = computed(
-  () => !run.value || run.value.status !== 'running' || isBreakActive.value || busy.value,
-)
+const interactionDisabled = computed(() => busy.value || (!store.can('roll_call') && !store.can('reward')))
+watch(() => run.value, () => { if (!store.capabilities || store.capabilities.version !== run.value?.version || Date.now() - store.capabilities.at > 4000) void store.refreshCapabilities() })
 async function loadInteractionStudents(classId: number) {
   try {
     const result = await platformApi.students(classId)
@@ -191,8 +226,8 @@ const copilotStatus = computed(() => assistantSpeaking.value ? '正在讲解' : 
 const compactVoiceStatus = computed(() => voiceRecState.value === 'recording' ? '正在听…' : voiceRecState.value === 'recognizing' ? '正在识别…' : commandBusy.value ? '正在执行课堂口令…' : commandFeedback.value || voiceFeedback.value || (micReady.value ? '麦克风已就绪' : '麦克风不可用'))
 const nextTeachingStep = computed(() => run.value?.steps.find(step => step.stepIndex > (run.value?.currentStepIndex ?? -1)))
 watch(resourceCommandResult, result => { if (result) voiceDrawerOpen.value = true })
-async function safe(task: () => Promise<void>) { try { await task() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '操作失败，请检查网络后重试') } }
-async function goToStep(index: number) { if (!run.value || index === run.value.currentStepIndex) return; await safe(() => store.move(index)) }
+async function safe(task: () => Promise<unknown> | void, action?: string) { try { if (action) store.requireAction(action); await task() } catch (e) { await store.handleTeacherRejection(e); ElMessage.error(e instanceof Error ? e.message : '操作失败，请检查网络后重试') } }
+async function goToStep(index: number) { if (!run.value || index === run.value.currentStepIndex) return; await safe(() => store.move(index), 'change_step') }
 // ─── 全屏板块 + 开场/教学阶段（frontend only，不改 ClassroomRun）──────────────
 // 统一全屏状态：同一时刻只允许一个全屏板块，关闭置 null。
 // 仅用 Vue Teleport + Transition 做 overlay，不走路由跳转，避免重载 ClassroomRun。
@@ -231,24 +266,36 @@ const fullscreenMeta = computed(() => {
 // 开场「进入课堂 / 跳过开场」：两按钮同一出口，TTS 失败也不会把教师卡在开场。
 async function enterClassroomFromOpening(operation: 'complete' | 'skip' = 'complete') {
   if (!run.value || !openingLifecycle.value || openingBusy.value) return
+  try { store.requireAction(operation === 'skip' ? 'skip_opening' : 'complete_opening') } catch (e) { ElMessage.error(apiErrorMessage(e, '当前不能结束开场')); return }
   openingBusy.value = true
   try {
     await screenOpeningApi.finish(run.value.id, openingLifecycle.value, operation)
     await store.load(run.value.id)
     closeFullscreen()
-  } catch (error) { ElMessage.error(apiErrorMessage(error, '开场结束失败，请重试。')) }
+  } catch (error) { await store.handleTeacherRejection(error); ElMessage.error(apiErrorMessage(error, '开场结束失败，请重试。')) }
   finally { openingBusy.value = false }
 }
-async function finish(kind: 'complete' | 'cancel') { const text = kind === 'complete' ? '确定本节课已经完成吗？结束后将进入课堂总结，本节课堂将不能继续教学操作。' : '确认中止本次课堂吗？教案不会被删除。'; try { await ElMessageBox.confirm(text, kind === 'complete' ? '结束课堂' : '中止课堂', { type:'warning', confirmButtonText: kind === 'complete' ? '确认结束' : '确认', cancelButtonText:'继续上课' }) } catch { return } digitalHuman.transition({ type: 'lesson_end' }); const runId = run.value?.id; if (kind === 'complete') { if (runId == null) return; try { await store.complete(); store.clear(); await router.push({ name: 'lesson-classroom-summary', params: { runId } }) } catch (e) { ElMessage.error(e instanceof Error ? e.message : '结束课堂失败，请重试。') } } else { await safe(async () => { await store.cancel(); store.clear(); await router.push('/lesson-plans') }) } }
+async function finish(kind: 'complete' | 'cancel') { try { store.requireAction(kind) } catch (e) { ElMessage.error(apiErrorMessage(e, '当前不能结束课堂')); return } const text = kind === 'complete' ? '确定本节课已经完成吗？结束后将进入课堂总结，本节课堂将不能继续教学操作。' : '确认中止本次课堂吗？教案不会被删除。'; try { await ElMessageBox.confirm(text, kind === 'complete' ? '结束课堂' : '中止课堂', { type:'warning', confirmButtonText: kind === 'complete' ? '确认结束' : '确认', cancelButtonText:'继续上课' }) } catch { return } try { store.requireAction(kind) } catch (e) { ElMessage.error(apiErrorMessage(e, '操作能力已变化，请刷新')); return } digitalHuman.transition({ type: 'lesson_end' }); const runId = run.value?.id; if (kind === 'complete') { if (runId == null) return; try { await store.complete(); store.clear(); await router.push({ name: 'lesson-classroom-summary', params: { runId } }) } catch (e) { await store.handleTeacherRejection(e); ElMessage.error(e instanceof Error ? e.message : '结束课堂失败，请重试。') } } else { await safe(async () => { await store.cancel(); store.clear(); await router.push('/lesson-plans') }) } }
 async function runCommand() {
+  if (commandBusy.value || busy.value) return
   const text = commandInput.value.trim()
   if (!text) return
   const runId = ++commandRunId.value
+  const originRunId = run.value?.id
   commandFeedback.value = ''
   commandBusy.value = true
   resourceCommandResult.value = null
   commandFeedback.value = AI_COMMAND_PENDING_HINT
   try {
+    const direct = await teacherInstructions.submit(text)
+    unresolvedInstruction.value = teacherInstructions.unresolvedRequestId
+    if (originRunId !== run.value?.id || componentUnmounted) return
+    if (direct.handled) {
+      commandFeedback.value = direct.message
+      pendingVoiceCommand.value = direct.confirmation ?? null
+      if (direct.result && direct.committedRunId === run.value?.id && store.lastCommandResult?.operation === 'reward_student') digitalHuman.transition({ type: 'ai_response', emotion: 'encourage' })
+      return
+    }
     const outcome = await orchestrateCommand({
       text,
       runId,
@@ -322,6 +369,14 @@ async function runVoiceCommand(audioBlob: Blob) {
       return
     }
     voiceFeedback.value = `识别到：“${text}”`
+    const direct = await teacherInstructions.submit(text, true)
+    unresolvedInstruction.value = teacherInstructions.unresolvedRequestId
+    if (runId !== commandRunId.value || componentUnmounted) return
+    if (direct.handled) {
+      voiceFeedback.value = direct.message
+      pendingVoiceCommand.value = direct.confirmation ?? null
+      return
+    }
     const outcome = await runAsrTextThroughCommand(
       text,
       runId,
@@ -376,49 +431,27 @@ async function runVoiceCommand(audioBlob: Blob) {
 }
 async function confirmPendingVoiceCommand() {
   const match = pendingVoiceCommand.value
-  if (!match) return
+  if (!match || commandBusy.value) return
+  const originRunId = run.value?.id
+  commandBusy.value = true
   try {
-    let confirmedMatch = match
-    if (match.operation === 'group_roll_call') {
-      if (!run.value) throw new Error('课堂状态未就绪')
-      const { value } = await ElMessageBox.prompt(
-        '请输入本组幼儿姓名，多人用顿号或逗号分隔。系统会校验幼儿是否属于当前班级，确认后才执行点名。',
-        '确认分组点名',
-        {
-          confirmButtonText: '确认执行',
-          cancelButtonText: '取消',
-          inputPlaceholder: '例如：小明、小花、小雨',
-          inputPattern: /\S/,
-          inputErrorMessage: '请至少输入一名幼儿',
-        },
-      )
-      const names = [...new Set(value.split(/[,，、;；\s]+/).map((item) => item.trim()).filter(Boolean))]
-      const classId = Number(run.value.classId)
-      if (!Number.isInteger(classId) || classId < 1) throw new Error('当前课堂缺少有效班级信息')
-      const { data } = await platformApi.students(classId)
-      const resolved = names.map((name) => {
-        const matches = data.items.filter((student) => student.name === name || student.nickname === name)
-        if (matches.length === 0) throw new Error(`当前班级没有找到“${name}”`)
-        if (matches.length > 1) throw new Error(`“${name}”对应多名幼儿，请在课堂操作面板中选择`)
-        return matches[0]!
-      })
-      confirmedMatch = {
-        ...match,
-        parameters: {
-          ...match.parameters,
-          studentIds: [...new Set(resolved.map((student) => student.id))],
-          groupKey: `voice:${names.join('|')}`,
-        },
-      }
+    if (match.operation !== 'group_roll_call') {
+      const result = await teacherInstructions.execute(match)
+      if (componentUnmounted || run.value?.id !== originRunId) return
+      unresolvedInstruction.value = teacherInstructions.unresolvedRequestId
+      voiceFeedback.value = result.message
+      commandFeedback.value = result.message
+      return
     }
-    const result = await commandExecutor.executeVoice(confirmedMatch)
-    voiceFeedback.value = result.message
-    commandFeedback.value = result.message
+    // Legacy name-list grouping is not a canonical group identity.
+    voiceFeedback.value = '请到正式分组点名面板选择已有分组。'
+    commandFeedback.value = voiceFeedback.value
   } catch (error) {
     const message = apiErrorMessage(error, '指令执行失败，请检查幼儿姓名或课堂状态。')
     voiceFeedback.value = message
     commandFeedback.value = message
   } finally {
+    commandBusy.value = false
     pendingVoiceCommand.value = null
   }
 }
@@ -432,18 +465,24 @@ function cancelPendingVoiceCommand() {
 // 取消 → 清空候选，无副作用。
 async function confirmResourceCommand(resource: CourseResource) {
   const result = resourceCommandResult.value
-  if (!result || !run.value) return
+  if (!result || !run.value || commandBusy.value) return
+  const origin = { id: run.value.id, step: run.value.currentStepIndex, deviceId: run.value.deviceId }
   const action = resolveExecuteAction(result.intent, resource)
-  await store.command(
-    action.autoPlay ? 'play_resource' : 'open_resource',
-    { resourceId: Number(resource.id) },
-    'teacher_panel',
-    run.value.deviceId,
-  )
-  resourcePlayer.openResource(resource, action.autoPlay)
-  const actionWord = action.autoPlay ? '播放' : '打开'
-  commandFeedback.value = `已${actionWord}《${resource.title}》。${action.note ?? ''}`
-  resourceCommandResult.value = null
+  commandBusy.value = true
+  try {
+    const feedback = await teacherInstructions.execute({
+      operation: action.autoPlay ? 'play_resource' : 'open_resource',
+      parameters: { resourceId: Number(resource.id) },
+      normalized: '', label: resource.title, requiresConfirmation: false, source: 'builtin',
+    })
+    unresolvedInstruction.value = teacherInstructions.unresolvedRequestId
+    if (componentUnmounted || run.value?.id !== origin.id || run.value?.deviceId !== origin.deviceId || run.value.currentStepIndex !== origin.step) return
+    commandFeedback.value = feedback.message
+    if (feedback.result) {
+      resourcePlayer.openResource(resource, action.autoPlay)
+      resourceCommandResult.value = null
+    }
+  } finally { commandBusy.value = false }
 }
 function cancelResourceCommand() {
   if (!resourceCommandResult.value) return
@@ -481,14 +520,35 @@ async function recognizeChildReply(audioBlob: Blob, generation: number) { try { 
 async function startChildRecording() { if (!isRecordingSupported()) throw new Error('当前浏览器不支持麦克风录音，请使用最新版 Chrome 或 Edge。'); childRequestingMicrophone.value = true; const generation = ++childRecordingGeneration; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); if (generation !== childRecordingGeneration || componentUnmounted) { stream.getTracks().forEach((track) => track.stop()); return } const recorder = new MediaRecorder(stream, { mimeType: RECORDING_MIME_TYPE }); childMediaStream = stream; childMediaRecorder = recorder; childAudioChunks = []; recorder.addEventListener('dataavailable', (event: BlobEvent) => { if (event.data.size > 0) childAudioChunks.push(event.data) }); recorder.addEventListener('stop', () => { const audioBlob = new Blob(childAudioChunks, { type: RECORDING_MIME_TYPE }); childAudioChunks = []; childMediaRecorder = null; stopChildMediaTracks(); if (generation === childRecordingGeneration && !componentUnmounted) void recognizeChildReply(audioBlob, generation) }, { once: true }); recorder.addEventListener('error', () => { childRecording.value = false; childMediaRecorder = null; stopChildMediaTracks(); ElMessage.error('录音发生错误，请重新尝试。') }, { once: true }); recorder.start(); childRecording.value = true } catch (e) { stopChildMediaTracks(); if (e instanceof DOMException && e.name === 'NotAllowedError') throw new Error('麦克风权限被拒绝，请在浏览器设置中允许使用麦克风。', { cause: e }); throw e } finally { childRequestingMicrophone.value = false } }
 function stopChildRecording() { if (!childMediaRecorder || childMediaRecorder.state === 'inactive') return; childRecording.value = false; childRecognizing.value = true; childMediaRecorder.stop() }
 async function toggleChildRecording() { if (childRecording.value) return stopChildRecording(); if (childRequestingMicrophone.value || childRecognizing.value || assistantLoading.value) return; try { await startChildRecording() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '无法使用麦克风，请稍后重试。') } }
-function stopAssistantSpeech() { assistantSpeechSequence += 1; stopBrowserSpeech(); assistantSpeechLoading.value = false; assistantSpeaking.value = false; assistantSpeechPaused.value = false }
-function pauseAssistantSpeech() { if (!pauseBrowserSpeech()) return; assistantSpeaking.value = false; assistantSpeechPaused.value = true; digitalHuman.transition({ type: 'tts_end' }) }
-async function resumeAssistantSpeech() { try { if (!await resumeBrowserSpeech()) return; assistantSpeaking.value = true; assistantSpeechPaused.value = false; digitalHuman.transition({ type: 'tts_start' }) } catch (e) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); ElMessage.error(apiErrorMessage(e, '助教语音继续播放失败，请重试。')) } }
-async function playAssistantDraft() { const text = draftReply.value.trim(); if (!text || requiresTeacherConfirmation.value || !run.value) return; stopAssistantSpeech(); const sequence = ++assistantSpeechSequence; assistantSpeechLoading.value = true; digitalHuman.transition({ type: 'tts_start' }); try { await store.command('speak_text', { text }, 'teacher_panel', run.value.deviceId); const { data } = await http.post<{ audioUrl: string }>('/ai/tts', { text }); if (typeof data.audioUrl !== 'string' || !data.audioUrl.trim()) throw new Error('语音服务没有返回可播放内容'); if (sequence !== assistantSpeechSequence) return; await playExclusiveAudio(data.audioUrl.trim(), { onEnded: () => { if (sequence === assistantSpeechSequence) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }) } }, onError: () => { if (sequence === assistantSpeechSequence) { stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用') } } }); if (sequence !== assistantSpeechSequence) return; assistantSpeaking.value = true; draftAccepted.value = true } catch (e) { if (sequence !== assistantSpeechSequence) return; stopAssistantSpeech(); digitalHuman.transition({ type: 'tts_end' }); digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(e, '助教语音播放失败，请稍后重试。')) } finally { if (sequence === assistantSpeechSequence) assistantSpeechLoading.value = false } }
+const canSpeakTeaching = computed(() => !!run.value && run.value.status === 'running' && Number(route.params.runId) === run.value.id && !isBreakActive.value && !run.value.manualInterventionRequired && store.can('tts'))
+watch(voiceRecState, state => {
+  if (state === 'recording' && !digitalHuman.renderingPaused) digitalHuman.transition({ type: 'teacher_command', command: 'listen' })
+  else if (digitalHuman.currentState === 'listen') digitalHuman.transition({ type: 'settle' })
+})
+const teachingSpeech = useTeachingSpeech({
+  identity: () => JSON.stringify([route.params.runId, run.value?.id, run.value?.deviceId, run.value?.currentStepIndex,
+    run.value?.status, openingLifecycle.value?.phase, isBreakActive.value, run.value?.manualInterventionRequired, digitalHuman.identityKey]),
+  allowed: () => canSpeakTeaching.value,
+  authorize: async text => {
+    await store.teacherCommand('speak_text', { text }, 'teacher_panel', run.value?.deviceId)
+    await store.refreshCapabilities()
+  },
+  requestAudio: async text => (await http.post<{ audioUrl: string }>('/ai/tts', { text })).data.audioUrl,
+  onSpeaking: active => digitalHuman.transition({ type: active ? 'tts_start' : 'tts_end' }),
+  onError: cause => { digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(cause, '助教语音播放失败，请稍后重试。')) },
+})
+const { loading: assistantSpeechLoading, speaking: assistantSpeaking, paused: assistantSpeechPaused } = teachingSpeech
+function stopAssistantSpeech() { teachingSpeech.stop() }
+function pauseAssistantSpeech() { teachingSpeech.pause() }
+async function resumeAssistantSpeech() { await teachingSpeech.resume() }
+async function playAssistantDraft() {
+  if (requiresTeacherConfirmation.value) return
+  if (await teachingSpeech.play(draftReply.value.trim())) draftAccepted.value = true
+}
 function acceptDraftAsText() { draftAccepted.value = true; digitalHuman.transition({ type: 'ai_response', emotion: 'encourage' }); ElMessage.success('已由教师确认，可自行讲述给孩子听') }
 function discardAssistantDraft() { stopAssistantSpeech(); digitalHuman.transition({ type: 'settle' }); draftAccepted.value = false; assistant.endInteraction() }
 function beforeUnload(event: BeforeUnloadEvent) { if (!isActive.value) return; event.preventDefault(); event.returnValue = '' }
-onBeforeRouteLeave(() => !requiresClassroomExitConfirmation(run.value?.status) || window.confirm(CLASSROOM_EXIT_MESSAGE))
+onBeforeRouteLeave(() => { const leave = !requiresClassroomExitConfirmation(run.value?.status) || window.confirm(CLASSROOM_EXIT_MESSAGE); if (leave) stopAssistantSpeech(); return leave })
 watch(currentStep, (step, previous) => {
   if (!run.value || !step) return
   if (previous && previous.stepIndex !== step.stepIndex) { assistant.endInteraction(); cancelChildRecording(); childReply.value = ''; digitalHuman.transition({ type: 'step_change' }) }
@@ -497,6 +557,15 @@ watch(currentStep, (step, previous) => {
   assistant.theme = run.value.lessonTitle
   if (run.value.lessonObjectives) assistant.objective = run.value.lessonObjectives
   assistant.currentStep = `${step.title}：${step.content}`
+})
+watch(() => [run.value?.id, run.value?.deviceId, run.value?.classId, run.value?.currentStepIndex, run.value?.status, store.isBreakActive].join('|'), () => {
+  teacherInstructions.invalidate()
+  pendingVoiceCommand.value = null
+  resourceCommandResult.value = null
+  commandRunId.value++
+  commandBusy.value = false
+  voiceRecorder.cancel()
+  voiceRecState.value = 'idle'
 })
 // 数字人常驻右侧主卡（右栏独立于中央课件，不再需要资源环节缩到角落）。
 // compact 逻辑已废弃：右侧栏在中间媒体区之外，数字人常驻不遮挡 PPT/ResourcePlayer。
@@ -527,11 +596,46 @@ async function mountClassroom() {
   window.addEventListener('keydown', handleKeydown)
 }
 onMounted(mountClassroom)
-onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); store.stopPolling(); componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); voiceRecorder.cancel(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
+watch(() => route.params.runId, (next, previous) => {
+  if (!previous || next === previous) return
+  closeFullscreen(); stopAssistantSpeech(); store.clearRun()
+  void store.load(Number(next)).then(() => {
+    if (!componentUnmounted && route.params.runId === next) store.startPolling()
+  }).catch(() => undefined)
+})
+onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; window.removeEventListener('keydown', handleKeydown); store.stopPolling(); componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); voiceRecorder.cancel(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
 </script>
 
 <template>
   <main class="classroom" :class="{ 'classroom-debug': allowDebugPanel }">
+    <!-- Keep the same teacher control surface alive across teaching and break. -->
+    <ElDrawer v-if="run" v-model="voiceDrawerOpen" title="课堂语音与口令" size="min(640px, 95vw)">
+      <ClassroomVoiceControl
+        v-model:command-input="commandInput"
+        :command-feedback="commandFeedback"
+        :voice-feedback="voiceFeedback"
+        :command-busy="commandBusy"
+        :voice-rec-state="voiceRecState"
+        :busy="busy"
+        :is-active="isActive"
+        :pending-confirmation="pendingVoiceCommand?.label"
+        :unresolved-request-id="unresolvedInstruction"
+        @query-command="queryTeacherInstruction"
+        @run-command="runCommand"
+        @toggle-voice-recording="toggleVoiceRecording"
+        @confirm-command="confirmPendingVoiceCommand"
+        @cancel-command="cancelPendingVoiceCommand"
+      />
+      <ResourceCandidatePanel v-if="resourceCommandResult" :result="resourceCommandResult" @confirm="confirmResourceCommand" @cancel="cancelResourceCommand" />
+    </ElDrawer>
+    <section v-if="run" role="status" data-test="classroom-capabilities">
+      <p>{{ store.capabilityMessage }}</p>
+      <ElButton :loading="store.capabilityLoading" @click="store.refreshTeacherState()">刷新课堂状态</ElButton>
+    </section>
+    <section v-if="store.commandStateRefresh.status !== 'idle'" role="status" data-test="command-state-refresh">
+      <p>{{ store.commandStateRefresh.message }}</p>
+      <ElButton :loading="store.commandStateRefresh.status === 'refreshing'" :disabled="store.commandStateRefresh.status === 'refreshing'" @click="store.retryCommandStateRefresh()">重新查询状态</ElButton>
+    </section>
     <div v-if="loading" class="center">正在恢复课堂…</div>
     <div v-else-if="error" class="center error">{{ error }}<ElButton @click="router.push('/lesson-plans')">返回教案列表</ElButton></div>
     <!-- Stage 7.4：课间休息。isBreakActive 为 true 时隐藏推进教学的 workspace/ControlBar，仅展示倒计时与提前结束 -->
@@ -541,9 +645,10 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
         <h1>{{ run.breakContent?.title || '课间休息' }}</h1>
         <div class="break-time" data-test="break-countdown">{{ breakTimeText }}</div>
         <p class="break-muted">{{ run.breakContent?.message || '让幼儿喝水、如厕，放松休息' }}</p>
-        <ElButton size="large" :disabled="busy" @click="safe(store.endBreak)">
+        <ElButton size="large" :disabled="busy || !store.can('end_break')" @click="safe(store.endBreak, 'end_break')">
           {{ busy ? '处理中…' : '提前结束课间' }}
         </ElButton>
+        <ElButton @click="voiceDrawerOpen = true">课堂口令</ElButton>
       </div>
     </div>
     <template v-else-if="run && currentStep && isActive">
@@ -560,14 +665,15 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
         <template #navigation><ElButton text @click="router.push({ name: 'my-classes' })">← 工作台</ElButton></template>
         <template #actions>
           <ElButton text @click="assistantDrawerOpen = true">AI{{ copilotStatus }}</ElButton>
-          <ElButton :disabled="busy" @click="safe(paused ? store.resume : store.pause)">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
-          <ElButton :disabled="busy" @click="finish('complete')">结束课堂</ElButton>
+          <ElButton :disabled="busy || !store.can(paused ? 'resume' : 'pause')" @click="safe(paused ? store.resume : store.pause, paused ? 'resume' : 'pause')">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
+          <ElButton :disabled="busy || !store.can('complete')" @click="finish('complete')">结束课堂</ElButton>
           <ElButton text @click="moreDrawerOpen = true">更多</ElButton>
         </template>
       </ClassroomHeader>
       <div class="workspace" :class="{ 'flow-collapsed': stepSidebarCollapsed }">
         <ClassroomStepSidebar
           :steps="run.steps"
+          :can-change="store.can('change_step')"
           :current-step-index="run.currentStepIndex"
           :paused="paused"
           :busy="busy"
@@ -575,7 +681,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
           @go-step="goToStep"
           @toggle-collapse="stepSidebarCollapsed = !stepSidebarCollapsed"
         >
-          <div class="next-teaching-step"><small>下一环节</small><strong>{{ nextTeachingStep?.title || '课堂总结' }}</strong><ElButton text :disabled="paused || busy || !nextTeachingStep" @click="safe(store.next)">进入下一环节</ElButton></div>
+          <div class="next-teaching-step"><small>下一环节</small><strong>{{ nextTeachingStep?.title || '课堂总结' }}</strong><ElButton text :disabled="busy || !store.can('change_step') || !nextTeachingStep" @click="safe(store.next, 'change_step')">进入下一环节</ElButton></div>
         </ClassroomStepSidebar>
         <section class="center-panel">
           <div class="center-scroll">
@@ -610,7 +716,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
                     <p>{{ currentResource ? '点击后打开现有统一播放器，不会自动播放。' : '该资源已删除或无权访问，可继续切换其他环节。' }}</p>
                   </template>
                 </div>
-                <ElButton type="primary" size="large" :disabled="!currentResource || resourceResolveState.status === 'loading'" @click="store.openResource()">打开资源</ElButton>
+                <ElButton type="primary" size="large" :disabled="!store.can('resource_start') || !currentResource || resourceResolveState.status === 'loading'" @click="safe(() => store.openResource(), 'resource_start')">打开资源</ElButton>
               </div>
             </section>
             <details v-for="step in run.steps.filter(item => item.stepIndex !== currentStep?.stepIndex)" :key="step.stepIndex" class="lesson-detail-step"><summary>第 {{ step.stepIndex + 1 }} 环节 · {{ step.title }}</summary><p>{{ step.content }}</p><p v-if="step.teacherTip">教师提示：{{ step.teacherTip }}</p><p v-if="step.expectedResponse">预期回答：{{ step.expectedResponse }}</p></details>
@@ -623,6 +729,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
               v-model:teacher-prompt="teacherPrompt"
               v-model:child-reply="childReply"
               v-model:draft-reply="draftReply"
+              :can-speak="canSpeakTeaching"
               :enabled="assistantEnabled"
               :child-voice-status="childVoiceStatus"
               :assistant-loading="assistantLoading"
@@ -648,32 +755,17 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
             />
             <ClassroomDirectorPanel />
             </ElDrawer>
-            <ElDrawer v-model="voiceDrawerOpen" title="课堂语音与口令" size="min(640px, 95vw)">
-            <ClassroomVoiceControl
-              v-model:command-input="commandInput"
-              :command-feedback="commandFeedback"
-              :voice-feedback="voiceFeedback"
-              :command-busy="commandBusy"
-              :voice-rec-state="voiceRecState"
-              :busy="busy"
-              :is-active="isActive"
-              :pending-confirmation="pendingVoiceCommand?.label"
-              @run-command="runCommand"
-              @toggle-voice-recording="toggleVoiceRecording"
-              @confirm-command="confirmPendingVoiceCommand"
-              @cancel-command="cancelPendingVoiceCommand"
-            />
-            <ResourceCandidatePanel
-              v-if="resourceCommandResult"
-              :result="resourceCommandResult"
-              @confirm="confirmResourceCommand"
-              @cancel="cancelResourceCommand"
-            />
-            </ElDrawer>
           </div>
         </section>
         <div class="assist-col">
-          <ClassroomQuickActions :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" />
+          <ClassroomDialoguePanel
+            :run-id="run.id"
+            :step-index="run.currentStepIndex"
+            :identity="JSON.stringify([route.params.runId, run?.id, run?.deviceId, run?.currentStepIndex, digitalHuman.identityKey])"
+            :allowed="!!run && Number(route.params.runId) === run.id && run.status === 'running' && classroomPhase === 'teaching' && !isBreakActive && !run.manualInterventionRequired && voiceRecState === 'idle' && !childRecording && !childRequestingMicrophone"
+            :speaking="assistantSpeaking || digitalHuman.isSpeaking"
+          />
+          <ClassroomQuickActions :can-roll="store.can('roll_call')" :can-reward="store.can('reward')" :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" />
           <!-- 1. AI 教学伙伴：常驻主卡（数字人常驻 + 状态 + 进入大屏），约占右栏 55~65% -->
           <ClassroomPartnerPanel
             compact
@@ -695,10 +787,10 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
       </footer>
       <ElDrawer v-model="moreDrawerOpen" title="更多课堂操作" size="min(480px, 95vw)">
         <div class="more-actions">
-          <ElButton :disabled="paused || busy" @click="store.repeat">重复本环节</ElButton>
+          <ElButton :disabled="busy || !store.can('change_step')" @click="store.can('change_step') && store.repeat()">重复本环节</ElButton>
           <ElButton :disabled="rewardsLoading" @click="openRewardDrawer">本节奖励记录（{{ runRewardTotal }}）</ElButton>
           <hr /><p>中止后无法继续当前课堂，请确认后操作。</p>
-          <ElButton type="danger" plain :disabled="busy" @click="finish('cancel')">中止课堂</ElButton>
+          <ElButton type="danger" plain :disabled="busy || !store.can('cancel')" @click="finish('cancel')">中止课堂</ElButton>
         </div>
       </ElDrawer>
       <ClassRewardDrawer
@@ -712,15 +804,15 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
         v-if="classroomPhase === 'opening' && isActive"
         :lesson-title="run.lessonTitle"
         subtitle="小朋友们好，我们一起探索今天的新知识吧！"
-        :busy="openingBusy"
+        :busy="openingBusy || !store.can('complete_opening') || !store.can('skip_opening')"
         :teacher-name="user.teacherInfo?.name ?? ''"
         @enter="enterClassroomFromOpening"
         @skip="enterClassroomFromOpening('skip')"
       >
         <template #controls>
           <div class="opening-teacher-controls">
-            <ElButton :disabled="busy || openingBusy" @click="safe(paused ? store.resume : store.pause)">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
-            <ElButton :disabled="busy || openingBusy" @click="finish('complete')">结束课堂</ElButton>
+            <ElButton :disabled="busy || openingBusy || !store.can(paused ? 'resume' : 'pause')" @click="safe(paused ? store.resume : store.pause, paused ? 'resume' : 'pause')">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
+            <ElButton :disabled="busy || openingBusy || !store.can('complete')" @click="finish('complete')">结束课堂</ElButton>
           </div>
         </template>
       </OpeningSequenceOverlay>
@@ -779,7 +871,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', handleKeydown); st
                     <small>AI 教学伙伴的回答</small>
                     <p>{{ draftReply }}</p>
                     <div class="fs-chat-actions">
-                      <ElButton size="small" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation" @click="playAssistantDraft">
+                      <ElButton size="small" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation || !store.can('tts')" @click="playAssistantDraft">
                         🔊 {{ assistantSpeaking ? '播放中…' : '播放' }}
                       </ElButton>
                       <ElButton v-if="assistantSpeaking" size="small" @click="stopAssistantSpeech">⏹ 停止</ElButton>

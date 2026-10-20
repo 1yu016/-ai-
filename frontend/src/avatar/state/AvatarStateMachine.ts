@@ -13,6 +13,7 @@ export type AvatarAiEmotion = (typeof AVATAR_AI_EMOTIONS)[number]
 
 // 允许的事件输入（仅枚举值；组件不得传入自定义动作/文本）
 export type AvatarStateEvent =
+  | { type: 'lesson_opening' }
   | { type: 'tts_start' }                       // TTS 播放开始
   | { type: 'tts_end' }                         // TTS 播放结束/中断/失败
   | { type: 'ai_response'; emotion: AvatarAiEmotion }  // AI 回应情绪
@@ -86,6 +87,8 @@ export class AvatarStateMachine {
   private nextState(event: AvatarStateEvent): AvatarState | null {
     // 课堂结束（goodbye）为终态，仅 settle 可回归待机。
     if (this.state === 'goodbye') return event.type === 'settle' ? 'idle' : null
+    if (event.type === 'lesson_opening') return 'happy'
+    if (event.type === 'settle') return 'idle'
     // 全局事件规则
     if (event.type === 'ai_response') {
       // 说话中收到情绪不打断，保持 talk；其余状态按情绪映射。

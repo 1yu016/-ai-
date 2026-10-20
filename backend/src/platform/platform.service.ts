@@ -1165,8 +1165,15 @@ export class PlatformService {
   }
 
   async upsertConsent(actor: JwtTeacherPayload, dto: UpsertConsentDto) {
-    await this.access.requireStudentAccess(actor, dto.studentId);
-    const existing = await this.consents.findOne({
+    return serializeDatabaseWrite(this.dataSource, () => this.dataSource.transaction(async manager => {
+    // Acquire SQLite's write reservation before permission reads; the FIFO is
+    // per DataSource, not a cross-process lock.
+    await manager.query('UPDATE guardian_consent SET id=id WHERE student_id=?', [dto.studentId]);
+    const student = await manager.getRepository(Student).findOneBy({ id: dto.studentId });
+    if (!student) throw new NotFoundException('学生不存在');
+    await this.access.requireClassAccess(actor, student.classId, manager);
+    const consents = manager.getRepository(GuardianConsent);
+    const existing = await consents.findOne({
       where: { studentId: dto.studentId, consentType: dto.consentType },
     });
     const now = new Date();
@@ -1179,18 +1186,19 @@ export class PlatformService {
           : (existing?.consentedAt ?? null),
       revokedAt: dto.status === ConsentStatus.Revoked ? now : null,
     };
-    const saved = await this.consents.save(
+    const saved = await consents.save(
       existing
-        ? this.consents.merge(existing, values)
-        : this.consents.create(values),
+        ? consents.merge(existing, values)
+        : consents.create(values),
     );
     await this.audit.write(actor, {
       action: 'guardian_consent.update',
       targetType: 'student',
       targetId: dto.studentId,
       metadata: { consentType: dto.consentType, status: dto.status },
-    });
+    }, manager);
     return saved;
+    }));
   }
 
   async listConsents(actor: JwtTeacherPayload, query: ConsentQueryDto) {

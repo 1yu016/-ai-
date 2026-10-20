@@ -15,13 +15,22 @@ import {
   type ClassroomScreenState,
   type PlayerSnapshotState,
 } from '@/stores/lessonRun'
-import { useResourcePlayerStore } from '@/stores/resourcePlayer'
+import { presentationOrigin, useResourcePlayerStore } from '@/stores/resourcePlayer'
 import { useUserStore } from '@/stores/user'
 import { useDeviceSessionStore } from '@/stores/deviceSession'
 import { connectScreenRealtime } from '@/services/classroomRealtime'
 import type { ScreenPreparation } from '@/api/screenPreparation'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
+import { useClassroomAvatar } from '@/composables/useClassroomAvatar'
 import { resolveScreenDisplayMode, type ScreenDisplayMode } from '@/presentation/screenDisplayMode'
+import {
+  ClassroomVoiceFeedback,
+  createAnnouncementLedger,
+  type AnnouncementLedgerStorage,
+  type ClassroomAnnouncement,
+  type CollectiveRewardStateLike,
+} from '@/classroom/feedback/ClassroomVoiceFeedback'
+import { announcementBaseline, loadAnnouncementRecords } from '@/classroom/feedback/ClassroomAnnouncementRecords'
 
 // Optional display-only adapter for future opening/voice/director surfaces.
 const props = defineProps<{ displayMode?: ScreenDisplayMode }>()
@@ -35,6 +44,126 @@ const playerStore = useResourcePlayerStore()
 const userStore = useUserStore()
 const deviceSessionStore = useDeviceSessionStore()
 const digitalHumanStore = useDigitalHumanStore()
+useClassroomAvatar(() => runStore.run)
+const speechVisualOwner = () => JSON.stringify([runStore.run?.id, deviceId.value, runStore.run?.deviceId, runStore.run?.currentStepIndex, runStore.run?.status, runStore.run?.breakStartedAt, runStore.run?.manualInterventionRequired, digitalHumanStore.identityKey])
+// D-11 数字人播报字幕：与语音同生共死，课堂身份 / 步骤 / 状态变化或媒体抢占时立即清除。
+const announcementCaption = ref<ClassroomAnnouncement | null>(null)
+let announcementTimer: number | null = null
+let speechGeneration = 0
+let announcementActive = false
+function clearAnnouncementCaption() {
+  if (announcementTimer !== null) window.clearTimeout(announcementTimer)
+  announcementTimer = null
+  announcementCaption.value = null
+}
+function cancelClassroomSpeech() {
+  speechGeneration++
+  announcementActive = false
+  screenFeedback?.cancel()
+  stopBrowserSpeech()
+  digitalHumanStore.transition({ type: 'tts_end' })
+  clearAnnouncementCaption()
+}
+// Registered after deviceId/page are initialized below.
+function speakClassroomText(text: string, finished?: () => void) {
+  if (runStore.run?.status !== 'running' || digitalHumanStore.renderingPaused) return true // intentional suppression, not playback success
+  const owner = speechVisualOwner()
+  const ticket = ++speechGeneration
+  const current = () => ticket === speechGeneration && owner === speechVisualOwner() && runStore.run?.status === 'running' && !digitalHumanStore.renderingPaused
+  digitalHumanStore.transition({ type: 'tts_end' })
+  return speakBrowserText(text, {
+    lang: 'zh-CN',
+    onStart: () => { if (current()) digitalHumanStore.transition({ type: 'tts_start' }) },
+    onEnd: () => { if (current()) { digitalHumanStore.transition({ type: 'tts_end' }); finished?.() } },
+    onCancel: () => { if (current()) cancelClassroomSpeech() },
+    onError: () => {
+      if (!current()) return
+      speechGeneration++
+      announcementActive = false
+      screenFeedback?.cancel()
+      digitalHumanStore.transition({ type: 'tts_end' })
+      // Speech failure does not invalidate the confirmed text result. Keep its
+      // bounded caption, and never label it as successful audio playback.
+    },
+  })
+}
+
+// ─── D-11 课堂操作语音反馈：权威业务结果 → 简短播报 → 现有大屏语音通道 ───
+// 设备命名空间内的标签页台账；不承诺跨标签页或跨设备 exactly-once。
+function announcementLedgerStorage(): AnnouncementLedgerStorage | null {
+  try { return window.sessionStorage } catch { return null }
+}
+let screenFeedback: ClassroomVoiceFeedback | null = null
+let screenFeedbackDeviceId: number | null = null
+function announcementFeedback(): ClassroomVoiceFeedback | null {
+  if (deviceId.value === null) return null
+  if (!screenFeedback || screenFeedbackDeviceId !== deviceId.value) {
+    screenFeedbackDeviceId = deviceId.value
+    screenFeedback = new ClassroomVoiceFeedback(
+      createAnnouncementLedger(announcementLedgerStorage(), `classroom-screen-announcement:${deviceId.value}`),
+    )
+  }
+  return screenFeedback
+}
+function showAnnouncement(announcement: ClassroomAnnouncement) {
+  if (!announcementAllowed() || mediaSpeechBlocked.value) { cancelClassroomSpeech(); return }
+  announcementActive = true
+  announcementCaption.value = announcement
+  if (announcementTimer !== null) window.clearTimeout(announcementTimer)
+  // A missing native callback must not leave a speaking avatar or an immortal queue.
+  announcementTimer = window.setTimeout(cancelClassroomSpeech, 12000)
+  // 合成慢或不可用时不阻塞课堂：字幕保留，数字人不进入说话态，业务结果以教师端为准（不宣称播放完成）。
+  if (!speakClassroomText(announcement.text, () => {
+    announcementActive = false
+    clearAnnouncementCaption()
+    if (announcementAllowed() && !mediaSpeechBlocked.value) {
+      const next = screenFeedback?.next()
+      if (next) showAnnouncement(next)
+    }
+  })) {
+    announcementActive = false
+    screenFeedback?.cancel()
+    console.warn('大屏语音合成不可用，已保留数字人文字播报。')
+  }
+}
+const announcementSource = (state: ClassroomScreenState) => ({
+  runId: state.classroomState!.id, serverNow: state.serverNow,
+  rollCall: state.classroomState!.rollCallState ?? null,
+  reward: state.classroomState!.interactionState?.rewardPresentation ?? null,
+  collectiveState: (state.classroomState!.interactionState?.collectiveRewardState ?? null) as CollectiveRewardStateLike | null,
+  step: state.page === 'classroom' && currentStep.value ? { stepIndex: state.classroomState!.currentStepIndex, title: currentStep.value.title } : null,
+})
+function announcementAllowed() {
+  return run.value?.status === 'running' && !run.value.manualInterventionRequired && !run.value.breakStartedAt && !isOpening.value && !digitalHumanStore.renderingPaused && ['classroom', 'drawing', 'reward'].includes(page.value)
+}
+let announcementReadKey = ''
+async function announceClassroomFeedback(state: ClassroomScreenState) {
+  const feedback = announcementFeedback()
+  const classroom = state.classroomState
+  const current = run.value
+  if (!feedback || !classroom || !current || current.id !== classroom.id) return
+  const owner = speechVisualOwner()
+  const source = announcementSource(state)
+  const readKey = JSON.stringify([source.runId, source.rollCall, source.reward, source.collectiveState, source.step])
+  // Heartbeats and duplicate projections require no extra formal-record reads.
+  if (readKey === announcementReadKey) return
+  announcementReadKey = readKey
+  const receivedAt = performance.now()
+  const candidates = await loadAnnouncementRecords(source, Number(classroom.classId), path => http.get(path))
+  if (disposed || owner !== speechVisualOwner() || announcementReadKey !== readKey) return
+  const announcement = feedback.sync({
+    runId: current.id,
+    // 生命周期阶段（开场 / 课间 / 保护 / 总结 / 恢复）不播报课堂操作结果，由既有阶段政策负责；
+    // 教师接管（manualInterventionRequired）时也不自动播报，交由教师本人讲述。
+    allowed: announcementAllowed(),
+    // 资源音频正在播放时丢弃课堂操作播报，避免与资源声音抢话。
+    mediaPlaying: mediaSpeechBlocked.value,
+    busy: announcementActive,
+    serverNow: new Date(Date.parse(state.serverNow) + performance.now() - receivedAt).toISOString(),
+    candidates,
+  })
+  if (announcement) showAnnouncement(announcement)
+}
 const readyPreparation = ref<ScreenPreparation | null>(null)
 const retiredPreparations = new Set<string>()
 let readyTimer: number | null = null
@@ -58,6 +187,11 @@ const {
   pageCount,
   zoom,
 } = storeToRefs(playerStore)
+const mediaAdmission = ref(false)
+const mediaSpeechBlocked = computed(() => mediaAdmission.value || (playerStore.hasPlayableMedia && (playerStatus.value === 'playing' || (playerStatus.value === 'loading' && playerStore.autoPlayOnOpen))))
+
+// 媒体优先级：资源音频一旦开始播放，立即停止课堂操作播报，避免两路声音重叠。
+watch(mediaSpeechBlocked, blocked => { if (blocked) cancelClassroomSpeech() }, { flush: 'sync' })
 
 const page = ref<ClassroomScreenPage>('idle')
 const screenState = ref<ClassroomScreenState | null>(null)
@@ -65,8 +199,10 @@ const summaryDisplay = ref<ClassroomScreenState['summary'] | null>(null)
 let summaryDeadline = 0
 const closedSummaryRuns = new Set<number>()
 const handoffKey = () => `classroom-screen-handoff:${deviceId.value}`
-const readHandoff = () => sessionStorage.getItem(handoffKey()) || undefined
-const forgetHandoff = () => sessionStorage.removeItem(handoffKey())
+const memoryHandoffs = new Map<string, string>()
+const readHandoff = () => { try { return sessionStorage.getItem(handoffKey()) || memoryHandoffs.get(handoffKey()) } catch { return memoryHandoffs.get(handoffKey()) } }
+const forgetHandoff = () => { memoryHandoffs.delete(handoffKey()); try { sessionStorage.removeItem(handoffKey()) } catch { /* memory-only */ } }
+const saveHandoff = (id: string) => { memoryHandoffs.set(handoffKey(), id); try { sessionStorage.setItem(handoffKey(), id) } catch { /* memory-only */ } }
 const isOpening = computed(() => Boolean(run.value && screenState.value?.lifecycle?.runId === run.value.id &&
   screenState.value.lifecycle.deviceId === deviceId.value && screenState.value.lifecycle.phase === 'opening' &&
   (screenState.value.phase === 'opening' || screenState.value.phase === 'paused') &&
@@ -110,9 +246,12 @@ function clearClassroomDisplay(retire = false) {
   rewardPresentation.value = null
   lastRewardRecordId = null
   lastSpokenSnapshot = ''
+  announcementReadKey = ''
+  cancelClassroomSpeech()
   hydratedRunId = null
   hydratedSnapshotVersion = null
   restoringPlayer = false
+  mediaAdmission.value = false
   playerStore.requestControl('close')
   playerStore.close()
   clearArtworkPresentation()
@@ -123,6 +262,10 @@ const deviceId = computed(() => {
   const value = Number(route.params.deviceId)
   return Number.isInteger(value) && value > 0 ? value : null
 })
+watch(speechVisualOwner, cancelClassroomSpeech, { flush: 'sync' })
+watch(() => [page.value, isOpening.value, digitalHumanStore.renderingPaused], () => {
+  if (!announcementAllowed()) cancelClassroomSpeech()
+}, { flush: 'sync' })
 const pageMeta: Record<ClassroomScreenPage, { icon: string; eyebrow: string; title: string }> = {
   idle: { icon: '🌼', eyebrow: '课堂大屏', title: '等待老师开始课堂' },
   ready: { icon: '🌼', eyebrow: '课堂准备', title: '等待老师开始' },
@@ -164,14 +307,18 @@ async function loadDevices() {
 
 async function hydratePlayer(state: ClassroomScreenState) {
   const classroom = state.classroomState
-  const snapshot = classroom?.playerRecoverySuggestion
-  const presentationKey = snapshot ? JSON.stringify([snapshot.presentationCommandId ?? snapshot.updatedAt, snapshot.presentationMode, snapshot.resourceId]) : null
-  const firstRestore = hydratedRunId !== classroom?.id
-  if (
-    !classroom ||
-    (hydratedRunId === classroom.id &&
-      hydratedSnapshotVersion === presentationKey)
-  ) return
+  if (!classroom) return
+  const snapshot = classroom.playerRecoverySuggestion
+  const presentationKey = snapshot ? JSON.stringify([snapshot.presentationCommandId ?? snapshot.updatedAt, snapshot.presentationRevision, snapshot.presentationMode, snapshot.resourceId]) : null
+  if (!snapshot) {
+    // 大屏已经在展示这个课堂、只是还没有任何媒体快照：记账为「已接管该 Run」。
+    // 否则之后第一条真实的播放命令会被误判成「刷新后恢复历史媒体」而不自动播放。
+    hydratedRunId = classroom.id
+    hydratedSnapshotVersion = null
+    return
+  }
+  const firstRestore = hydratedRunId !== classroom.id
+  if (hydratedRunId === classroom.id && hydratedSnapshotVersion === presentationKey) return
   hydratedRunId = classroom.id
   hydratedSnapshotVersion = presentationKey
   const generation = ++displayGeneration
@@ -181,17 +328,25 @@ async function hydratePlayer(state: ClassroomScreenState) {
   }
   const resourceId = Number(snapshot?.resourceId)
   if (!Number.isInteger(resourceId) || resourceId <= 0) return
+  // Claim the voice lane before resource metadata/loading awaits. Waiting native
+  // speech must not start while a new media command is taking effect.
+  mediaAdmission.value = !firstRestore && snapshot.status === 'playing'
+  if (snapshot.operation === 'stop_media') cancelClassroomSpeech()
   restoringPlayer = true
   try {
     const resource = await resourceStore.ensureResourceById(resourceId)
     if (disposed || generation !== displayGeneration) return
-    if (Number(playerStore.currentResource?.id) !== resourceId) {
-      playerStore.openResource(resource, classroom.status === 'running' && !firstRestore && snapshot?.status === 'playing')
-    } else if (classroom.status === 'running' && !firstRestore && snapshot?.operation === 'play_resource') {
+    const context = presentationOrigin(classroom.id, classroom.deviceId, snapshot)
+    if (Number(playerStore.currentResource?.id) !== resourceId || JSON.stringify(playerStore.origin) !== JSON.stringify(context)) {
+      playerStore.openResource(resource, Boolean(context) && classroom.status === 'running' && !firstRestore && snapshot?.status === 'playing', context)
+    } else if (context && classroom.status === 'running' && !firstRestore && snapshot?.operation === 'play_resource') {
       playerStore.requestControl('play')
     } else if (!firstRestore && snapshot?.operation === 'pause_media') {
       playerStore.requestControl('pause')
-    } else if (classroom.status === 'running' && !firstRestore && snapshot?.operation === 'resume_media') {
+    } else if (!firstRestore && snapshot?.operation === 'stop_media') {
+      // D-11：正式 stop_media 必须真正停住大屏声音，否则课堂播报会被误判为「媒体仍在播放」而永久让位。
+      playerStore.requestControl('stop')
+    } else if (context && classroom.status === 'running' && !firstRestore && snapshot?.operation === 'resume_media') {
       playerStore.requestControl('play')
     }
     playerStore.restorePlayerState(snapshot ?? {})
@@ -203,7 +358,7 @@ async function hydratePlayer(state: ClassroomScreenState) {
     loadError.value = apiErrorMessage(error, '课堂资源恢复失败，请教师确认。')
     playerStore.setStatus('error', apiErrorMessage(error, '课堂资源恢复失败，请稍后重试。'))
   } finally {
-    if (generation === displayGeneration) restoringPlayer = false
+    if (generation === displayGeneration) { restoringPlayer = false; mediaAdmission.value = false }
   }
 }
 
@@ -254,7 +409,7 @@ async function hydrateArtwork(state: ClassroomScreenState) {
   const speechKey = `${snapshot?.updatedAt || ''}:${snapshot?.ttsText || ''}`
   if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot) {
     lastSpokenSnapshot = speechKey
-    if (!speakBrowserText(snapshot.ttsText)) loadError.value = '当前浏览器无法播放语音，课堂内容仍可正常展示。'
+    if (!speakClassroomText(snapshot.ttsText)) loadError.value = '当前浏览器无法播放语音，课堂内容仍可正常展示。'
   }
 }
 
@@ -288,7 +443,7 @@ async function applyScreenState(state: ClassroomScreenState) {
     lastServerTime = timestamp
     screenState.value = state
     loadError.value = ''
-    if (state.handoff?.id) sessionStorage.setItem(handoffKey(), state.handoff.id)
+    if (state.handoff?.id) saveHandoff(state.handoff.id)
     if (state.page === 'summary') {
       const lifecycle = state.lifecycle
       const summary = state.summary
@@ -361,12 +516,17 @@ async function applyScreenState(state: ClassroomScreenState) {
       displayGeneration += 1
       hydratedSnapshotVersion = null
     }
+    if (run.value && run.value.id !== classroom.id) clearClassroomDisplay()
     runStore.adoptRun(classroom)
     if (classroom.status === 'paused') playerStore.requestControl('pause')
     if (page.value !== state.page && ['idle', 'break', 'protection', 'summary', 'recovery'].includes(state.page)) {
       playerStore.requestControl('stop')
     }
     page.value = state.page
+    // First-state baseline is synchronous: later events cannot be swallowed by
+    // an earlier resource/HTTP await. Full history reads are filtered by these IDs.
+    const source = announcementSource(state)
+    announcementFeedback()?.sync({ runId: classroom.id, candidates: [], baselineKeys: announcementBaseline(source), allowed: announcementAllowed(), mediaPlaying: mediaSpeechBlocked.value, busy: true })
     if (isOpening.value) {
       // Static projection only: no media restoration, praise speech or effects.
       if (playingResource.value || hydratedRunId !== null) displayGeneration += 1
@@ -387,9 +547,7 @@ async function applyScreenState(state: ClassroomScreenState) {
       rewardPresentation.value = presentation
       if (rewardTimer !== null) window.clearTimeout(rewardTimer)
       rewardTimer = window.setTimeout(() => { rewardPresentation.value = null; rewardTimer = null }, 4200)
-      if (presentation.praiseText) {
-        if (!speakBrowserText(presentation.praiseText)) loadError.value = '当前浏览器无法播放表扬语音。'
-      }
+      // 表扬语音不再在此单独朗读：与点名 / 集体奖励 / 步骤过渡统一走 D-11 播报通道（避免双重播报）。
     }
     await hydratePlayer(state)
     if (disposed || screenState.value?.serverNow !== state.serverNow || run.value?.id !== classroom.id) return
@@ -401,6 +559,8 @@ async function applyScreenState(state: ClassroomScreenState) {
       page.value = 'recovery'
       loadError.value = apiErrorMessage(error, '课堂作品恢复失败，请教师确认。')
     }
+    // 播放器状态处理完毕后再生成本轮播报：避免刚播报就被播放器状态变化打断。
+    void announceClassroomFeedback(state)
     loading.value = false
 }
 
@@ -430,26 +590,29 @@ function queueSnapshot() {
   if (restoringPlayer || !run.value || busy.value || page.value === 'idle' || page.value === 'recovery') return
   if (snapshotTimer !== null) window.clearTimeout(snapshotTimer)
   if (rewardTimer !== null) window.clearTimeout(rewardTimer)
-  stopBrowserSpeech()
+  const context = playerStore.origin ? Object.freeze({ ...playerStore.origin }) : null
+  const session = playerStore.playbackSession
+  const resourceId = Number(playingResource.value?.id)
+  const snapshot: PlayerSnapshotState = Object.freeze({
+    ...(Number.isInteger(resourceId) && resourceId > 0 ? { resourceId } : {}),
+    status: playerStatus.value,
+    currentTime: currentTime.value,
+    duration: duration.value,
+    pageIndex: pageIndex.value,
+    pageCount: pageCount.value,
+    zoom: zoom.value,
+    volume: volume.value,
+    muted: muted.value,
+    autoPlay: false,
+    updatedAt: new Date().toISOString(),
+  })
   snapshotTimer = window.setTimeout(async () => {
     snapshotTimer = null
-    const resourceId = Number(playingResource.value?.id)
-    const snapshot: PlayerSnapshotState = {
-      ...(Number.isInteger(resourceId) && resourceId > 0 ? { resourceId } : {}),
-      status: playerStatus.value,
-      currentTime: currentTime.value,
-      duration: duration.value,
-      pageIndex: pageIndex.value,
-      pageCount: pageCount.value,
-      zoom: zoom.value,
-      volume: volume.value,
-      muted: muted.value,
-      autoPlay: false,
-      updatedAt: new Date().toISOString(),
-    }
+    if (disposed || session !== playerStore.playbackSession) return
     try {
-      await runStore.savePlayerState(snapshot)
+      await runStore.savePlayerState(snapshot, context)
     } catch (error) {
+      if (disposed || session !== playerStore.playbackSession) return
       console.warn('播放器快照保存失败，将刷新服务端课堂状态：', error)
       await refreshScreen()
     }
@@ -642,6 +805,12 @@ onBeforeUnmount(() => {
       <strong>{{ rollCallDisplayName }}</strong>
     </aside>
 
+    <!-- D-11：数字人播报字幕。语音合成不可用时也能看到权威业务结果对应的安全短句。 -->
+    <aside v-if="announcementCaption" class="screen-announcement" data-test="screen-announcement" aria-live="polite">
+      <span class="announcement-speaker">🔊 数字人说</span>
+      <p data-test="screen-announcement-text">{{ announcementCaption.text }}</p>
+    </aside>
+
     <aside v-if="rewardPresentation" class="reward-celebration" aria-live="polite">
       <div class="reward-burst">✨</div>
       <span>一起为小朋友鼓掌</span>
@@ -706,6 +875,9 @@ onBeforeUnmount(() => {
 .roll-call-card { position:fixed; left:50%; bottom:34px; z-index:20; display:grid; min-width:min(520px,86vw); justify-items:center; gap:8px; padding:18px 28px; border:2px solid #f3c763; border-radius:24px; background:#fff9d9; color:#7f5e18; box-shadow:0 18px 55px rgb(98 72 30 / 22%); transform:translateX(-50%); }
 .roll-call-card span { font-size:16px; }.roll-call-card strong { font-size:clamp(30px,5vw,54px); }
 .reward-celebration { position:fixed;inset:0;z-index:40;display:grid;place-content:center;justify-items:center;gap:10px;background:radial-gradient(circle,#fff9c9 0,#ffd9a7dd 46%,#8d6036aa 100%);text-align:center;animation:rewardIn .35s ease-out; }
+.screen-announcement { position:fixed;left:50%;bottom:150px;z-index:45;display:grid;justify-items:center;gap:4px;max-width:min(760px,84vw);padding:12px 24px;border:2px solid #b7dcff;border-radius:22px;background:#f2f9ff;color:#28527a;box-shadow:0 14px 40px rgb(40 82 122 / 18%);transform:translateX(-50%); }
+.screen-announcement .announcement-speaker { font-size:16px;font-weight:800;color:#3f7fb4; }
+.screen-announcement p { margin:0;font-size:clamp(22px,2.4vw,34px);font-weight:800;line-height:1.4;overflow-wrap:anywhere; }
 .reward-celebration .reward-burst { font-size:100px;animation:rewardPulse .8s ease-in-out infinite alternate; }.reward-celebration>span { color:#9b5c20;font-size:24px;font-weight:800; }.reward-celebration>strong { color:#6f421d;font-size:clamp(54px,9vw,120px); }.reward-celebration p { margin:0;color:#b56828;font-size:32px;font-weight:900; }.reward-celebration small { max-width:720px;color:#6f5138;font-size:24px; }
 .artwork-presentation { position:fixed;inset:74px 0 0;z-index:35;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(340px,.75fr);align-items:center;gap:4vw;padding:4vw;background:linear-gradient(135deg,#fff9ef,#f4e9ff); }
 .artwork-presentation img { width:100%;height:calc(100dvh - 150px);object-fit:contain;border-radius:28px;background:#fff;box-shadow:0 24px 70px rgb(81 58 45 / 18%); }

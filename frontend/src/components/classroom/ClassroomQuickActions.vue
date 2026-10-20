@@ -1,13 +1,13 @@
 <script setup lang="ts">
-defineProps<{ disabled: boolean; totalStars: number }>()
+defineProps<{ disabled: boolean; totalStars: number; canRoll?: boolean; canReward?: boolean }>()
 const emit = defineEmits<{ (event: 'interaction' | 'reward' | 'resources' | 'assistant' | 'leaderboard'): void }>()
 </script>
 
 <template>
   <section class="quick-actions launcher-row" aria-label="课堂快捷操作">
     <h2>课堂快捷操作</h2>
-    <button type="button" data-test="open-interaction" :disabled="disabled" @click="emit('interaction')">随机点名<span>课堂互动</span></button>
-    <button type="button" :disabled="disabled" @click="emit('reward')">快速奖励<span class="l-stars">本节 {{ totalStars }} 朵小红花</span></button>
+    <button type="button" data-test="open-interaction" :disabled="disabled || !canRoll" @click="emit('interaction')">随机点名<span>课堂互动</span></button>
+    <button type="button" :disabled="disabled || !canReward" @click="emit('reward')">快速奖励<span class="l-stars">本节 {{ totalStars }} 朵小红花</span></button>
     <button type="button" @click="emit('resources')">教学资源<span>调整本节展示内容</span></button>
     <button type="button" @click="emit('assistant')">AI教学伙伴<span>提问引导 · 课堂建议</span></button>
     <button class="secondary" type="button" data-test="open-leaderboard" @click="emit('leaderboard')">本节榜单</button>

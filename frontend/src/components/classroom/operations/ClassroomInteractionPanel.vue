@@ -36,6 +36,7 @@ const {
   nameOf,
   interactionLocked,
   canReward,
+  canRoll,
   setSelected,
   randomRoll,
   reward,
@@ -71,7 +72,7 @@ function onSelectChange(event: Event) {
     <div v-if="collapsed" class="i-quick">
       <button
         type="button"
-        :disabled="interactionLocked || !displayStudents.length"
+        :disabled="!canRoll || !displayStudents.length"
         @click="randomRoll"
       >🎯 点名</button>
       <button
@@ -89,7 +90,7 @@ function onSelectChange(event: Event) {
         <button
           type="button"
           class="mini"
-          :disabled="interactionLocked || !displayStudents.length"
+          :disabled="!canRoll || !displayStudents.length"
           @click="randomRoll"
         >重新随机</button>
       </div>

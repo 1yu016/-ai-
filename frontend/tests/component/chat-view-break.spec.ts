@@ -66,7 +66,7 @@ describe('ChatView · 课间模式与启发式助教分离', () => {
     vi.spyOn(http, 'post').mockImplementation(async (url: string, body?: unknown) => {
       const operation = (body as { operation?: string } | undefined)?.operation
       if (url === '/classroom-commands' && operation === 'end_break') {
-        current = runningRun()
+        current = runningRun({ version: 3 })
         return { data: current } as never
       }
       if (url === '/classroom-commands' && operation === 'start_break') {

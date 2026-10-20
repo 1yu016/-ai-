@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { readVolcTtsStream } from './volc-tts-stream';
 
 const ASR_SUBMIT_URL =
   'https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit';
@@ -37,12 +38,6 @@ const SUPPORTED_AUDIO_TYPES = new Set([
 
 type AsrResponse = {
   result?: { text?: string };
-};
-
-type TtsResponse = {
-  code?: number;
-  message?: string;
-  data?: string | null;
 };
 
 export type UploadedAudioFile = {
@@ -162,7 +157,7 @@ export class AudioService {
     }
   }
 
-  async tts(text: string): Promise<string> {
+  async tts(text: string, signal?: AbortSignal): Promise<string> {
     const normalizedText = text.trim();
     if (!normalizedText) {
       throw new BadRequestException('text 不能为空');
@@ -171,6 +166,8 @@ export class AudioService {
     try {
       const audioChunks: Buffer[] = [];
       for (const chunk of this.splitTtsText(normalizedText)) {
+        signal?.throwIfAborted();
+        const boundedSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         const requestId = randomUUID();
         const response = await fetch(TTS_URL, {
           method: 'POST',
@@ -191,13 +188,14 @@ export class AudioService {
               },
             },
           }),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: boundedSignal,
         });
-        audioChunks.push(await this.readTtsAudio(response));
+        audioChunks.push(await readVolcTtsStream(response, boundedSignal));
       }
 
       return `data:audio/mpeg;base64,${Buffer.concat(audioChunks).toString('base64')}`;
     } catch (error) {
+      if (signal?.aborted) throw new ServiceUnavailableException('语音请求已取消');
       this.handleUpstreamError(error, '语音合成');
     }
   }
@@ -255,41 +253,6 @@ export class AudioService {
     } catch {
       throw new BadGatewayException('火山引擎返回了无法解析的响应');
     }
-  }
-
-  private async readTtsAudio(response: Response): Promise<Buffer> {
-    const rawResponse = await response.text();
-    const audioChunks: Buffer[] = [];
-    let lastResult: TtsResponse | undefined;
-
-    for (const rawLine of rawResponse.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-
-      const json = line.slice('data:'.length).trim();
-      if (!json || json === '[DONE]') continue;
-
-      try {
-        const result = JSON.parse(json) as TtsResponse;
-        lastResult = result;
-        if (result.data) {
-          audioChunks.push(Buffer.from(result.data, 'base64'));
-        }
-      } catch {
-        throw new BadGatewayException('火山引擎返回了无法解析的语音数据');
-      }
-    }
-
-    if (!response.ok || audioChunks.length === 0) {
-      const message = lastResult?.message || `HTTP ${response.status}`;
-      const logId = response.headers.get('x-tt-logid') || '';
-      this.logger.error(
-        `火山引擎 TTS 失败: http=${response.status}, code=${lastResult?.code ?? 'unknown'}, message=${message}, logId=${logId}`,
-      );
-      throw new BadGatewayException(`语音合成失败：${message}`);
-    }
-
-    return Buffer.concat(audioChunks);
   }
 
   private handleUpstreamError(error: unknown, action: string): never {

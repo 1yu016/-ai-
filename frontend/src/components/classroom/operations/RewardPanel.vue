@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useLessonRunStore } from '@/stores/lessonRun'
+const store = useLessonRunStore()
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { http, apiErrorMessage } from '@/api/http'
@@ -16,7 +18,7 @@ const collectiveReason = ref('全班认真合作')
 const progress = computed(() => { const goal = dashboard.value?.goal; return goal ? Math.min(100, Math.round((goal.currentPoints / goal.targetPoints) * 100)) : 0 })
 async function load() { if (!props.runId) return; loading.value = true; try { dashboard.value = (await http.get<Dashboard>(`/classroom-runs/${props.runId}/reward-dashboard`)).data } catch (error) { ElMessage.error(apiErrorMessage(error, '成长乐园加载失败')) } finally { loading.value = false } }
 async function createGoal() { if (!props.runId || !goalTitle.value.trim()) return; try { await http.post(`/classroom-runs/${props.runId}/growth-goals`, { requestId: classroomRequestId('growth-goal'), title: goalTitle.value.trim(), targetPoints: goalTarget.value }); ElMessage.success('班级共同目标已建立'); await load() } catch (error) { ElMessage.error(apiErrorMessage(error, '共同目标创建失败')) } }
-async function rewardClass() { if (!props.runId || !collectiveReason.value.trim()) return; try { await http.post(`/classroom-runs/${props.runId}/collective-rewards`, { requestId: classroomRequestId('collective-reward'), rewardCategory: 'cooperation', points: 3, reason: collectiveReason.value.trim(), goalId: dashboard.value?.goal?.id }); ElMessage.success('已为全班增加 3 点成长能量'); await load() } catch (error) { ElMessage.error(apiErrorMessage(error, '集体奖励发放失败')) } }
+async function rewardClass() { if (!store.can('reward')) return; if (!props.runId || !collectiveReason.value.trim()) return; try { await http.post(`/classroom-runs/${props.runId}/collective-rewards`, { requestId: classroomRequestId('collective-reward'), rewardCategory: 'cooperation', points: 3, reason: collectiveReason.value.trim(), goalId: dashboard.value?.goal?.id }); ElMessage.success('已为全班增加 3 点成长能量'); await load() } catch (error) { await store.handleTeacherRejection(error); ElMessage.error(apiErrorMessage(error, '集体奖励发放失败')) } }
 watch(() => props.runId, () => void load(), { immediate: true })
 </script>
 
@@ -28,7 +30,7 @@ watch(() => props.runId, () => void load(), { immediate: true })
     <div v-if="dashboard?.goal" class="goal"><div><b>{{ dashboard.goal.title }}</b><span>{{ dashboard.goal.currentPoints }}/{{ dashboard.goal.targetPoints }}</span></div><div class="progress"><i :style="{ width: `${progress}%` }"></i></div></div>
     <div v-else-if="runId" class="goal-create"><input v-model="goalTitle" maxlength="100" aria-label="共同目标名称"><input v-model.number="goalTarget" type="number" min="1" max="100000" aria-label="目标分数"><button @click="createGoal">建立共同目标</button></div>
     <div v-if="dashboard?.honors.length" class="honors"><article v-for="honor in dashboard.honors" :key="honor.key"><span>🏅 {{ honor.title }}</span><b>{{ honor.student.displayName }}</b></article></div>
-    <div v-if="runId" class="collective"><input v-model="collectiveReason" maxlength="200" aria-label="集体奖励原因"><button @click="rewardClass">全班 +3 能量</button></div>
+    <div v-if="runId" class="collective"><input v-model="collectiveReason" maxlength="200" aria-label="集体奖励原因"><button :disabled="!store.can('reward')" @click="rewardClass">全班 +3 能量</button></div>
     <p class="muted">荣誉按回答、合作、探索、劳动等维度每日轮换。</p>
   </section>
 </template>

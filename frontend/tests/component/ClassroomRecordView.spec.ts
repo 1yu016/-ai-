@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as records from '@/services/classroomRecords'
 import ClassroomRecordView from '@/views/ClassroomRecordView.vue'
+import { useUserStore } from '@/stores/user'
 
 const draft = {
   id: 1,
@@ -30,8 +31,10 @@ async function mountView() {
   })
   await router.push('/classroom/records/9')
   await router.isReady()
+  const pinia = createPinia()
+  useUserStore(pinia).teacherInfo = { account: 'synthetic', name: '合成教师', teacherId: 7, userType: 'teacher' }
   return mount(ClassroomRecordView, {
-    global: { plugins: [createPinia(), router, ElementPlus], stubs: { ManagementLayout: { template: '<div><slot /></div>' }, BackButton: true } },
+    global: { plugins: [pinia, router, ElementPlus], stubs: { ManagementLayout: { template: '<div><slot /></div>' }, BackButton: true } },
   })
 }
 
@@ -41,6 +44,7 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({
       run: {
         id: 9,
+        teacherId: 7,
         title: '星星探索课',
         status: 'completed',
         startedAt: '2026-10-07T01:00:00.000Z',
@@ -133,6 +137,44 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('确认成为正式总结')
     expect(generate).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each([
+    { label: 'foreign draft', draft: { ...draft, classroomRunId: 10 }, owner: 7 },
+    { label: 'another teacher', draft: { ...draft }, owner: 8 },
+    { label: 'discarded draft', draft: { ...draft, status: 'discarded' as const }, owner: 7 },
+  ])('does not offer editing for $label', async ({ draft: value, owner }) => {
+    vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({ run: { id: 9, teacherId: owner, title: '合成课堂', status: 'completed', startedAt: null, endedAt: null }, items: [] })
+    vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: value, formalSummary: null })
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(wrapper.findAll('textarea').every(input => input.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.text()).not.toContain('确认成为正式总结')
+    expect(wrapper.text()).not.toContain('放弃草稿')
+    wrapper.unmount()
+  })
+
+  it('formal summary without its required draft stays read-only and does not create a replacement', async () => {
+    vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: null,
+      formalSummary: { ...draft, id: 2, draftId: 1, confirmedAt: draft.createdAt } })
+    const generate = vi.spyOn(records, 'ensureClassroomSummaryDraft')
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(generate).not.toHaveBeenCalled()
+    expect(wrapper.findAll('textarea').every(input => input.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.text()).not.toContain('保存正式总结修改')
+    wrapper.unmount()
+  })
+
+  it.each([403, 500])('summary load failure %i never exposes an editor', async status => {
+    vi.spyOn(records, 'getClassroomSummary').mockRejectedValue({ isAxiosError: true, response: { status, data: { message: '合成加载失败' } } })
+    const generate = vi.spyOn(records, 'ensureClassroomSummaryDraft')
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(generate).not.toHaveBeenCalled()
+    expect(wrapper.findAll('textarea')).toHaveLength(0)
+    expect(wrapper.text()).not.toContain('确认成为正式总结')
     wrapper.unmount()
   })
 

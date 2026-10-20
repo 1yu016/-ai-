@@ -19,7 +19,7 @@ import { useLessonPlanStore, type LessonPlan } from '@/stores/lessonPlan'
 
 const resource: ServerResource = { id: 12, title: '春天图片', aliases: [], description: '观察春天', resourceType: 'image', category: '图片卡片', ageGroup: 'middle', tags: ['春天'], fileUrl: '/uploads/resources/spring.jpg', coverUrl: null, fileName: 'spring.jpg', mimeType: 'image/jpeg', fileSize: 10, duration: null, reviewStatus: 'approved', createdAt: '2026-01-01' }
 const plan: LessonPlan = { id: 3, teacherId: 1, title: '春天课堂', theme: '春天', ageGroup: '4-5', objectives: '观察颜色', estimatedMinutes: 20, status: 'ready', version: 2, steps: [], createdAt: '2026-01-01', updatedAt: '2026-01-01' }
-const run = { id: 9, lessonPlanId: 3, deviceId: 1, version: 1, status: 'running', currentStepIndex: 0, title: '春天课堂', steps: [{ stepIndex: 0, title: '看一看', type: 'question', content: '你发现了什么？', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '总结', type: 'summary', content: '说说发现', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
+const run = { id: 9, lessonPlanId: 3, allowedActions: ['query', 'change_step', 'resource_start', 'media_control', 'safe_stop', 'reward', 'roll_call', 'attendance_new', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'pause', 'resume', 'complete', 'cancel', 'start_break', 'end_break', 'queue_edit', 'tts'], deviceId: 1, version: 1, status: 'running', currentStepIndex: 0, title: '春天课堂', steps: [{ stepIndex: 0, title: '看一看', type: 'question', content: '你发现了什么？', resourceId: null, durationSeconds: 60 }, { stepIndex: 1, title: '总结', type: 'summary', content: '说说发现', resourceId: null, durationSeconds: 60 }], elapsedSeconds: 3, startedAt: '2026-01-01', updatedAt: '2026-01-01' }
 
 function routerFor(path: string, routes?: RouteRecordRaw[]) {
   const router = createRouter({ history: createMemoryHistory(), routes: routes ?? [
@@ -279,7 +279,9 @@ describe('lesson components', () => {
 
   it('offers the guided classroom assistant during a non-question step', async () => {
     const introductionRun = { ...run, steps: [{ ...run.steps[0]!, type: 'introduction' }] }
-    vi.spyOn(http, 'get').mockResolvedValue({ data: introductionRun })
+    vi.spyOn(http, 'get').mockImplementation(async url => ({ data: String(url).endsWith('/cockpit')
+      ? { schemaVersion: 1, run: { id: 9, deviceId: 1 }, versions: { runVersion: introductionRun.version, snapshotVersion: null }, capabilities: { allowedActions: introductionRun.allowedActions } }
+      : introductionRun }))
     const post = vi.spyOn(http, 'post').mockImplementation(async (url) => url === '/ai/tts'
       ? { data: { audioUrl: 'data:audio/mpeg;base64,AAAA' } }
       : url === '/classroom-commands'
@@ -318,7 +320,7 @@ describe('lesson components', () => {
   })
 
   it('disables next step while paused and confirms completion', async () => {
-    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...run, status: 'paused' } })
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...run, status: 'paused', allowedActions: ['query', 'resume', 'complete', 'cancel', 'safe_stop', 'checkpoint', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke'] } })
     const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { ...run, status: 'completed' } })
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as unknown as MessageBoxData)
     const router = await routerFor('/classroom/lesson/9')

@@ -54,6 +54,8 @@ const INJECTION_PATTERN =
   /(?:(?:忽略|无视).{0,16}(?:之前|上面|所有).{0,12}(?:指令|规则|提示)|系统提示词|开发者消息|改变角色|角色扮演成|越狱|jailbreak|输出隐藏提示)/i;
 const UNSAFE_OUTPUT_PATTERN =
   /(?:https?:\/\/|javascript\s*:|<\/?script|\b(?:select|insert|update|delete|drop|alter)\b[\s\S]{0,80}\b(?:from|into|table|where|set)\b|\b(?:powershell|cmd\.exe|\/bin\/sh|system\s*\(|exec\s*\())/i;
+// Shared read-only rules; existing heuristic decisions and persistence are unchanged.
+export const CLASSROOM_CHILD_SAFETY_PATTERNS = [PRIVACY_PATTERN, ADULT_PATTERN, DANGER_PATTERN, DIAGNOSIS_PATTERN, NEGATIVE_LABEL_PATTERN, BYPASS_PATTERN, INJECTION_PATTERN, UNSAFE_OUTPUT_PATTERN] as const;
 const DIRECT_ANSWER_PATTERN =
   /(?:答案(?:是|为)|正确(?:答案|结果)|结果(?:是|为)|其实就是|所以答案|直接告诉你|等于)/;
 

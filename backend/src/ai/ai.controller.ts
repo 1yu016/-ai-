@@ -435,9 +435,14 @@ export class AiController {
   @Post('tts')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  async tts(@Body() dto: TtsDto): Promise<{ audioUrl: string }> {
-    const audioUrl = await this.audioService.tts(dto.text);
-    return { audioUrl };
+  async tts(@Body() dto: TtsDto, @Req() request?: OptionallyAuthenticatedRequest): Promise<{ audioUrl: string }> {
+    const controller = new AbortController();
+    const closed = () => controller.abort();
+    request?.res?.once('close', closed);
+    try {
+      const audioUrl = await this.audioService.tts(dto.text, controller.signal);
+      return { audioUrl };
+    } finally { request?.res?.removeListener('close', closed); }
   }
 
   /**

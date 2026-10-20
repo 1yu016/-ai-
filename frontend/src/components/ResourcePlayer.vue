@@ -28,6 +28,7 @@ const props = defineProps<{
 const playerStore = useResourcePlayerStore()
 const {
   currentResource,
+  playbackSession,
   playerStatus,
   currentTime,
   duration,
@@ -62,6 +63,15 @@ let activeBlobRevoke: (() => void) | null = null
 // 每次进场加载都自增的世代号，用于丢弃「迟到」的过期响应：仅当本次 fetch 仍是
 // 最新一次加载时才允许写入 mediaSource，避免旧资源的晚到结果覆盖当前资源。
 let mediaLoadSeq = 0
+let disposed = false
+let ownedSession = playbackSession.value
+function currentEvent(event: Event) {
+  const element = event.currentTarget as HTMLElement
+  return !disposed && element?.dataset.playbackSession === String(playbackSession.value) &&
+    element.dataset.playbackSource === mediaSource.value
+}
+function handlePlay(event: Event) { if (currentEvent(event)) playerStore.setStatus('playing') }
+function handlePause(event: Event) { if (currentEvent(event) && playerStatus.value !== 'ended') playerStore.setStatus('paused') }
 // 使所有在途的媒体加载失效（此后返回即视为 stale，只回收自身 blob）。用于
 // close / unmount 等「当前 pending load 已不再有效」的场景，语义与
 // releaseActiveBlob（回收已生效 blob）分离。
@@ -256,14 +266,17 @@ async function play() {
   ) {
     return
   }
+  const session = playbackSession.value
   try {
     if (playerStatus.value === 'ended' || media.ended) {
       media.currentTime = 0
       playerStore.setProgress(0, media.duration)
     }
     await media.play()
+    if (disposed || session !== playbackSession.value || media !== activeMedia()) return
     playerStore.setStatus('playing')
   } catch (error) {
+    if (disposed || session !== playbackSession.value || media !== activeMedia()) return
     console.error('课程资源播放失败：', error)
     playerStore.setStatus('paused')
     ElMessage.warning('浏览器阻止了自动播放，请点击播放按钮。')
@@ -302,11 +315,13 @@ function stop() {
 }
 
 function updateProgress(event: Event) {
+  if (!currentEvent(event)) return
   const media = event.currentTarget as HTMLMediaElement
   playerStore.setProgress(media.currentTime, media.duration)
 }
 
 function updateDuration(event: Event) {
+  if (!currentEvent(event)) return
   const media = event.currentTarget as HTMLMediaElement
   media.volume = volume.value
   media.muted = muted.value
@@ -382,20 +397,24 @@ async function retryCurrentResource() {
   await loadMediaSource(resource)
 }
 
-function handleEnded() {
+function handleEnded(event: Event) {
+  if (!currentEvent(event)) return
   playerStore.setProgress(duration.value, duration.value)
   playerStore.setStatus('ended')
 }
 
-function handleMediaError() {
+function handleMediaError(event: Event) {
+  if (!currentEvent(event)) return
   playerStore.setStatus('error', '资源暂时无法加载，请检查网络后重试。')
 }
 
-function handleVisualLoaded() {
+function handleVisualLoaded(event: Event) {
+  if (!currentEvent(event)) return
   playerStore.setStatus('paused')
 }
 
-function handleVisualError() {
+function handleVisualError(event: Event) {
+  if (!currentEvent(event)) return
   playerStore.setStatus('error', '资源暂时无法显示，请检查网络后重试。')
 }
 
@@ -436,15 +455,17 @@ async function exitClassroomMode() {
 }
 
 async function closePlayer() {
+  const session = playbackSession.value
   invalidateMediaLoad()
   stopMediaElements()
   await exitClassroomMode()
+  if (disposed || session !== playbackSession.value) return
   playerStore.close()
   // 等 currentResource 置空后 <audio>/<video> 已从 DOM 卸载，再回收 blob。
   // 若在元素仍引用 blob 时 revoke，Chromium 会中止加载并在 console 记录
   // net::ERR_ABORTED。
   await nextTick()
-  releaseActiveBlob()
+  if (playbackSession.value === session + 1) releaseActiveBlob()
 }
 
 function handleFullscreenChange() {
@@ -468,17 +489,21 @@ function formatTime(value: number): string {
 }
 
 watch(
-  () => [currentResource.value?.id, sourceUrl.value] as const,
+  () => [currentResource.value?.id, sourceUrl.value, playbackSession.value] as const,
   async ([resourceId, resourceSource], [previousResourceId, previousSource]) => {
     if (!resourceId) return
     const resource = currentResource.value
     if (!resource) return
+    const session = playbackSession.value
+    ownedSession = session
     stopMediaElements()
     const loaded = await loadMediaSource(resource)
+    if (disposed || session !== playbackSession.value) return
     if (!loaded && !isPresentationResource(resource)) {
       return
     }
     await nextTick()
+    if (disposed || session !== playbackSession.value) return
     const media = activeMedia()
     if (!media) {
       if (loaded) playerStore.setStatus('paused')
@@ -500,6 +525,12 @@ watch(
     }
   },
 )
+
+watch(playbackSession, () => {
+  invalidateMediaLoad()
+  stopMediaElements()
+  releaseActiveBlob()
+}, { flush: 'sync' })
 
 watch(controlRequest, (request) => {
   if (!request) return
@@ -544,10 +575,11 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   invalidateMediaLoad()
   stopMediaElements()
   releaseActiveBlob()
-  if (playerStatus.value === 'playing') playerStore.setStatus('paused')
+  if (ownedSession === playbackSession.value && playerStatus.value === 'playing') playerStore.setStatus('paused')
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
   document.removeEventListener('keydown', handleKeydown)
 })
@@ -617,6 +649,9 @@ defineExpose({
 
     <div class="player-stage">
       <img
+        :key="`${playbackSession}:${mediaSource}`"
+        :data-playback-session="playbackSession"
+        :data-playback-source="mediaSource"
         v-if="previewMode === 'image' || previewMode === 'images'"
         class="stage-image"
         :src="mediaSource"
@@ -638,19 +673,25 @@ defineExpose({
         <strong>{{ currentResource.title }}</strong>
         <p>{{ currentResource.description || '幼儿园课程音频' }}</p>
         <audio
+          :key="`${playbackSession}:${mediaSource}`"
+          :data-playback-session="playbackSession"
+          :data-playback-source="mediaSource"
           ref="audioRef"
           :src="mediaSource"
           preload="metadata"
           @loadedmetadata="updateDuration"
           @timeupdate="updateProgress"
-          @play="playerStore.setStatus('playing')"
-          @pause="playerStatus !== 'ended' && playerStore.setStatus('paused')"
+          @play="handlePlay"
+          @pause="handlePause"
           @ended="handleEnded"
           @error="handleMediaError"
         ></audio>
       </div>
 
       <video
+        :key="`${playbackSession}:${mediaSource}`"
+        :data-playback-session="playbackSession"
+        :data-playback-source="mediaSource"
         v-else-if="previewMode === 'video'"
         ref="videoRef"
         class="stage-video"
@@ -660,13 +701,16 @@ defineExpose({
         preload="metadata"
         @loadedmetadata="updateDuration"
         @timeupdate="updateProgress"
-        @play="playerStore.setStatus('playing')"
-        @pause="playerStatus !== 'ended' && playerStore.setStatus('paused')"
+        @play="handlePlay"
+        @pause="handlePause"
         @ended="handleEnded"
         @error="handleMediaError"
       ></video>
 
       <iframe
+        :key="`${playbackSession}:${mediaSource}`"
+        :data-playback-session="playbackSession"
+        :data-playback-source="mediaSource"
         v-else-if="previewMode === 'pdf'"
         class="stage-document"
         :src="documentSource"

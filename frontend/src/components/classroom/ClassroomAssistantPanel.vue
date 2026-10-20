@@ -3,6 +3,7 @@ import { ElButton, ElInput } from 'element-plus'
 import type { AssistantTool } from '@/stores/classroomAssistant'
 
 defineProps<{
+  canSpeak?: boolean
   enabled: boolean
   childVoiceStatus: string
   assistantLoading: boolean
@@ -70,16 +71,17 @@ const emit = defineEmits<{
         <ElInput v-model="draftReply" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" maxlength="500" aria-label="编辑AI草稿" />
         <em>{{ teacherTip }}</em>
         <div class="assistant-draft-actions">
-          <ElButton type="primary" :loading="assistantSpeechLoading" :disabled="requiresTeacherConfirmation || assistantSpeaking || assistantSpeechPaused" @click="emit('playDraft')">
+          <ElButton type="primary" :loading="assistantSpeechLoading" :disabled="!canSpeak || requiresTeacherConfirmation || assistantSpeaking || assistantSpeechPaused" @click="emit('playDraft')">
             {{ assistantSpeaking ? '正在播放' : '教师确认并播放' }}
           </ElButton>
           <ElButton v-if="assistantSpeaking" type="warning" plain @click="emit('stopSpeech')">停止播放</ElButton>
           <ElButton v-if="assistantSpeaking" plain @click="emit('pauseSpeech')">暂停播放</ElButton>
-          <ElButton v-if="assistantSpeechPaused" type="primary" plain @click="emit('resumeSpeech')">继续播放</ElButton>
+          <ElButton v-if="assistantSpeechPaused" type="primary" plain :disabled="!canSpeak" @click="emit('resumeSpeech')">继续播放</ElButton>
           <ElButton v-if="assistantSpeechPaused" type="warning" plain @click="emit('stopSpeech')">取消播放</ElButton>
           <ElButton type="success" plain :disabled="draftAccepted" @click="emit('acceptDraft')">{{ draftAccepted ? '已确认文字' : '教师自行讲述' }}</ElButton>
           <ElButton @click="emit('discardDraft')">暂不采用</ElButton>
         </div>
+        <p v-if="!canSpeak" role="status">当前课堂不允许教学语音，请恢复课堂或刷新状态。旧语音不会自动重播。</p>
       </div>
     </template>
   </section>

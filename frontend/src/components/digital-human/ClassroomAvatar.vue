@@ -20,6 +20,7 @@ import { storeToRefs } from 'pinia'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import type { DigitalHumanState } from './avatar.types'
 import { toDigitalHumanState } from './avatarStateMap'
+import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 
 // Adapter 层失败（customElements 不支持 / 初始化 / play 抛错 / 加载失败）。
 const localFailed = ref(false)
@@ -66,7 +67,8 @@ const bubbleText = computed(() => props.text || DEFAULT_TEXT[bizState.value] || 
 
 <template>
   <div class="classroom-avatar" data-test="classroom-avatar">
-    <GrokBotAvatar v-if="!failed" :state="bizState" :size="size" :color="color" @fallback-required="onFallbackRequired" />
+    <DigitalHumanStage v-if="store.classroomContext" :controls="false" />
+    <GrokBotAvatar v-else-if="!failed" :state="bizState" :size="size" :color="color" @fallback-required="onFallbackRequired" />
     <!-- 降级占位：数字人异常时课堂仍然可用，仅静态展示身份 -->
     <div v-else class="avatar-fallback" role="img" :aria-label="storeError || '课堂数字人形象'">
       <span class="f-emoji">🙂</span>

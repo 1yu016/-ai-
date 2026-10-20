@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http } from '@/api/http'
 import * as commandBus from '@/services/classroomCommandBus'
+import { useLessonRunStore } from '@/stores/lessonRun'
 import LessonClassroomView from '@/views/LessonClassroomView.vue'
 
 // 《课堂互动全屏 · UI state》—— 只覆盖全屏操作台的展示层状态：
@@ -17,7 +18,7 @@ const student = (id: number, name: string) => ({
 })
 const students = [student(1, '朵朵'), student(2, '糖糖'), student(3, '果果')]
 const runPayload = {
-  id: 9, lessonPlanId: 3, classId: 1, deviceId: 1, version: 2,
+  id: 9, lessonPlanId: 3, allowedActions: ['query', 'change_step', 'resource_start', 'media_control', 'safe_stop', 'reward', 'roll_call', 'attendance_new', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'pause', 'resume', 'complete', 'cancel', 'start_break', 'end_break', 'queue_edit', 'tts'], classId: 1, deviceId: 1, version: 2,
   status: 'running', currentStepIndex: 0, title: '认识数字1',
   steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '今天我们一起认识数字1', resourceId: null, durationSeconds: 60 }],
   elapsedSeconds: 5, startedAt: '2026-10-02T07:00:00.000Z', updatedAt: '2026-10-02T08:00:00.000Z',
@@ -66,6 +67,25 @@ describe('LessonClassroomView · 互动全屏 UI state', () => {
     })
   }
 
+  it('OPENING capabilities disable teaching launchers and step actions', async () => {
+    const wrapper = await mountView(); await settle()
+    const store = useLessonRunStore()
+    store.adoptRun({ ...runPayload, status: 'running', version: 3, allowedActions: ['query', 'complete_opening', 'skip_opening', 'pause', 'complete', 'cancel', 'attendance_correction', 'reward_revoke'] } as never)
+    await settle()
+    expect(wrapper.get('[data-test="open-interaction"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').find(b => b.text().includes('进入下一环节'))!.attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-test="classroom-capabilities"]').text()).toContain('服务端仍会重新校验')
+    wrapper.unmount()
+  })
+  it('PAUSED preserves server resume while denying new teaching actions', async () => {
+    const wrapper = await mountView(); await settle()
+    useLessonRunStore().adoptRun({ ...runPayload, status: 'paused', version: 3, allowedActions: ['query', 'resume', 'complete', 'cancel', 'safe_stop', 'attendance_correction', 'reward_revoke'] } as never)
+    await settle()
+    expect(wrapper.findAll('button').find(b => b.text() === '恢复课堂')!.attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-test="open-interaction"]').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
   it('全屏打开：进入后只渲染互动全屏，顶部栏/左侧舞台/右侧操作台俱在', async () => {
     const wrapper = await mountView()
     await settle()
@@ -109,12 +129,43 @@ describe('LessonClassroomView · 互动全屏 UI state', () => {
     await wrapper.find('[data-test="random-roll"]').trigger('click')
     await settle()
 
-    expect(wrapper.find('[data-test="selected-name"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="selected-name"]').exists(), wrapper.text()).toBe(true)
     const activeChips = wrapper.findAll('[data-test="student-chip"].active')
     expect(activeChips.length).toBe(1)
     const activeName = activeChips[0]!.find('.chip-name').text()
     expect(wrapper.find('[data-test="selected-name"]').text()).toBe(activeName)
     expect(wrapper.find('[data-test="random-roll"]').text()).toContain('再随机一次')
+    wrapper.unmount()
+  })
+
+  it('业务恢复成功但查询失败显示独立提示，按钮仅重查状态而不重发命令', async () => {
+    const wrapper = await mountView(); await settle()
+    const store = useLessonRunStore()
+    const envelope = { requestId: 'committed-reward', runId: 9, operation: 'reward_student', source: 'teacher_panel', targetDeviceId: 1, status: 'success', result: { recordId: 42 }, classroomState: null, currentClassroomState: { id: 9, version: 3 }, recovery: { source: 'canonical_business_receipt', contractVersion: 1, committedRunVersion: 3, refreshRequired: true } }
+    const post = vi.spyOn(http, 'post').mockResolvedValueOnce({ data: envelope })
+    vi.mocked(http.get).mockRejectedValueOnce(new Error('只读查询失败'))
+    await expect(store.command('reward_student')).resolves.toEqual(envelope)
+    await settle()
+    const banner = wrapper.find('[data-test="command-state-refresh"]')
+    expect(banner.text()).toContain('业务操作已成功')
+    expect(banner.text()).toContain('课堂状态尚未刷新')
+    vi.mocked(http.get).mockResolvedValueOnce({ data: { ...runPayload, version: 4 } })
+    await banner.find('button').trigger('click'); await settle()
+    expect(wrapper.find('[data-test="command-state-refresh"]').exists()).toBe(false)
+    expect(store.run?.version).toBe(4); expect(store.lastCommandResult?.result).toEqual({ recordId: 42 })
+    expect(post).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+  it('点名恢复后查询失败仍展示首次选中幼儿，不显示业务失败', async () => {
+    const wrapper = await mountView(); await settle()
+    const command = vi.spyOn(commandBus, 'executeClassroomCommand').mockResolvedValue({ requestId: 'committed-roll', runId: 9, operation: 'random_roll_call', status: 'success', result: { student: { id: 2 } }, classroomState: null, currentClassroomState: { id: 9, version: 3 }, recovery: { source: 'canonical_business_receipt', contractVersion: 1, committedRunVersion: 3, refreshRequired: true } } as never)
+    await wrapper.find('[data-test="open-interaction"]').trigger('click'); await settle()
+    vi.mocked(http.get).mockRejectedValueOnce(new Error('只读刷新失败'))
+    await wrapper.find('[data-test="random-roll"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-test="selected-name"]').exists(), wrapper.text()).toBe(true))
+    expect(wrapper.find('[data-test="selected-name"]').text()).toBe('糖糖')
+    expect(wrapper.find('[data-test="command-state-refresh"]').text()).toContain('业务操作已成功')
+    expect(wrapper.text()).not.toContain('点名失败'); expect(command).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 

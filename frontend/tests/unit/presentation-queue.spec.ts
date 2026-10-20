@@ -11,6 +11,8 @@ let store: {
   }
   currentStep: { resourceId: number }
   currentResource: { title: string }
+  teacherCommand: typeof state.command
+  can: (action: string) => boolean
   command: typeof state.command
 }
 vi.mock('@/stores/lessonRun', () => ({ useLessonRunStore: () => store }))
@@ -19,7 +21,7 @@ import { usePresentationQueue } from '@/composables/usePresentationQueue'
 describe('current Run presentation queue', () => {
   beforeEach(() => {
     state.command.mockReset().mockResolvedValue({})
-    store = reactive({ run: { id: 9, deviceId: 3, currentStepIndex: 1, interactionState: {} }, currentStep: { resourceId: 12 }, currentResource: { title: '卡片' }, command: state.command })
+    store = reactive({ run: { id: 9, deviceId: 3, currentStepIndex: 1, interactionState: {} }, currentStep: { resourceId: 12 }, currentResource: { title: '卡片' }, command: state.command, teacherCommand: state.command, can: () => true })
   })
   it('reads the lesson fallback without any command or lesson mutation', () => {
     const queue = usePresentationQueue()

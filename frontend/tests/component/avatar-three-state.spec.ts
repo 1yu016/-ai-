@@ -19,7 +19,7 @@ const duoDuo = {
   status: 'active', createdAt: '', updatedAt: '',
 }
 const runPayload = {
-  id: 9, lessonPlanId: 3, classId: 1, deviceId: 1, version: 2,
+  id: 9, lessonPlanId: 3, allowedActions: ['query', 'change_step', 'resource_start', 'media_control', 'safe_stop', 'reward', 'roll_call', 'attendance_new', 'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'pause', 'resume', 'complete', 'cancel', 'start_break', 'end_break', 'queue_edit', 'tts'], classId: 1, deviceId: 1, version: 2,
   status: 'running', currentStepIndex: 0, title: '认识数字1',
   steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '今天我们一起认识数字1', resourceId: null, durationSeconds: 60 }],
   elapsedSeconds: 5, startedAt: '2026-10-02T07:00:00.000Z', updatedAt: '2026-10-02T08:00:00.000Z',

@@ -7,7 +7,7 @@ import { usePresentationQueue } from '@/composables/usePresentationQueue'
 const results = ref<ResourceResponse[]>([])
 const searching = ref(false)
 const searchError = ref('')
-const { items, saving, error, save, show, move, replace, activeItemId, previousItem, nextItem } = usePresentationQueue()
+const { canShow, canEdit, items, saving, error, save, show, move, replace, activeItemId, previousItem, nextItem } = usePresentationQueue()
 const replacementId = ref<string | null>(null)
 const replacementIndex = computed(() => items.value.findIndex(item => item.id === replacementId.value))
 const keyword = ref('')
@@ -25,28 +25,28 @@ async function search() {
     <h3>当前环节展示队列</h3>
     <p>这里只调整本次课堂。整理队列不会切换大屏，点击展示或播放后才切换。</p>
     <p v-if="error" role="alert">{{ error }}</p>
-    <div class="search"><ElButton :disabled="saving || !previousItem" @click="previousItem && show(previousItem)">上一项</ElButton><ElButton :disabled="saving || !nextItem" @click="nextItem && show(nextItem)">下一项</ElButton></div>
+    <div class="search"><ElButton :disabled="saving || !canShow || !previousItem" @click="previousItem && show(previousItem)">上一项</ElButton><ElButton :disabled="saving || !canShow || !nextItem" @click="nextItem && show(nextItem)">下一项</ElButton></div>
     <div v-for="(item, index) in items" :key="item.id" class="queue-row">
       <strong>{{ item.title }}{{ item.enabled ? '' : '（已隐藏）' }}{{ activeItemId === item.id ? ' · 当前队列位置' : '' }}</strong>
       <div>
-        <ElButton :disabled="saving || !item.enabled" @click="show(item)">展示</ElButton>
-        <ElButton v-if="item.kind === 'resource'" :disabled="saving || !item.enabled" @click="show(item, true)">播放</ElButton>
-        <ElButton :disabled="saving || index === 0" @click="move(index, -1)">上移</ElButton>
-        <ElButton :disabled="saving || index === items.length - 1" @click="move(index, 1)">下移</ElButton>
-        <ElButton :disabled="saving" @click="save(items.map((entry, i) => i === index ? { ...entry, enabled: !entry.enabled } : entry))">{{ item.enabled ? '隐藏' : '恢复' }}</ElButton>
-        <ElButton :disabled="saving" @click="save(items.filter((_, i) => i !== index))">移除</ElButton>
-        <ElButton :disabled="saving" @click="replacementId = item.id">替换内容</ElButton>
+        <ElButton :disabled="saving || !canShow || !item.enabled" @click="show(item)">展示</ElButton>
+        <ElButton v-if="item.kind === 'resource'" :disabled="saving || !canShow || !item.enabled" @click="show(item, true)">播放</ElButton>
+        <ElButton :disabled="saving || !canEdit || index === 0" @click="move(index, -1)">上移</ElButton>
+        <ElButton :disabled="saving || !canEdit || index === items.length - 1" @click="move(index, 1)">下移</ElButton>
+        <ElButton :disabled="saving || !canEdit" @click="save(items.map((entry, i) => i === index ? { ...entry, enabled: !entry.enabled } : entry))">{{ item.enabled ? '隐藏' : '恢复' }}</ElButton>
+        <ElButton :disabled="saving || !canEdit" @click="save(items.filter((_, i) => i !== index))">移除</ElButton>
+        <ElButton :disabled="saving || !canEdit" @click="replacementId = item.id">替换内容</ElButton>
       </div>
     </div>
-    <ElButton :disabled="saving" @click="save([...items, { id: `avatar-${Date.now()}`, kind: 'avatar', title: '数字人互动', enabled: true }])">加入数字人</ElButton>
+    <ElButton :disabled="saving || !canEdit" @click="save([...items, { id: `avatar-${Date.now()}`, kind: 'avatar', title: '数字人互动', enabled: true }])">加入数字人</ElButton>
     <h3>更多教学资源</h3>
     <p v-if="replacementIndex >= 0">为队列第 {{ replacementIndex + 1 }} 项选择替换资源；替换不会切换当前大屏。<ElButton @click="replacementId = null">取消替换</ElButton></p>
     <form class="search" @submit.prevent="search"><ElInput v-model="keyword" placeholder="搜索已审核资源" /><ElButton native-type="submit">搜索</ElButton></form>
     <p v-if="searching">正在搜索…</p><p v-if="searchError" role="alert">{{ searchError }}</p>
     <div v-for="resource in results" :key="resource.id" class="queue-row">
       <span>{{ resource.title }}</span>
-      <ElButton :disabled="saving || items.length >= 100" @click="save([...items, { id: `resource-${resource.id}-${Date.now()}`, kind: 'resource', resourceId: Number(resource.id), title: resource.title, enabled: true }])">加入本节课堂</ElButton>
-      <ElButton v-if="replacementIndex >= 0" :disabled="saving" @click="replace(replacementIndex, { id: '', kind: 'resource', resourceId: resource.id, title: resource.title, enabled: true }); replacementId = null">替换所选项</ElButton>
+      <ElButton :disabled="saving || !canEdit || items.length >= 100" @click="save([...items, { id: `resource-${resource.id}-${Date.now()}`, kind: 'resource', resourceId: Number(resource.id), title: resource.title, enabled: true }])">加入本节课堂</ElButton>
+      <ElButton v-if="replacementIndex >= 0" :disabled="saving || !canEdit" @click="replace(replacementIndex, { id: '', kind: 'resource', resourceId: resource.id, title: resource.title, enabled: true }); replacementId = null">替换所选项</ElButton>
     </div>
   </section>
 </template>

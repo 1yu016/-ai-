@@ -68,6 +68,41 @@ async function openVideo(store: ReturnType<typeof useResourcePlayerStore>, serve
 }
 
 describe('ResourcePlayer protected media blob lifecycle', () => {
+  it('same resource repeated: detached A events never update B status/progress', async () => {
+    mocks.fetchBlob.mockResolvedValue({ url: 'blob:same-resource', revoke: vi.fn() })
+    const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
+    const store = useResourcePlayerStore()
+    const resource = normalizeServerResource(videoResource)!
+    store.openResource(resource, false, { runId: 9, deviceId: 1, presentationCommandId: 'A', presentationRevision: 1 })
+    await flushPromises()
+    const first = wrapper.get('video').element
+    store.openResource(resource, false, { runId: 9, deviceId: 1, presentationCommandId: 'B', presentationRevision: 2 })
+    await flushPromises()
+    expect(wrapper.get('video').element).not.toBe(first)
+    first.currentTime = 99
+    for (const type of ['play', 'ended', 'error', 'timeupdate', 'loadedmetadata']) first.dispatchEvent(new Event(type))
+    expect(store.playerStatus).toBe('paused'); expect(store.currentTime).toBe(0)
+    expect(store.origin?.presentationCommandId).toBe('B')
+    await wrapper.get('video').trigger('play')
+    expect(store.playerStatus).toBe('playing')
+    wrapper.unmount()
+  })
+  it.each(['resolve', 'reject', 'unmount'] as const)('late play Promise %s cannot mutate a newer session', async outcome => {
+    mocks.fetchBlob.mockResolvedValue({ url: 'blob:video', revoke: vi.fn() })
+    const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
+    const store = useResourcePlayerStore()
+    await openVideo(store, videoResource)
+    let resolve!: () => void; let reject!: (error: Error) => void
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementationOnce(() => new Promise<void>((r, j) => { resolve = r; reject = j }))
+    const pending = (wrapper.vm as unknown as { play: () => Promise<void> }).play()
+    if (outcome === 'unmount') wrapper.unmount()
+    await openVideo(store, secondVideo)
+    store.setStatus('error', 'B failure')
+    if (outcome === 'reject') reject(new Error('old play failed')); else resolve()
+    await pending; await flushPromises()
+    expect(store.playerStatus).toBe('error'); expect(store.errorMessage).toBe('B failure')
+    if (outcome !== 'unmount') wrapper.unmount()
+  })
   beforeEach(() => {
     setActivePinia(createPinia())
     setupBlobGlobals()

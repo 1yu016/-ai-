@@ -36,6 +36,7 @@ const {
   nameOf,
   interactionLocked,
   canReward,
+  canRoll,
   setSelected,
   randomRoll,
   reward,
@@ -89,7 +90,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
             type="button"
             class="roll-cta"
             data-test="random-roll"
-            :disabled="interactionLocked || !displayStudents.length"
+            :disabled="!canRoll || !displayStudents.length"
             @click="randomRoll"
           >{{ selected ? '🎯 再随机一次' : '🎯 随机点名' }}</button>
 

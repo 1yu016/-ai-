@@ -1,5 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useUserStore } from '@/stores/user'
 import { classroomMobileApi, type MobileClassroomState } from '@/api/classroomMobile'
 import { useClassroomMobileStore } from '@/stores/classroomMobile'
 
@@ -38,6 +39,7 @@ function state(online = true): MobileClassroomState {
 }
 
 describe('classroom mobile realtime store', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
   beforeEach(() => {
     setActivePinia(createPinia())
     sessionStorage.clear()
@@ -51,6 +53,60 @@ describe('classroom mobile realtime store', () => {
     const command = vi.spyOn(classroomMobileApi, 'command')
     await expect(store.execute('next_step')).rejects.toThrow('大屏离线')
     expect(command).not.toHaveBeenCalled()
+  })
+
+  it.each([-180_000, -30_000, 0, 30_000, 180_000])('uses server time for issuedAt with device bias %i', async (bias) => {
+    const server = Date.parse(state().serverNow)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(server + bias)
+    const store = useClassroomMobileStore()
+    store.setSession(session)
+    vi.spyOn(classroomMobileApi, 'state').mockResolvedValue({ data: state() } as never)
+    await store.refreshState()
+    const command = vi.spyOn(classroomMobileApi, 'command').mockResolvedValue({ data: { executionStatus: 'executed' } } as never)
+    await store.execute('next_step')
+    expect(Math.abs(Date.parse(command.mock.calls[0]![1].issuedAt) - server)).toBeLessThan(100)
+    expect(Date.parse(store.commands[0]!.expiresAt) - Date.parse(store.commands[0]!.issuedAt)).toBe(30_000)
+  })
+
+  it.each([29_999, 30_000, 30_001])('keeps retry identity but stops at the conservative TTL boundary %i', async elapsed => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let monotonic = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonic)
+    const store = useClassroomMobileStore()
+    store.setSession(session)
+    vi.spyOn(classroomMobileApi, 'state').mockResolvedValue({ data: state() } as never)
+    await store.refreshState()
+    const command = vi.spyOn(classroomMobileApi, 'command').mockImplementationOnce(async () => {
+      monotonic = elapsed
+      throw new Error('response lost')
+    }).mockResolvedValue({ data: { executionStatus: 'executed' } } as never)
+    const outcome = store.execute('next_step').then(() => 'success', () => 'expired')
+    await vi.advanceTimersByTimeAsync(900)
+    expect(await outcome).toBe(elapsed < 30_000 ? 'success' : 'expired')
+    expect(command).toHaveBeenCalledTimes(elapsed < 30_000 ? 2 : 1)
+    if (command.mock.calls.length === 2) expect(command.mock.calls[0]![1]).toEqual(command.mock.calls[1]![1])
+    store.stop(true)
+  })
+
+  it('resynchronizes before declaring a stored session expired on a fast phone, including reconnect', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime('2099-01-01')
+    const store = useClassroomMobileStore()
+    store.setSession({ ...session, expiresAt: '2026-10-07T00:01:00.000Z' })
+    useUserStore().accessToken = 'synthetic-only'
+    const query = vi.spyOn(classroomMobileApi, 'state').mockResolvedValue({ data: state() } as never)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) } }))
+    store.start()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(store.session).not.toBeNull()
+    window.dispatchEvent(new Event('offline'))
+    expect(store.connection).toBe('offline')
+    window.dispatchEvent(new Event('online'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(query).toHaveBeenCalledTimes(2)
+    store.stop(true)
   })
 
   it('waits for server confirmation and refreshes authoritative state', async () => {

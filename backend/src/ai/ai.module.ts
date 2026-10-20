@@ -12,6 +12,9 @@ import { LessonPlan } from '../lesson-plans/entities/lesson-plan.entity';
 import { PlatformModule } from '../platform/platform.module';
 import { ResourceModule } from '../resources/resource.module';
 import { AiController } from './ai.controller';
+import { ClassroomDialogueController } from './classroom-dialogue.controller';
+import { ClassroomDialogueService } from './classroom-dialogue.service';
+import { ClassroomContentSafetyService } from './classroom-content-safety.service';
 import { ClassroomDirectorV2Controller } from './classroom-director-v2.controller';
 import { ClassroomDirectorV2Service } from './classroom-director-v2.service';
 import { ClassroomDirectorV2Suggestion } from './entities/classroom-director-v2-suggestion.entity';
@@ -56,8 +59,10 @@ import { ClassroomCommandOfflineLog } from './entities/classroom-command-offline
     AvatarModule,
     ClassroomRunModule,
   ],
-  controllers: [AiController, ClassroomDirectorV2Controller],
+  controllers: [AiController, ClassroomDirectorV2Controller, ClassroomDialogueController],
   providers: [
+    ClassroomDialogueService,
+    ClassroomContentSafetyService,
     AiService,
     PlatformAiService,
     ClassroomDirectorV2Service,

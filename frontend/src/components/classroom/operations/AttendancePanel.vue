@@ -12,6 +12,10 @@ export type VoiceAttendanceCandidate = {
 }
 
 const props = defineProps<{
+  canRoll?: boolean
+  canReward?: boolean
+  canNewAttendance?: boolean
+  canCorrectAttendance?: boolean
   students: Student[]
   attendance: Record<number, Attendance>
   selectedStudent: number | null
@@ -35,6 +39,7 @@ const emit = defineEmits<{
   (e: 'award', student: Student): void
 }>()
 
+function canAttendance(ids: number[]) { return ids.length > 0 && ids.every(id => props.attendance[id] ? props.canCorrectAttendance !== false : props.canNewAttendance !== false) }
 const selectedIds = ref<number[]>([])
 const batchStatus = ref<Attendance>('present')
 const candidateStatus = ref<Record<number, Attendance>>({})
@@ -80,8 +85,8 @@ function confirmVoice() {
         <p class="muted">考勤正式保存，语音识别必须确认后才会写入。</p>
       </div>
       <div class="head-actions">
-        <button class="button" @click="$emit('random-roll')">随机点名</button>
-        <button class="soft" :disabled="!selectedIds.length" @click="$emit('group-roll', selectedIds)">分组随机</button>
+        <button class="button" :disabled="canRoll === false" @click="$emit('random-roll')">随机点名</button>
+        <button class="soft" :disabled="canRoll === false || !selectedIds.length" @click="$emit('group-roll', selectedIds)">分组随机</button>
       </div>
     </div>
     <div class="batch-bar">
@@ -90,7 +95,7 @@ function confirmVoice() {
         <option value="present">到课</option><option value="absent">缺勤</option>
         <option value="late">迟到</option><option value="leave">请假</option>
       </select>
-      <button class="soft" :disabled="!selectedIds.length" @click="applyBatch">批量保存</button>
+      <button class="soft" :disabled="!canAttendance(selectedIds)" @click="applyBatch">批量保存</button>
       <button
         class="voice-button"
         :class="{ recording: voiceRecording }"
@@ -112,7 +117,7 @@ function confirmVoice() {
           <option value="late">迟到</option><option value="leave">请假</option>
         </select>
       </label>
-      <footer><button class="soft" @click="$emit('clear-voice')">取消</button><button class="button" :disabled="!voiceCandidates.length" @click="confirmVoice">确认写入正式考勤</button></footer>
+      <footer><button class="soft" @click="$emit('clear-voice')">取消</button><button class="button" :disabled="!canAttendance(voiceCandidates.map(s => s.studentId))" @click="confirmVoice">确认写入正式考勤</button></footer>
     </section>
     <p v-if="rollMessage" class="celebrate">✨ {{ rollMessage }}</p>
     <div class="student-list">
@@ -132,30 +137,30 @@ function confirmVoice() {
         <div class="row-actions">
           <button
             :class="{ active: attendance[student.id] === 'present' }"
-            @click="$emit('set-attendance', student, 'present')"
+            :disabled="!canAttendance([student.id])" @click="$emit('set-attendance', student, 'present')"
           >
             到课
           </button>
           <button
             :class="{ active: attendance[student.id] === 'late' }"
-            @click="$emit('set-attendance', student, 'late')"
+            :disabled="!canAttendance([student.id])" @click="$emit('set-attendance', student, 'late')"
           >
             迟到
           </button>
           <button
             :class="{ active: attendance[student.id] === 'absent' }"
-            @click="$emit('set-attendance', student, 'absent')"
+            :disabled="!canAttendance([student.id])" @click="$emit('set-attendance', student, 'absent')"
           >
             缺勤
           </button>
           <button
             :class="{ active: attendance[student.id] === 'leave' }"
-            @click="$emit('set-attendance', student, 'leave')"
+            :disabled="!canAttendance([student.id])" @click="$emit('set-attendance', student, 'leave')"
           >
             请假
           </button>
-          <button class="roll" @click="$emit('specified-roll', student)">点名</button>
-          <button class="star" @click="$emit('award', student)">🌟</button>
+          <button class="roll" :disabled="canRoll === false" @click="$emit('specified-roll', student)">点名</button>
+          <button class="star" :disabled="canReward === false" @click="$emit('award', student)">🌟</button>
         </div>
       </article>
     </div>

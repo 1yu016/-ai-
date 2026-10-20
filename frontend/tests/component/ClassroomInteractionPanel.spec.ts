@@ -4,7 +4,7 @@ import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as checkpointService from '@/services/classroomCheckpoint'
 import * as commandBus from '@/services/classroomCommandBus'
-import type { LessonRun } from '@/stores/lessonRun'
+import { useLessonRunStore, type ClassroomRunPayload, type LessonRun } from '@/stores/lessonRun'
 import ClassroomInteractionPanel from '@/components/classroom/operations/ClassroomInteractionPanel.vue'
 import type { Student } from '@/api/platform'
 
@@ -16,6 +16,7 @@ const students: Student[] = [
 
 function makeRun(status: LessonRun['status'] = 'running'): LessonRun {
   return {
+    allowedActions: status === 'running' ? ['reward', 'roll_call'] : ['resume'],
     id: 9, lessonPlanId: 3, classId: 1, deviceId: 1, version: 2, status,
     currentStepIndex: 0, lessonTitle: '小忍者', lessonObjectives: '', ageGroup: '',
     steps: [{ stepIndex: 0, title: '导入', type: 'introduction', content: '', durationSeconds: 300, resourceId: null }],
@@ -24,6 +25,9 @@ function makeRun(status: LessonRun['status'] = 'running'): LessonRun {
 }
 
 function mountPanel(overrides: Record<string, unknown> = {}) {
+  const pinia = createPinia()
+  const r = (overrides.run ?? makeRun()) as LessonRun
+  useLessonRunStore(pinia).adoptRun({ ...r, title: r.lessonTitle } as ClassroomRunPayload)
   return mount(ClassroomInteractionPanel, {
     props: {
       run: makeRun(),
@@ -34,7 +38,7 @@ function mountPanel(overrides: Record<string, unknown> = {}) {
       rewardTotal: 0,
       ...overrides,
     },
-    global: { plugins: [ElementPlus, createPinia()] },
+    global: { plugins: [ElementPlus, pinia] },
   })
 }
 

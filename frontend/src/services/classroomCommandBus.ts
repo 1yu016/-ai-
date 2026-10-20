@@ -55,7 +55,15 @@ export type ClassroomCommandResult<T = unknown> = {
   targetDeviceId: number | null
   status: 'success'
   result: T
-  classroomState: ClassroomRunPayload
+  classroomState: ClassroomRunPayload | null
+  /** A plain current Run, not the full query/restore DTO and not the first result. */
+  currentClassroomState?: { id: number; version: number; [field: string]: unknown } | null
+  recovery?: {
+    source: 'canonical_business_receipt'
+    contractVersion: 1
+    committedRunVersion: number
+    refreshRequired: boolean
+  }
 }
 
 export function classroomRequestId(prefix = 'command'): string {

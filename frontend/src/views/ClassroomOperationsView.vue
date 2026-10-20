@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElDialog, ElMessage } from 'element-plus'
@@ -60,6 +60,7 @@ let attendanceChunks: Blob[] = []
 // run 直接复用 store 的 run，保证与 LessonClassroomView/大屏通过 polling 多端同步。
 const store = useLessonRunStore()
 const { run, busy, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
+watch(() => run.value, () => { if (!store.capabilities || store.capabilities.version !== run.value?.version || Date.now() - store.capabilities.at > 4000) void store.refreshCapabilities() })
 const remoteFeedback = ref('')
 const pendingCommands = ref<string[]>([])
 const online = ref(navigator.onLine)
@@ -127,7 +128,7 @@ async function load() {
     const active = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>('/classroom-runs/active')
     let current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
     if (current) {
-      if (!Array.isArray(current.steps)) {
+      if (!Array.isArray(current.steps) || current.attendanceState === undefined) {
         current = (await http.get<ClassroomRunPayload>(`/classroom-runs/${current.id}`)).data
       }
       store.adoptRun(current)
@@ -175,7 +176,7 @@ async function chooseClass() {
 async function setAttendance(student: Student, value: Attendance) {
   if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
   try {
-    const response = await store.command(
+    const response = await store.teacherCommand(
       'attendance_update',
       { studentId: student.id, status: value },
       'teacher_panel',
@@ -183,6 +184,7 @@ async function setAttendance(student: Student, value: Attendance) {
     const result = response?.result as { attendanceState?: Record<number, Attendance> } | undefined
     attendance.value = result?.attendanceState ?? { ...attendance.value, [student.id]: value }
   } catch (e) {
+    await store.handleTeacherRejection(e)
     ElMessage.error(apiErrorMessage(e, '考勤状态未保存，请刷新后重试。'))
   }
 }
@@ -193,7 +195,7 @@ async function batchAttendance(
 ) {
   if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
   try {
-    const response = await store.command(
+    const response = await store.teacherCommand(
       'attendance_update',
       { updates, attendanceSource },
       attendanceSource === 'voice_confirmed' ? 'voice' : 'teacher_panel',
@@ -210,7 +212,7 @@ async function batchAttendance(
 async function randomRoll() {
   if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
   try {
-    const response = await store.command('random_roll_call', undefined, 'teacher_panel')
+    const response = await store.teacherCommand('random_roll_call', undefined, 'teacher_panel')
     const result = response?.result as { student?: RollCallStudentPayload } | undefined
     const target = resolveRollCallStudent(result?.student)
     if (!target) return ElMessage.error('点名成功，但返回的幼儿信息不完整，请刷新后重试。')
@@ -235,7 +237,7 @@ async function executeRoll(
 ) {
   if (!run.value) return ElMessage.warning('当前没有进行中的课堂。')
   try {
-    const response = await store.command(operation, parameters, 'teacher_panel')
+    const response = await store.teacherCommand(operation, parameters, 'teacher_panel')
     const result = response?.result as { student?: RollCallStudentPayload } | undefined
     const target = resolveRollCallStudent(result?.student)
     if (!target) return ElMessage.error('点名成功，但返回的幼儿信息不完整，请刷新后重试。')
@@ -326,7 +328,7 @@ async function confirmReward() {
   }
   rewardSubmitting.value = true
   try {
-    const response = await store.command(
+    const response = await store.teacherCommand(
       'reward_student',
       {
         studentId: student.id,
@@ -358,7 +360,7 @@ async function confirmReward() {
 // Stage 7.4：课间休息走真实 API。POST 成功（store 应用后端新 run）后才显示课间 UI。
 async function startBreak(options: StartBreakOptions) {
   try {
-    await store.startBreak(options, 'teacher_panel')
+    store.requireAction('start_break'); await store.startBreak(options, 'teacher_panel')
   } catch (e) {
     ElMessage.error(apiErrorMessage(e, '课间休息未开启，请重试。'))
   }
@@ -366,7 +368,7 @@ async function startBreak(options: StartBreakOptions) {
 
 async function endBreak() {
   try {
-    await store.endBreak('teacher_panel')
+    store.requireAction('end_break'); await store.endBreak('teacher_panel')
   } catch (e) {
     ElMessage.error(apiErrorMessage(e, '提前结束课间失败，请重试。'))
   }
@@ -378,6 +380,7 @@ async function remote(action: 'pause' | 'resume' | 'next') {
     return
   }
   try {
+    store.requireAction(action === 'next' ? 'change_step' : action)
     if (action === 'next') await store.next('teacher_panel')
     else if (action === 'pause') await store.pause('teacher_panel')
     else await store.resume('teacher_panel')
@@ -388,6 +391,7 @@ async function remote(action: 'pause' | 'resume' | 'next') {
           ? '课堂已暂停。'
           : '课堂已恢复。'
   } catch (e) {
+    await store.handleTeacherRejection(e)
     remoteFeedback.value = apiErrorMessage(e, '指令未执行，请重试。')
   }
 }
@@ -492,6 +496,7 @@ onBeforeUnmount(() => {
         <span>{{ item.icon }}</span>{{ item.label }}
       </button>
     </nav>
+    <section v-if="run" role="status"><p>{{ store.capabilityMessage }}</p><button :disabled="store.capabilityLoading" @click="store.refreshTeacherState()">刷新课堂状态</button></section>
     <p v-if="error" class="alert">
       {{ error }}
       <button @click="load">重试</button>
@@ -515,6 +520,10 @@ onBeforeUnmount(() => {
       </section>
       <div class="engagement-grid">
         <AttendancePanel
+          :can-roll="store.can('roll_call')"
+          :can-reward="store.can('reward')"
+          :can-new-attendance="store.can('attendance_new')"
+          :can-correct-attendance="store.can('attendance_correction')"
           :students="displayStudents"
           :attendance="attendance"
           :selected-student="selectedStudent"
@@ -539,8 +548,8 @@ onBeforeUnmount(() => {
           <BreakModePanel
             :active="isBreakActive"
             :remaining-seconds="breakRemainingSeconds"
-            :busy="busy"
-            :can-start="!!run && run.status === 'running'"
+            :busy="busy || (isBreakActive && !store.can('end_break'))"
+            :can-start="store.can('start_break')"
             @start-break="startBreak"
             @end-break="endBreak"
           />
@@ -574,6 +583,7 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <RemoteControlPanel
+        :can-pause="store.can('pause')" :can-resume="store.can('resume')" :can-change-step="store.can('change_step')"
         :run="run"
         :current-step="currentStep"
         :online="online"

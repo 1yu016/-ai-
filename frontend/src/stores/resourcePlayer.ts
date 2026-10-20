@@ -13,6 +13,16 @@ export type ResourcePlayerStatus =
 
 export const RESOURCE_PLAYER_CLAIM_EVENT = 'kindergarten-resource-player-claim'
 
+export type PresentationOrigin = Readonly<{
+  runId: number; deviceId: number; presentationCommandId: string; presentationRevision: number
+}>
+export function presentationOrigin(runId: number, deviceId: number, state?: Record<string, unknown>): PresentationOrigin | null {
+  if (!Number.isSafeInteger(runId) || runId <= 0 || !Number.isSafeInteger(deviceId) || deviceId <= 0 ||
+    !state || typeof state.presentationCommandId !== 'string' || !state.presentationCommandId.trim() ||
+    !Number.isSafeInteger(state.presentationRevision)) return null
+  return Object.freeze({ runId, deviceId, presentationCommandId: state.presentationCommandId, presentationRevision: state.presentationRevision as number })
+}
+
 export type ResourcePlayerControl =
   | 'play'
   | 'pause'
@@ -30,6 +40,8 @@ export type ResourcePlayerControlRequest = {
 export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
   const userStore = useUserStore()
   const currentResource = ref<CourseResource | null>(null)
+  const playbackSession = ref(0)
+  const origin = ref<PresentationOrigin | null>(null)
   const playerStatus = ref<ResourcePlayerStatus>('idle')
   const currentTime = ref(0)
   const duration = ref(0)
@@ -56,7 +68,9 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
     duration.value = currentResource.value?.duration ?? 0
   }
 
-  function openResource(resource: CourseResource, autoPlay = true) {
+  function openResource(resource: CourseResource, autoPlay = true, context: PresentationOrigin | null = null) {
+    playbackSession.value += 1
+    origin.value = context ? Object.freeze({ ...context }) : null
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event(RESOURCE_PLAYER_CLAIM_EVENT))
     }
@@ -129,6 +143,8 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
   }
 
   function close() {
+    playbackSession.value += 1
+    origin.value = null
     currentResource.value = null
     playerStatus.value = 'idle'
     currentTime.value = 0
@@ -157,6 +173,8 @@ export const useResourcePlayerStore = defineStore('resourcePlayer', () => {
   }
 
   return {
+    playbackSession,
+    origin,
     currentResource,
     playerStatus,
     currentTime,

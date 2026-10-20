@@ -15,9 +15,9 @@ export const AVATAR_ACTION_KEYWORDS: Record<AvatarActionName, readonly string[]>
   listen: ['Listening', 'Listen'],
   think: ['Think', 'Thinking'],
   talk: ['Talk', 'Talking'],
-  happy: ['Happy', 'Celebrate', 'Dance'],
+  happy: ['Happy', 'ThumbsUp', 'Celebrate', 'Dance'],
   question: ['Question', 'Look'],
-  encourage: ['Encourage', 'Wave', 'Cheer', 'Dance'],
+  encourage: ['Encourage', 'ThumbsUp', 'Wave', 'Cheer'],
   wave: ['Wave', 'Waving', 'Hi'],
   goodbye: ['Goodbye', 'Wave', 'Sad', 'Dance'],
 }

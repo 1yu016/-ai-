@@ -8,7 +8,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'node:crypto';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
+import { GuardianConsent } from '../platform/entities/guardian-consent.entity';
+import { PlatformAccessService } from '../platform/platform-access.service';
+import { ConsentStatus, ConsentType } from '../platform/platform.types';
 import type { JwtTeacherPayload } from '../auth/auth.types';
 import { AuthUserType } from '../auth/entities/refresh-token-session.entity';
 import {
@@ -87,6 +90,7 @@ export class ClassroomCommandService {
     private readonly attendance: AttendanceService,
     private readonly rollCallService: ClassroomRollCallService,
     private readonly audit: AuditService,
+    private readonly access: PlatformAccessService,
   ) {}
 
   async execute(actor: JwtTeacherPayload, dto: ExecuteClassroomCommandDto) {
@@ -131,6 +135,9 @@ export class ClassroomCommandService {
     dto: ExecuteClassroomCommandDto,
     mobileSessionValidated: boolean,
   ) {
+    if (dto.operation === ClassroomCommandOperation.DisplayArtwork ||
+        (dto.operation === ClassroomCommandOperation.SpeakText && dto.parameters?.artworkId != null))
+      return this.executeArtwork(actor, dto, mobileSessionValidated);
     const requestHash = this.requestHash(dto);
     const existing = await this.commands.findOne({
       where: { requestId: dto.requestId },
@@ -261,6 +268,53 @@ export class ClassroomCommandService {
     }
   }
 
+  /** Artwork only: admission, Processing, control, required snapshot and final
+   * success share one transaction. Never enter the run queue or snapshot gate twice. */
+  private async executeArtwork(actor: JwtTeacherPayload, dto: ExecuteClassroomCommandDto, mobileSessionValidated: boolean) {
+    return this.snapshots.transactionRequired(async manager => {
+      await manager.query('UPDATE classroom_run SET version=version WHERE id=?', [dto.runId]);
+      this.requireTeacher(actor);
+      const run = await manager.getRepository(ClassroomRun).findOneBy({ id: dto.runId });
+      if (!run) throw new NotFoundException('课堂运行不存在');
+      if (run.teacherId !== actor.sub) throw new ForbiddenException('不能操作其他教师的课堂');
+      await this.access.requireClassAccess(actor, run.classId, manager, { readOnly: true });
+      const repository = manager.getRepository(ClassroomCommandRecord);
+      const existing = await repository.findOneBy({ requestId: dto.requestId });
+      if (existing) return this.replay(existing, this.requestHash(dto), actor, dto);
+      this.assertFreshMobileCommand(dto);
+      const artwork = await manager.getRepository(StudentArtworkRecord).findOneBy({ id: this.int(dto.parameters ?? {}, 'artworkId', 1) });
+      if (!artwork || artwork.teacherId !== actor.sub || artwork.classroomRunId !== run.id || artwork.classId !== run.classId)
+        throw new ForbiddenException('作品不属于当前教师、班级和课堂');
+      if (!artwork.confirmedAt || !artwork.teacherComment) throw new ConflictException('作品评价尚未由教师确认');
+      const student = artwork.studentId == null ? null : await manager.getRepository(Student).findOneBy({ id: artwork.studentId });
+      if (!student || student.classId !== run.classId || student.status !== RecordStatus.Active)
+        throw new ForbiddenException('作品学生已停用或不属于当前班级');
+      const consents = await manager.getRepository(GuardianConsent).findBy({ studentId: student.id });
+      const granted = new Set(consents.filter(c => c.status === ConsentStatus.Granted).map(c => c.consentType));
+      if (!granted.has(ConsentType.Photo) || !granted.has(ConsentType.Artwork))
+        throw new ForbiddenException({ code: 'ARTWORK_CONSENT_REQUIRED', message: '照片或作品授权已撤销，不能新增展示或朗读命令' });
+      await this.requireSourceDevice(actor, run, dto, mobileSessionValidated, manager);
+      this.assertTargetDevice(run, dto);
+      if (run.version !== dto.expectedVersion) throw this.versionConflict(run);
+      this.assertActive(run);
+      const record = await repository.save(repository.create({
+        requestId: dto.requestId, classroomRunId: run.id, requestHash: this.requestHash(dto), source: dto.source,
+        operation: dto.operation, operatorType: actor.userType, operatorId: actor.sub, deviceId: dto.deviceId,
+        targetDeviceId: dto.targetDeviceId ?? null, expectedVersion: dto.expectedVersion,
+        parametersSummary: this.parametersSummary(dto.parameters), status: ClassroomCommandStatus.Processing,
+      }));
+      const result = await this.mediaCommand(actor, run, dto, dto.parameters ?? {}, manager);
+      const response = { requestId: dto.requestId, runId: run.id, operation: dto.operation, source: dto.source,
+        targetDeviceId: dto.targetDeviceId ?? null, status: ClassroomCommandStatus.Success, result,
+        classroomState: await this.runs.readCommandState(actor, run.id, manager) };
+      await repository.update(record.id, { status: ClassroomCommandStatus.Success, httpStatus: 200,
+        responsePayload: JSON.stringify(response), executedAt: new Date() });
+      await this.audit.write(actor, { action: 'classroom.command', targetType: 'classroom_run', targetId: run.id,
+        metadata: { requestId: dto.requestId, operation: dto.operation, result: 'success' } }, manager);
+      return response;
+    });
+  }
+
   async findOne(actor: JwtTeacherPayload, requestId: string) {
     const record = await this.commands.findOne({ where: { requestId } });
     if (!record) throw new NotFoundException('课堂指令记录不存在');
@@ -269,6 +323,11 @@ export class ClassroomCommandService {
       record.operatorId !== actor.sub
     )
       throw new ForbiddenException('无权查看其他教师的课堂指令');
+    if (record.operation === ClassroomCommandOperation.DisplayArtwork ||
+        (record.operation === ClassroomCommandOperation.SpeakText && (this.parseJson(record.parametersSummary) as JsonMap | null)?.artworkId != null)) {
+      const run = await this.commands.manager.getRepository(ClassroomRun).findOneByOrFail({ id: record.classroomRunId });
+      await this.access.requireClassAccess(actor, run.classId, undefined, { readOnly: true });
+    }
     return this.recordView(record);
   }
 
@@ -522,8 +581,9 @@ export class ClassroomCommandService {
     run: CommandRunState,
     dto: ExecuteClassroomCommandDto,
     parameters: JsonMap,
+    transactionManager?: EntityManager,
   ) {
-    const latest = await this.snapshots.loadLatestValid(run.id);
+    const latest = await this.snapshots.loadLatestValid(run.id, transactionManager);
     const playerState = Object.assign({}, latest?.playerState);
     playerState.presentationCommandId = dto.requestId;
     if (dto.operation === ClassroomCommandOperation.OpenResource || dto.operation === ClassroomCommandOperation.PlayResource)
@@ -583,7 +643,7 @@ export class ClassroomCommandService {
     if (dto.operation === ClassroomCommandOperation.ResumeMedia) playerState.status = 'playing';
     if (dto.operation === ClassroomCommandOperation.DisplayArtwork) {
       const artworkId = this.int(parameters, 'artworkId', 1);
-      const artwork = await this.artworks.findOne({ where: { id: artworkId } });
+      const artwork = await (transactionManager ? transactionManager.getRepository(StudentArtworkRecord) : this.artworks).findOne({ where: { id: artworkId } });
       if (!artwork || artwork.classroomRunId !== run.id)
         throw new ForbiddenException('作品不属于当前课堂');
       if (!artwork.confirmedAt || !artwork.teacherComment)
@@ -603,7 +663,7 @@ export class ClassroomCommandService {
       deviceId: run.deviceId,
       checkpointType: ClassroomCheckpointType.Command,
       playerState,
-    });
+    }, transactionManager);
     return {
       delivery: 'accepted',
       targetDeviceId: dto.targetDeviceId,
@@ -616,6 +676,7 @@ export class ClassroomCommandService {
     run: CommandRunState,
     dto: ExecuteClassroomCommandDto,
     mobileSessionValidated = false,
+    manager?: EntityManager,
   ) {
     if (dto.source !== ClassroomCommandSource.Mobile) {
       if (dto.deviceId !== run.deviceId)
@@ -627,7 +688,7 @@ export class ClassroomCommandService {
         throw new ForbiddenException('手机控制会话与当前课堂大屏不一致');
       return;
     }
-    const device = await this.devices.findOne({ where: { id: dto.deviceId } });
+    const device = await (manager ? manager.getRepository(Device) : this.devices).findOne({ where: { id: dto.deviceId } });
     if (!device) throw new NotFoundException('控制设备不存在');
     if (![DeviceType.TeacherPhone, DeviceType.TeacherTablet].includes(device.type))
       throw new ForbiddenException('该设备不是教师移动控制端');
@@ -635,7 +696,7 @@ export class ClassroomCommandService {
       throw new ForbiddenException('控制设备当前不可用');
     if (actor.schoolId && device.schoolId !== actor.schoolId)
       throw new ForbiddenException('控制设备不属于当前园所');
-    const binding = await this.bindings.findOne({
+    const binding = await (manager ? manager.getRepository(DeviceBinding) : this.bindings).findOne({
       where: {
         deviceId: dto.deviceId,
         classroomId: run.classroomId,

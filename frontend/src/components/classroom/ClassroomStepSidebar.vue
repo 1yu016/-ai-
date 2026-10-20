@@ -4,6 +4,7 @@ import type { RunStep } from '@/stores/lessonRun'
 defineProps<{
   steps: RunStep[]
   currentStepIndex: number
+  canChange?: boolean
   paused: boolean
   busy: boolean
   collapsed: boolean
@@ -33,7 +34,7 @@ const emit = defineEmits<{
           :class="{ active: step.stepIndex === currentStepIndex, done: step.stepIndex < currentStepIndex }"
           :aria-current="step.stepIndex === currentStepIndex ? 'step' : undefined"
           :title="step.title"
-          :disabled="paused || busy"
+          :disabled="paused || busy || canChange === false"
           @click="emit('goStep', step.stepIndex)"
         >
           <span class="step-no">{{ step.stepIndex + 1 }}</span>
@@ -50,7 +51,7 @@ const emit = defineEmits<{
           class="step-pill"
           :class="{ active: step.stepIndex === currentStepIndex, done: step.stepIndex < currentStepIndex }"
           :title="step.title"
-          :disabled="paused || busy"
+          :disabled="paused || busy || canChange === false"
           @click="emit('goStep', step.stepIndex)"
         >
           {{ step.stepIndex + 1 }}
