@@ -27,7 +27,7 @@ async function mountView(path: string) {
     history: createMemoryHistory(),
     routes: [
       { path: '/lesson-plans', name: 'lesson-plans', component: LessonPlanListView },
-      { path: '/classes/:classId/students', name: 'students', component: { template: '<div>学生页</div>' } },
+      { path: '/classes/:classId', name: 'class-detail', component: { template: '<div>班级页</div>' } },
       { path: '/chat', name: 'chat', component: { template: '<div>助教</div>' } },
       { path: '/lesson-plans/new', name: 'lesson-plan-new', component: { template: '<div>新建</div>' } },
     ],
@@ -43,7 +43,7 @@ describe('LessonPlanListView 备课中心（返回班级）', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     localStorage.clear()
-    vi.spyOn(platformApi, 'classes').mockResolvedValue(classesData as never)
+    vi.spyOn(platformApi, 'classDetail').mockResolvedValue({ data: classesData.data.items[0] } as never)
   })
 
   it('页面标题为「备课中心」', async () => {
@@ -51,14 +51,14 @@ describe('LessonPlanListView 备课中心（返回班级）', () => {
     expect(wrapper.text()).toContain('备课中心')
   })
 
-  it('有 classId 时显示「← 返回 小一班」，点击 → /classes/:id/students', async () => {
+  it('有 classId 时显示「← 返回 小一班」，点击返回班级详情', async () => {
     const { wrapper, router } = await mountView('/lesson-plans?classId=1')
     await flushPromises()
     const backBtn = [...wrapper.findAll('button')].find((b) => b.text().includes('返回 小一班'))
     expect(backBtn).toBeTruthy()
     await backBtn!.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.name).toBe('students')
+    expect(router.currentRoute.value.name).toBe('class-detail')
     expect(router.currentRoute.value.params.classId).toBe('1')
   })
 

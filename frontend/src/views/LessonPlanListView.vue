@@ -7,6 +7,7 @@ import ManagementLayout from '@/components/ManagementLayout.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { platformApi } from '@/api/platform'
 import { useLessonPlanStore } from '@/stores/lessonPlan'
+import { withNavigationSource } from '@/router/navigation'
 
 const router = useRouter(); const route = useRoute(); const store = useLessonPlanStore()
 const { items, keyword, ageGroup, status, loading, error } = storeToRefs(store)
@@ -17,9 +18,8 @@ const className = ref('')
 async function loadClassName() {
   if (!contextClassId.value) return
   try {
-    const result = await platformApi.classes(1)
-    const target = result.data.items.find((c) => c.id === contextClassId.value)
-    if (target) className.value = target.name
+    const result = await platformApi.classDetail(contextClassId.value)
+    className.value = result.data.name
   } catch {
     // 班级名加载失败不阻断备课中心；返回按钮回退到「返回班级」。
   }
@@ -34,12 +34,19 @@ async function start(id: number) {
       .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   )
   if (!Object.keys(query).length) {
-    await router.push(`/classroom/preflight/${id}`)
+    await router.push(withNavigationSource({ name: 'lesson-classroom-preflight', params: { planId: id } }, route))
     return
   }
-  await router.push({ name: 'lesson-classroom-preflight', params: { planId: id }, query })
+  await router.push(withNavigationSource({ name: 'lesson-classroom-preflight', params: { planId: id }, query }, route))
 }
 async function copy(id: number) { try { await store.copy(id); ElMessage.success('已复制教案') } catch { ElMessage.error('复制失败') } }
+function openEditor(id?: number) {
+  void router.push(withNavigationSource({
+    name: id ? 'lesson-plan-edit' : 'lesson-plan-new',
+    ...(id ? { params: { id } } : {}),
+    query: contextClassId.value ? { classId: String(contextClassId.value) } : {},
+  }, route))
+}
 onMounted(() => { void store.fetchList(); void loadClassName() })
 </script>
 
@@ -49,18 +56,18 @@ onMounted(() => { void store.fetchList(); void loadClassName() })
       eyebrow="教师工作台"
       title="备课中心"
       :subtitle="contextClassId ? `正在为：${className || `班级 ${contextClassId}`} 准备课堂` : '创建教案、绑定资源，然后一键进入投屏课堂。'"
-      :back-to="contextClassId ? `/classes/${contextClassId}/students` : ''"
+      :back-to="contextClassId ? { name: 'class-detail', params: { classId: contextClassId } } : undefined"
       :back-label="contextClassId ? `返回 ${className || '班级'}` : ''"
     >
       <template #actions>
-        <ElButton type="primary" @click="router.push('/lesson-plans/new')">新建教案</ElButton>
+        <ElButton type="primary" @click="openEditor()">新建教案</ElButton>
       </template>
     </PageHeader>
 
     <section class="filters"><ElInput v-model="keyword" clearable placeholder="搜索标题或主题" @keyup.enter="store.fetchList" /><ElSelect v-model="ageGroup" clearable placeholder="年龄段"><ElOption label="3-4岁" value="3-4"/><ElOption label="4-5岁" value="4-5"/><ElOption label="5-6岁" value="5-6"/></ElSelect><ElSelect v-model="status" clearable placeholder="状态"><ElOption label="草稿" value="draft"/><ElOption label="可上课" value="ready"/><ElOption label="已归档" value="archived"/></ElSelect><ElButton :loading="loading" @click="store.fetchList">查询</ElButton></section>
     <div v-if="error" class="state error">{{ error }} <ElButton @click="store.fetchList">重试</ElButton></div>
-    <div v-else-if="!loading && !items.length" class="state"><span>🪴</span><h2>还没有教案</h2><p>从一个熟悉的主题开始，AI 也可以先帮你生成草稿。</p><ElButton type="primary" @click="router.push('/lesson-plans/new')">创建第一份教案</ElButton></div>
-    <section v-else class="grid"><ElCard v-for="plan in items" :key="plan.id" shadow="hover"><template #header><div class="card-head"><h2>{{ plan.title }}</h2><ElTag v-if="plan.stepCount === 0" type="warning">缺少步骤</ElTag><ElTag v-else :type="plan.status === 'ready' ? 'success' : plan.status === 'archived' ? 'info' : 'warning'">{{ statusText[plan.status] }}</ElTag></div></template><p class="theme">{{ plan.theme }}</p><p v-if="plan.stepCount === 0" class="plan-warning">还没有课堂步骤，请先编辑教案。</p><dl><div><dt>年龄段</dt><dd>{{ plan.ageGroup }}岁</dd></div><div><dt>预计时长</dt><dd>{{ plan.estimatedMinutes }}分钟</dd></div><div><dt>更新时间</dt><dd>{{ new Date(plan.updatedAt).toLocaleString() }}</dd></div></dl><div class="actions"><ElButton @click="router.push(`/lesson-plans/${plan.id}/edit`)">编辑</ElButton><ElButton @click="copy(plan.id)">复制</ElButton><ElButton type="danger" plain @click="remove(plan.id)">删除</ElButton><ElButton type="primary" :disabled="plan.status === 'archived' || plan.stepCount === 0" @click="start(plan.id)">开始上课</ElButton></div></ElCard></section>
+    <div v-else-if="!loading && !items.length" class="state"><span>🪴</span><h2>还没有教案</h2><p>从一个熟悉的主题开始，AI 也可以先帮你生成草稿。</p><ElButton type="primary" @click="openEditor()">创建第一份教案</ElButton></div>
+    <section v-else class="grid"><ElCard v-for="plan in items" :key="plan.id" shadow="hover"><template #header><div class="card-head"><h2>{{ plan.title }}</h2><ElTag v-if="plan.stepCount === 0" type="warning">缺少步骤</ElTag><ElTag v-else :type="plan.status === 'ready' ? 'success' : plan.status === 'archived' ? 'info' : 'warning'">{{ statusText[plan.status] }}</ElTag></div></template><p class="theme">{{ plan.theme }}</p><p v-if="plan.stepCount === 0" class="plan-warning">还没有课堂步骤，请先编辑教案。</p><dl><div><dt>年龄段</dt><dd>{{ plan.ageGroup }}岁</dd></div><div><dt>预计时长</dt><dd>{{ plan.estimatedMinutes }}分钟</dd></div><div><dt>更新时间</dt><dd>{{ new Date(plan.updatedAt).toLocaleString() }}</dd></div></dl><div class="actions"><ElButton @click="openEditor(plan.id)">编辑</ElButton><ElButton @click="copy(plan.id)">复制</ElButton><ElButton type="danger" plain @click="remove(plan.id)">删除</ElButton><ElButton type="primary" :disabled="plan.status === 'archived' || plan.stepCount === 0" @click="start(plan.id)">开始上课</ElButton></div></ElCard></section>
   </ManagementLayout>
 </template>
 

@@ -31,7 +31,7 @@ async function mountView() {
   await router.push('/classroom/records/9')
   await router.isReady()
   return mount(ClassroomRecordView, {
-    global: { plugins: [createPinia(), router, ElementPlus] },
+    global: { plugins: [createPinia(), router, ElementPlus], stubs: { ManagementLayout: { template: '<div><slot /></div>' }, BackButton: true } },
   })
 }
 
@@ -144,5 +144,19 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     await aiFilter!.trigger('click')
     expect(wrapper.text()).toContain('AI建议')
     expect(wrapper.text()).not.toContain('步骤 1')
+  })
+
+  it('进行中的课堂不显示总结确认按钮', async () => {
+    vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({
+      run: { id: 9, title: '正在上课', status: 'running', startedAt: null, endedAt: null },
+      items: [],
+    })
+    vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: null, formalSummary: null })
+    const generate = vi.spyOn(records, 'ensureClassroomSummaryDraft')
+    const wrapper = await mountView()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('确认成为正式总结')
+    expect(generate).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

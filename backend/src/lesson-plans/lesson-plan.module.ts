@@ -14,6 +14,8 @@ import { LessonStep } from './entities/lesson-step.entity';
 import { LessonPlanAiService } from './lesson-plan-ai.service';
 import { LessonPlanController } from './lesson-plan.controller';
 import { LessonPlanService } from './lesson-plan.service';
+import { LessonEvidenceService } from './lesson-evidence.service';
+import { LessonEvidenceController } from './lesson-evidence.controller';
 
 export const LESSON_PLAN_ENTITIES = [
   LessonPlan,
@@ -32,8 +34,8 @@ export const LESSON_PLAN_ENTITIES = [
     ResourceModule,
     PlatformModule,
   ],
-  controllers: [LessonPlanController],
-  providers: [LessonPlanService, LessonPlanAiService],
+  controllers: [LessonPlanController, LessonEvidenceController],
+  providers: [LessonPlanService, LessonPlanAiService, LessonEvidenceService],
   exports: [LessonPlanService],
 })
 export class LessonPlanModule {}

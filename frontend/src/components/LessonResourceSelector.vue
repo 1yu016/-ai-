@@ -1,24 +1,38 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { storeToRefs } from 'pinia'
+import { ref, watch } from 'vue'
 import { ElButton, ElDialog, ElInput, ElOption, ElSelect } from 'element-plus'
-import { useCourseResourceStore, type CourseResourceMediaType, type CourseResource } from '@/stores/courseResource'
+import { normalizeServerResource, type ServerResource, type CourseResourceMediaType, type CourseResource } from '@/stores/courseResource'
+import { http, apiErrorMessage } from '@/api/http'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 
 defineProps<{ modelValue?: number | null }>()
 const emit = defineEmits<{ 'update:modelValue': [value: number | null]; selected: [resource: CourseResource | null] }>()
 const open = defineModel<boolean>('open', { default: false })
-const store = useCourseResourceStore()
 const player = useResourcePlayerStore()
-const { sortedResources, loading, loadError } = storeToRefs(store)
+const sortedResources = ref<CourseResource[]>([])
+const loading = ref(false); const loadError = ref(''); const page = ref(1); const total = ref(0)
+let sequence = 0
 const keyword = ref('')
 const resourceType = ref<CourseResourceMediaType | ''>('')
 const category = ref('')
 const ageGroup = ref('')
-async function search() { await store.refreshLibrary({ keyword: keyword.value || undefined, resourceType: resourceType.value || undefined, category: category.value as never || undefined, ageGroup: ageGroup.value as never || undefined, reviewStatus: 'approved' }) }
-function choose(resource: CourseResource) { if (typeof resource.id !== 'number') return; emit('update:modelValue', resource.id); emit('selected', resource); open.value = false }
+async function search(reset = true) {
+  if (reset) page.value = 1
+  const current = ++sequence; loading.value = true; loadError.value = ''; sortedResources.value = []
+  try {
+    const { data } = await http.get<{ items: ServerResource[]; total: number }>('/resources', { params: {
+      keyword: keyword.value || undefined, resourceType: resourceType.value || undefined,
+      category: category.value || undefined, ageGroup: ageGroup.value || undefined,
+      reviewStatus: 'approved', page: page.value, pageSize: 20 } })
+    if (current !== sequence) return
+    sortedResources.value = data.items.map(normalizeServerResource).filter((r): r is CourseResource => !!r && r.reviewStatus === 'approved')
+    total.value = data.total
+  } catch (e) { if (current === sequence) loadError.value = apiErrorMessage(e, '资源加载失败，请重试') }
+  finally { if (current === sequence) loading.value = false }
+}
+function choose(resource: CourseResource) { if (loading.value || resource.reviewStatus !== 'approved' || typeof resource.id !== 'number') return; emit('update:modelValue', resource.id); emit('selected', resource); open.value = false }
 function remove() { emit('update:modelValue', null); emit('selected', null); open.value = false }
-onMounted(search)
+watch(open, (value) => { if (value) void search(); else { sequence++; loading.value = false } }, { immediate: true })
 </script>
 
 <template>
@@ -28,7 +42,7 @@ onMounted(search)
       <ElSelect v-model="resourceType" placeholder="类型" clearable><ElOption label="图片" value="image" /><ElOption label="音频" value="audio" /><ElOption label="视频" value="video" /><ElOption label="PDF/PPT 课件" value="document" /></ElSelect>
       <ElInput v-model="category" placeholder="分类" clearable />
       <ElSelect v-model="ageGroup" placeholder="年龄段" clearable><ElOption label="小班" value="small" /><ElOption label="中班" value="middle" /><ElOption label="大班" value="large" /><ElOption label="全年龄" value="all" /></ElSelect>
-      <ElButton type="primary" :loading="loading" @click="search">搜索</ElButton>
+      <ElButton type="primary" :loading="loading" @click="search()">搜索</ElButton>
     </div>
     <p v-if="loadError" class="error">{{ loadError }}</p>
     <div v-else class="resource-grid">
@@ -39,7 +53,7 @@ onMounted(search)
       </article>
       <p v-if="!loading && !sortedResources.length">没有找到可用资源。</p>
     </div>
-    <template #footer><ElButton @click="remove">移除资源引用</ElButton><ElButton @click="open = false">取消</ElButton></template>
+    <template #footer><span>第 {{ page }} 页 · 共 {{ total }} 项</span><ElButton :disabled="page <= 1 || loading" @click="page--; search(false)">上一页</ElButton><ElButton :disabled="page * 20 >= total || loading" @click="page++; search(false)">下一页</ElButton><ElButton @click="remove">移除资源引用</ElButton><ElButton @click="open = false">取消</ElButton></template>
   </ElDialog>
 </template>
 

@@ -2,13 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { http, apiErrorMessage } from '@/api/http'
-import type { ClassroomRunPayload } from '@/stores/lessonRun'
+import type { ClassroomRunPayload, ScreenLifecycle } from '@/stores/lessonRun'
 import { listRunRewards, formatRewardTime, type RewardRecord } from '@/services/classroomCheckpoint'
 import { summarizeRunRewards } from '@/services/rewardSummary'
 import { buildRunRewardLeaderboard } from '@/services/rewardLeaderboard'
 import ClassRewardLeaderboard from '@/components/classroom/operations/ClassRewardLeaderboard.vue'
 import { platformApi } from '@/api/platform'
 import { useUserStore } from '@/stores/user'
+import BackButton from '@/components/BackButton.vue'
 
 // 课堂总结＝「课堂结束舞台」，脱离 ManagementLayout：不进教师管理侧边栏/后台顶栏。
 // 只依赖 backend 权威数据（run + 本节 RewardRecord）；不读 localStorage/sessionStorage，刷新自动重拉。
@@ -21,6 +22,18 @@ const run = ref<ClassroomRunPayload | null>(null)
 const rewards = ref<RewardRecord[]>([])
 const loading = ref(true)
 const error = ref('')
+const closingScreen = ref(false)
+const screenSummary = computed(() => run.value?.interactionState?.screenLifecycle as ScreenLifecycle | undefined)
+async function closeScreenSummary() {
+  const lifecycle = screenSummary.value
+  if (!lifecycle || lifecycle.phase !== 'summary' || closingScreen.value) return
+  closingScreen.value = true
+  try {
+    await http.post(`/classroom-runs/${runId}/summary/close`, { deviceId: lifecycle.deviceId, bindingId: lifecycle.bindingId, expectedRevision: lifecycle.revision })
+    await load()
+  } catch (e) { error.value = apiErrorMessage(e, '关闭大屏告别失败，请重试。') }
+  finally { closingScreen.value = false }
+}
 // 班级名称：run 只带 classId，名称走轻量只读按 id 匹配；获取失败不阻塞总结页。
 const className = ref('')
 
@@ -54,10 +67,8 @@ async function resolveClassName() {
   const classId = run.value?.classId
   if (classId == null) return
   try {
-    const page = await platformApi.listClasses()
-    const items = Array.isArray(page.data.items) ? page.data.items : []
-    const found = items.find((c) => c.id === classId)
-    if (found?.name) className.value = found.name
+    const response = await platformApi.classDetail(classId)
+    className.value = response.data.name
   } catch {
     // 班级名获取失败不影响总结页展示与离开流程。
   }
@@ -87,7 +98,7 @@ onMounted(load)
 function leaveToClassManagement() {
   const classId = run.value?.classId
   if (classId != null) {
-    void router.push(`/classes/${classId}/students`)
+    void router.push({ name: 'class-detail', params: { classId } })
   } else {
     void router.push('/my-classes')
   }
@@ -99,6 +110,7 @@ function leaveToClassManagement() {
     <div class="stage-glow" aria-hidden="true"></div>
     <div class="container">
       <header class="head">
+        <BackButton label="查看课堂记录" :fallback="{ name: 'classroom-record', params: { runId } }" />
         <span class="badge">🎉 课堂结束</span>
         <span v-if="className || teacherName" class="head-meta">
           {{ className }}<template v-if="teacherName"> · {{ teacherName }}</template>
@@ -182,8 +194,9 @@ function leaveToClassManagement() {
           >
             👀 查看班级成长榜
           </button>
+          <button v-if="screenSummary?.phase === 'summary'" class="retry" type="button" :disabled="closingScreen" @click="closeScreenSummary">结束大屏告别，返回待机</button>
           <button class="primary" data-test="leave-class" @click="leaveToClassManagement">
-            结束并返回{{ className ? ' ' + className : '班级' }}
+            返回{{ className ? ' ' + className : '班级' }}
           </button>
         </footer>
       </template>

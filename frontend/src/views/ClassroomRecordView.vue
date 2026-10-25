@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute } from 'vue-router'
 import {
   ElAlert,
   ElButton,
@@ -13,6 +13,8 @@ import {
   ElTimelineItem,
 } from 'element-plus'
 import { apiErrorMessage, apiErrorStatus } from '@/api/http'
+import ManagementLayout from '@/components/ManagementLayout.vue'
+import BackButton from '@/components/BackButton.vue'
 import {
   confirmClassroomSummary,
   discardClassroomSummary,
@@ -27,7 +29,6 @@ import {
 } from '@/services/classroomRecords'
 
 const route = useRoute()
-const router = useRouter()
 const runId = computed(() => Number(route.params.runId))
 const loading = ref(false)
 const saving = ref(false)
@@ -49,7 +50,8 @@ const timelinePage = ref(1)
 const timelinePageSize = 12
 const baselineForm = ref('')
 
-const canEdit = computed(() => draft.value?.status !== 'discarded')
+const isFormal = computed(() => Boolean(formal.value))
+const canEdit = computed(() => run.value?.status === 'completed' && Boolean(draft.value || formal.value) && draft.value?.status !== 'discarded')
 const formSnapshot = computed(() => JSON.stringify(form))
 const hasUnsavedChanges = computed(() => Boolean(baselineForm.value) && formSnapshot.value !== baselineForm.value)
 
@@ -129,7 +131,7 @@ async function confirm() {
     formal.value = confirmed
     if (draft.value) draft.value.status = 'confirmed'
     baselineForm.value = JSON.stringify(form)
-    ElMessage.success('教师正式总结已保存')
+    ElMessage.success(isFormal.value ? '正式课堂总结已保存' : '课堂总结已确认')
   } catch (cause) {
     ElMessage.error(apiErrorMessage(cause, '总结保存失败'))
   } finally {
@@ -199,10 +201,11 @@ onBeforeRouteLeave(() => {
 onMounted(() => window.addEventListener('beforeunload', warnBeforeLeaving))
 onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving))
 
-onMounted(load)
+onMounted(() => { void load() })
 </script>
 
 <template>
+  <ManagementLayout>
   <main class="record-page">
     <header>
       <div>
@@ -211,7 +214,7 @@ onMounted(load)
         <p>课堂时间线来自服务端真实操作记录，AI总结需要教师确认后才成为正式记录。</p>
       </div>
       <div class="header-actions">
-        <ElButton @click="router.push('/lesson-plans')">返回备课中心</ElButton>
+        <BackButton label="返回课堂记录" />
         <ElButton type="primary" :disabled="!formal" @click="exportReport">导出TXT报告</ElButton>
       </div>
     </header>
@@ -219,7 +222,7 @@ onMounted(load)
     <ElAlert v-if="forbidden" title="你没有权限查看这节课堂记录。" type="warning" show-icon :closable="false" />
     <ElAlert v-else-if="error" :title="error" type="error" show-icon :closable="false" />
     <div v-if="loading" class="state">正在汇总课堂记录…</div>
-    <section v-else class="record-grid">
+    <section v-else-if="!error && run" class="record-grid">
       <ElCard class="summary-card" shadow="never">
         <template #header>
           <div class="card-title">
@@ -288,8 +291,10 @@ onMounted(load)
       </ElCard>
     </section>
   </main>
+  </ManagementLayout>
 </template>
 
 <style scoped>
+.record-page{min-height:100vh;padding:32px max(20px,4vw);box-sizing:border-box;background:#fffaf2;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions,.timeline-header{display:flex;align-items:center;gap:10px}.timeline-header{justify-content:space-between;flex-wrap:wrap}.timeline-filters{display:flex;gap:6px;flex-wrap:wrap}.timeline-filters button{border:1px solid #efd9c8;border-radius:999px;padding:5px 10px;background:#fffdf9;color:#8e6e5d;cursor:pointer}.timeline-filters button.active{background:#e99168;color:#fff;border-color:#e99168}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.timeline-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:18px;color:#9a7e6e;font-size:13px}.state{padding:32px;text-align:center;color:#967f70}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.timeline-card{max-height:none}}
 .record-page{min-height:100vh;padding:32px max(20px,4vw);box-sizing:border-box;background:#fffaf2;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions,.timeline-header{display:flex;align-items:center;gap:10px}.timeline-header{justify-content:space-between;flex-wrap:wrap}.timeline-filters{display:flex;gap:6px;flex-wrap:wrap}.timeline-filters button{border:1px solid #efd9c8;border-radius:999px;padding:5px 10px;background:#fffdf9;color:#8e6e5d;cursor:pointer}.timeline-filters button.active{background:#e99168;color:#fff;border-color:#e99168}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.timeline-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:18px;color:#9a7e6e;font-size:13px}.state{padding:32px;text-align:center;color:#967f70}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.timeline-card{max-height:none}}
 </style>

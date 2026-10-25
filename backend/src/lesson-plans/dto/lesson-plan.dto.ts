@@ -77,6 +77,10 @@ export class LessonRecoveryPointDto {
 }
 
 export class LessonStepDto {
+  @IsOptional() @IsString() @MaxLength(100) localStepId?: string;
+  @IsOptional() @IsInt() @Min(1) sourceStepId?: number;
+  @IsOptional() @IsString() @MaxLength(3000) teacherInstruction?: string;
+  @IsOptional() @IsString() @MaxLength(3000) studentContent?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) sortOrder?: number;
   @IsString() @MinLength(1) @MaxLength(200) title: string;
   @IsEnum(LessonStepType) stepType: LessonStepType;
@@ -116,11 +120,34 @@ export class SaveLessonStepsDto {
   @IsOptional() @IsString() @MaxLength(500) changeSummary?: string;
 }
 
+/** A complete authoring save; steps and metadata share one transaction. */
+export class AiProvenanceDto {
+  @IsInt() @Min(1) draftId: number;
+  @IsString() @MinLength(1) @MaxLength(100) candidateId: string;
+  @IsString() @MinLength(1) @MaxLength(100) targetLocalStepId: string;
+  @IsEnum(['teacherInstruction', 'studentContent', 'durationSeconds', 'resourceId', 'title'])
+  field: 'teacherInstruction' | 'studentContent' | 'durationSeconds' | 'resourceId' | 'title';
+  @IsEnum(['accepted', 'modified', 'rejected']) decision: string;
+}
+
+export class SaveLessonAuthoringDto extends CreateLessonPlanDto {
+  @IsOptional() @IsArray() @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => AiProvenanceDto)
+  aiProvenance?: AiProvenanceDto[];
+  @IsString() @MinLength(1) @MaxLength(100) requestId: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) version?: number;
+  @IsArray() @ArrayMaxSize(100)
+  @ValidateNested({ each: true }) @Type(() => LessonStepDto)
+  steps: LessonStepDto[];
+  @IsOptional() @IsString() @MaxLength(500) changeSummary?: string;
+}
+
 export class AddLessonStepDto extends LessonStepDto {
   @Type(() => Number) @IsInt() @Min(1) version: number;
 }
 
 export class UpdateLessonStepDto {
+  @IsOptional() @IsString() @MaxLength(3000) teacherInstruction?: string;
+  @IsOptional() @IsString() @MaxLength(3000) studentContent?: string;
   @Type(() => Number) @IsInt() @Min(1) version: number;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(200) title?: string;
   @IsOptional() @IsEnum(LessonStepType) stepType?: LessonStepType;
@@ -180,6 +207,12 @@ export class UpdateLessonRunProgressDto {
 }
 
 export class AiLessonPlanDraftRequestDto {
+  @IsOptional() @IsInt() @Min(2) @Max(2) schemaVersion?: number;
+  @IsOptional() @IsEnum(['plan_outline', 'step_optimization', 'student_text'])
+  taskType?: 'plan_outline' | 'step_optimization' | 'student_text';
+  @IsOptional() @IsInt() @Min(1) baseLessonPlanId?: number;
+  @IsOptional() @IsInt() @Min(1) baseVersion?: number;
+  @IsOptional() @IsInt() @Min(1) targetStepId?: number;
   @IsString() @MinLength(1) @MaxLength(200) theme: string;
   @IsEnum(LessonAgeGroup) ageGroup: LessonAgeGroup;
   @IsString() @MinLength(1) @MaxLength(100) domain: string;
@@ -194,6 +227,23 @@ export class AiLessonPlanDraftRequestDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   resourceIds: number[] = [];
+}
+
+export class AiPreparationCandidateDto {
+  @IsString() @MinLength(1) @MaxLength(200) title: string;
+  @IsString() @MaxLength(3000) teacherInstructionSuggestion: string;
+  @IsString() @MaxLength(1500) studentContentCandidate: string;
+  @IsString() @MinLength(1) @MaxLength(1000) rationale: string;
+  @IsOptional() @IsInt() @Min(1) resourceId?: number;
+  @IsInt() @Min(10) @Max(7200) durationSecondsSuggestion: number;
+}
+
+export class AiPreparationOutputDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(30)
+  @ValidateNested({ each: true }) @Type(() => AiPreparationCandidateDto)
+  candidates: AiPreparationCandidateDto[];
+  @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) @MaxLength(500, { each: true })
+  warnings: string[];
 }
 
 export class AiLessonProcessStepDto {

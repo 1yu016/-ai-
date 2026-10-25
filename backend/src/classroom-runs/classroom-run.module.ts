@@ -1,4 +1,9 @@
 import { Module } from '@nestjs/common';
+import { ScreenPreparationService } from './screen-preparation.service';
+import { ScreenLifecycleService } from './screen-lifecycle.service';
+import { ScreenOpeningController } from './screen-opening.controller';
+import { ScreenHandoffService } from './screen-handoff.service';
+import { ScreenPreparationController } from './screen-preparation.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { Teacher } from '../auth/entities/teacher.entity';
@@ -82,12 +87,17 @@ export const CLASSROOM_RUN_ENTITIES = [
     AvatarModule,
   ],
   controllers: [
+    ScreenOpeningController,
+    ScreenPreparationController,
     ClassroomRunController,
     ClassroomCommandController,
     StudentQuestionController,
     ClassroomRecordController,
   ],
   providers: [
+    ScreenHandoffService,
+    ScreenLifecycleService,
+    ScreenPreparationService,
     ClassroomRunService,
     ClassroomSnapshotService,
     StudentRewardService,

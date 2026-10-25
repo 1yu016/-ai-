@@ -30,6 +30,8 @@ const webServer = [
       INITIAL_ADMIN_NAME: '端到端测试管理员',
       ARK_API_KEY: 'e2e-placeholder-not-a-real-key',
       ARK_ENDPOINT_ID: 'e2e-placeholder-model',
+      CLASSROOM_SUMMARY_AI_ENABLED: 'false',
+      AI_REQUEST_TIMEOUT_MS: '1000',
     },
   },
   {

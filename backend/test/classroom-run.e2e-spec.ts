@@ -1,4 +1,20 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { jest } from '@jest/globals';
+import { firstValueFrom } from 'rxjs';
+import { ClassroomMobileService } from '../src/classroom-mobile/classroom-mobile.service';
+import { ClassroomSnapshotService } from '../src/classroom-runs/classroom-snapshot.service';
+import { ClassroomSummary } from '../src/classroom-runs/entities/classroom-summary.entity';
+import { ClassroomSummaryAiService } from '../src/classroom-runs/classroom-summary-ai.service';
+import { LessonPlanService } from '../src/lesson-plans/lesson-plan.service';
+import { LessonPlanAiService } from '../src/lesson-plans/lesson-plan-ai.service';
+import { LessonPlan } from '../src/lesson-plans/entities/lesson-plan.entity';
+import { LessonPlanVersion } from '../src/lesson-plans/entities/lesson-plan-version.entity';
+import { LessonAiDraft } from '../src/lesson-plans/entities/lesson-ai-draft.entity';
+import { LessonAiDraftStatus } from '../src/lesson-plans/lesson-plan.types';
+import { ResourceReference } from '../src/resources/entities/resource-reference.entity';
+import { ScreenLifecycleService } from '../src/classroom-runs/screen-lifecycle.service';
+import { ScreenHandoffService } from '../src/classroom-runs/screen-handoff.service';
+import type { JwtTeacherPayload } from '../src/auth/auth.types';
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
@@ -501,6 +517,283 @@ describe('Task four classroom run state machine (e2e)', () => {
     };
   }
 
+  it('authoring is durable/idempotent, conflicts atomically, preserves configuration and freezes classroom steps', async () => {
+    const body = { title: 'Authoring验收', theme: '自然', ageGroup: '4-5', objectives: '观察',
+      estimatedMinutes: 20, status: 'ready', requestId: requestId('authoring'), changeSummary: '完整备课',
+      steps: [{ title: '观察', stepType: 'resource', teacherInstruction: '内部指导', studentContent: '观察图片', resourceId: approvedResourceId,
+        durationSeconds: 60, actions: [{ actionType: 'avatar_action', actionName: 'wave' }],
+        recoveryPoint: { name: '重新观察', trigger: 'manual', recoveryStepOrder: 1 } }] };
+    const create = () => request(app.getHttpServer()).post('/lesson-plans/authoring').set(auth()).send(body);
+    const [first, retry] = await Promise.all([create(), create()]);
+    expect(first.status).toBe(201); expect(retry.status).toBe(201);
+    expect(first.body.id).toBe(retry.body.id); expect(first.body.version).toBe(1);
+    const versions = app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    expect(await versions.count({ where: { lessonPlanId: first.body.id } })).toBe(1);
+    expect(first.body.steps[0].actions[0].actionName).toBe('wave');
+    expect(first.body.steps[0].recoveryPoint.name).toBe('重新观察');
+    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(first.body.id)).expect(201);
+    const update = (suffix: string) => request(app.getHttpServer()).put(`/lesson-plans/${first.body.id}/authoring`).set(auth())
+      .send({ ...body, version: 1, title: suffix, requestId: requestId(suffix) });
+    const competing = await Promise.all([update('更新A'), update('更新B')]);
+    expect(competing.map(r => r.status).sort()).toEqual([200, 409]);
+    const saved = competing.find(r => r.status === 200)!.body;
+    expect(saved.version).toBe(2);
+    expect(saved.steps[0].actions[0].actionName).toBe('wave');
+    expect(saved.steps[0].recoveryPoint.name).toBe('重新观察');
+    const frozen = await request(app.getHttpServer()).get(`/classroom-runs/${run.body.id}`).set(auth()).expect(200);
+    expect(frozen.body.lessonPlanVersion).toBe(1); expect(frozen.body.title).toBe('Authoring验收');
+    expect(frozen.body.steps[0].title).toBe('观察');
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.body.id}/cancel`).set(auth())
+      .send({ deviceId, version: run.body.version, requestId: requestId('authoring-cancel') }).expect(201);
+    // Identical retries still return the original receipt after a newer save.
+    expect((await create()).body.version).toBe(1);
+  });
+
+  it('rolls back actual database metadata, steps, references and versions after a late write failure', async () => {
+    const plan = await createPlan(true, approvedResourceId);
+    const before = (await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth())).body;
+    const versions = app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    const references = app.get<Repository<ResourceReference>>(getRepositoryToken(ResourceReference));
+    const counts = [await versions.count(), await references.count()];
+    const service = app.get(LessonPlanService);
+    const fail = jest.spyOn(service as any, 'createVersion').mockImplementationOnce(async () => { throw new Error('late-write'); });
+    try {
+      await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/authoring`).set(auth()).send({
+        title: '不能落库', theme: before.theme, ageGroup: before.ageGroup, objectives: before.objectives,
+        estimatedMinutes: before.estimatedMinutes, status: before.status, version: before.version,
+        requestId: requestId('rollback'),
+        steps: before.steps.map((step: any) => ({ title: step.title, stepType: 'teacher_talk',
+          teacherInstruction: '回滚测试教师指导', studentContent: '', durationSeconds: step.durationSeconds })) }).expect(500);
+      expect(fail).toHaveBeenCalledTimes(1);
+    } finally { fail.mockRestore(); }
+    const after = (await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth())).body;
+    expect(after).toEqual(before);
+    expect([await versions.count(), await references.count()]).toEqual(counts);
+  });
+
+  it('keeps teacher instructions out of empty student content and treats historical plans as unreviewed', async () => {
+    const legacy = await createPlan();
+    const old = (await request(app.getHttpServer()).get(`/lesson-plans/${legacy.id}`).set(auth()).expect(200)).body;
+    expect(old.steps[0].studentContent).toBeNull();
+    expect(old.steps[0].contentReviewRequired).toBe(true);
+    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(legacy.id)).expect(201);
+    expect(run.body.steps[0].content).toBe('');
+    const saved = await request(app.getHttpServer()).put(`/lesson-plans/${legacy.id}/authoring`).set(auth()).send({
+      title: old.title, theme: old.theme, ageGroup: old.ageGroup, objectives: old.objectives,
+      estimatedMinutes: old.estimatedMinutes, status: old.status, version: old.version, requestId: requestId('isolate'),
+      steps: [{ title: '明确隔离', stepType: 'teacher_talk', teacherInstruction: '仅老师：检查学生反应', studentContent: '', durationSeconds: 60 }]
+    }).expect(200);
+    expect(saved.body.steps[0].instruction).toBe('仅老师：检查学生反应');
+    expect(saved.body.steps[0].content).toBe('');
+    const frozen = (await request(app.getHttpServer()).get(`/classroom-runs/${run.body.id}`).set(auth()).expect(200)).body;
+    expect(frozen.steps[0].title).toBe(old.steps[0].title);
+    expect(frozen.steps[0].content).toBe('');
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.body.id}/cancel`).set(auth())
+      .send({ deviceId, version: run.body.version, requestId: requestId('isolate-cancel') }).expect(201);
+    const restarted = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(legacy.id)).expect(201);
+    expect(restarted.body.steps[0].content).toBe('');
+    await request(app.getHttpServer()).post(`/classroom-runs/${restarted.body.id}/cancel`).set(auth())
+      .send({ deviceId, version: restarted.body.version, requestId: requestId('isolate-cancel2') }).expect(201);
+  });
+
+  it('projects explicit student content through run and screen-state, never teacher instructions', async () => {
+    const body = { title: '明确学生内容', theme: '数字', ageGroup: '4-5', objectives: '认识数字1',
+      estimatedMinutes: 20, status: 'ready', requestId: requestId('nonempty-content'),
+      steps: [{ title: '认识1', stepType: 'teacher_talk', teacherInstruction: '内部备注：观察反应',
+        studentContent: '小朋友，找一找数字1吧！', durationSeconds: 60 }] };
+    const plan = await request(app.getHttpServer()).post('/lesson-plans/authoring').set(auth()).send(body).expect(201);
+    const read = await request(app.getHttpServer()).get(`/lesson-plans/${plan.body.id}`).set(auth()).expect(200);
+    expect(read.body.steps[0]).toMatchObject({ teacherInstruction: body.steps[0].teacherInstruction,
+      studentContent: body.steps[0].studentContent, contentReviewRequired: false });
+    const run = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.body.id)).expect(201);
+    expect(run.body.steps[0].content).toBe(body.steps[0].studentContent);
+    const screen = await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200);
+    expect(screen.body.classroomState.steps[0].content).toBe(body.steps[0].studentContent);
+    expect(screen.body.classroomState.steps[0].content).not.toContain('内部备注');
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.body.id}/cancel`).set(auth())
+      .send({ deviceId, version: run.body.version, requestId: requestId('nonempty-cancel') }).expect(201);
+  });
+
+  it('keeps legacy step APIs usable without auto-copying instruction into content', async () => {
+    const plan = await createPlan(false);
+    const save = await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/steps`).set(auth()).send({
+      version: 1, steps: [{ title: '旧客户端', stepType: 'teacher_talk', instruction: '仅教师指导', durationSeconds: 60 }]
+    }).expect(200);
+    expect(save.body.steps[0].instruction).toBe('仅教师指导');
+    expect(save.body.steps[0].content).toBe('');
+    const patch = await request(app.getHttpServer()).patch(`/lesson-plans/${plan.id}/steps/${save.body.steps[0].id}`).set(auth())
+      .send({ version: save.body.version, instruction: '修改教师指导' }).expect(200);
+    expect(patch.body.steps[0].instruction).toBe('修改教师指导');
+    expect(patch.body.steps[0].content).toBe('');
+    const read = await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth()).expect(200);
+    expect(read.body.steps[0].studentContent).toBeNull();
+    expect(read.body.steps[0].contentReviewRequired).toBe(true);
+  });
+
+  it('copies atomically with an independent unreviewed v1 and rolls back failed copies', async () => {
+    const source = await createPlan(true, approvedResourceId);
+    const copy = await request(app.getHttpServer()).post(`/lesson-plans/${source.id}/copy`).set(auth()).expect(201);
+    expect(copy.body.id).not.toBe(source.id); expect(copy.body.version).toBe(1);
+    expect(copy.body.steps[0].contentReviewRequired).toBe(true);
+    expect(copy.body.steps[0].studentContent).toBeNull();
+    expect(copy.body.steps[0].actions[0].actionName).toBe('wave');
+    expect(copy.body.steps[1].recoveryPoint.name).toBe('重新提问');
+    const plans = app.get<Repository<LessonPlan>>(getRepositoryToken(LessonPlan));
+    const versions = app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    const refs = app.get<Repository<ResourceReference>>(getRepositoryToken(ResourceReference));
+    expect(await versions.count({ where: { lessonPlanId: copy.body.id } })).toBe(1);
+    const before = [await plans.count(), await versions.count(), await refs.count()];
+    const fail = jest.spyOn(app.get(LessonPlanService) as any, 'createVersion').mockImplementationOnce(async () => { throw Error('copy rollback'); });
+    try { await request(app.getHttpServer()).post(`/lesson-plans/${source.id}/copy`).set(auth()).expect(500); expect(fail).toHaveBeenCalled(); }
+    finally { fail.mockRestore(); }
+    expect([await plans.count(), await versions.count(), await refs.count()]).toEqual(before);
+    expect((await request(app.getHttpServer()).get(`/lesson-plans/${source.id}`).set(auth())).body.version).toBe(source.version);
+  });
+
+  it('legacy AI confirmation maps generated prose only to teacher instructions', async () => {
+    const repo = app.get<Repository<LessonAiDraft>>(getRepositoryToken(LessonAiDraft));
+    const output = { title: '旧AI草稿', theme: '数字', ageGroup: '4-5', domain: '科学', estimatedMinutes: 20,
+      teachingObjectives: ['认识1'], introduction: '教师导入提示',
+      teachingProcess: [{ title: '引导', stepType: 'teacher_talk', content: '教师内部建议', durationSeconds: 60 }],
+      interactiveQuestions: [], extensionActivities: [], assessmentSuggestions: [], resourceRecommendations: [] };
+    const draft = await repo.save(repo.create({ teacherId, inputJson: '{}', outputJson: JSON.stringify(output),
+      provider: 'test', model: 'test', status: LessonAiDraftStatus.Generated }));
+    const response = await request(app.getHttpServer()).post(`/lesson-plans/ai-drafts/${draft.id}/confirm`).set(auth()).send({}).expect(201);
+    expect(response.body.steps[0].instruction).toBe('教师导入提示');
+    expect(response.body.steps[0].content).toBe('');
+    expect(response.body.steps[0].studentContent).toBeNull();
+    expect(response.body.steps[1].instruction).toBe('教师内部建议');
+  });
+
+  it('2A generates and reads a candidate Draft without changing a real lesson version; failure leaves authoring available', async () => {
+    const plan = await createPlan(true, approvedResourceId);
+    const before = (await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth())).body;
+    const versionRepo = app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    const versionsBefore = await versionRepo.count();
+    const planRepo = app.get<Repository<LessonPlan>>(getRepositoryToken(LessonPlan));
+    const plansBefore = await planRepo.count();
+    const ai = app.get(LessonPlanAiService) as any;
+    const create = jest.spyOn(ai.openai.chat.completions, 'create');
+    create.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ candidates: [{ title: '观察',
+      teacherInstructionSuggestion: '老师拿苹果引导观察', studentContentCandidate: '苹果是什么颜色？',
+      rationale: '鼓励观察', resourceId: approvedResourceId, durationSecondsSuggestion: 60 }], warnings: [] }) } }], usage: {} });
+    const input = { schemaVersion: 2, taskType: 'step_optimization', baseLessonPlanId: plan.id,
+      baseVersion: plan.version, targetStepId: before.steps[0].id, theme: before.theme, ageGroup: before.ageGroup,
+      domain: '科学', durationMinutes: 20, teachingObjectives: before.objectives, resourceIds: [approvedResourceId] };
+    try {
+      const generated = await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send(input).expect(201);
+      expect(generated.body.output.schemaVersion).toBe(2);
+      expect(generated.body.output.candidates[0].candidateId).toBeTruthy();
+      const read = await request(app.getHttpServer()).get(`/lesson-plans/ai-drafts/${generated.body.id}`).set(auth()).expect(200);
+      expect(read.body.output).toEqual(generated.body.output);
+      const context = JSON.parse(create.mock.calls[0]![0].messages[1].content);
+      expect(context.resources[0].resourceId).toBe(approvedResourceId);
+      expect(JSON.stringify(context)).not.toContain('absolutePath');
+      await request(app.getHttpServer()).post(`/lesson-plans/ai-drafts/${generated.body.id}/confirm`).set(auth()).send({}).expect(409);
+      expect((await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth())).body).toEqual(before);
+      expect(await versionRepo.count()).toBe(versionsBefore);
+      expect(await planRepo.count()).toBe(plansBefore);
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send({ ...input, baseVersion: plan.version + 1 }).expect(409);
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send({ ...input, targetStepId: 999999 }).expect(400);
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send({ ...input, resourceIds: [draftResourceId] }).expect(409);
+      expect(create).toHaveBeenCalledTimes(1);
+      create.mockResolvedValue({ choices: [{ message: { content: '{"candidates":[{"title":"错误","teacherInstructionSuggestion":"观察","studentContentCandidate":"你是笨蛋","rationale":"建议","durationSecondsSuggestion":60}],"warnings":[]}' } }] });
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send(input).expect(503);
+      expect((await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth())).body).toEqual(before);
+      create.mockRejectedValue(new Error('provider timeout'));
+      await request(app.getHttpServer()).post('/lesson-plans/ai-drafts').set(auth()).send(input).expect(503);
+      const manual = await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/authoring`).set(auth()).send({
+        title: before.title, theme: before.theme, ageGroup: before.ageGroup, objectives: before.objectives,
+        estimatedMinutes: before.estimatedMinutes, version: plan.version, requestId: requestId('after-ai-failure'),
+        steps: [{ title: '人工继续', stepType: 'teacher_talk', teacherInstruction: '人工指导', studentContent: '', durationSeconds: 60 }] }).expect(200);
+      expect(manual.body.version).toBe(plan.version + 1);
+    } finally { create.mockRestore(); }
+  });
+
+  it('2B authoring validates provenance and records it without changing the AI Draft', async () => {
+    const plan = await createPlan(true, approvedResourceId);
+    const before = (await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth())).body;
+    const repo = app.get<Repository<LessonAiDraft>>(getRepositoryToken(LessonAiDraft));
+    const output = { schemaVersion: 2, baseLessonPlanId: plan.id, baseVersion: plan.version, targetStepId: before.steps[0].id,
+      candidates: [{ candidateId: 'provenance-candidate', teacherInstructionSuggestion: '建议指导', studentContentCandidate: '建议提问', resourceId: approvedResourceId }], warnings: [] };
+    const draft = await repo.save(repo.create({ teacherId, inputJson: '{"schemaVersion":2}', outputJson: JSON.stringify(output),
+      provider: 'test', model: 'test', status: LessonAiDraftStatus.Generated }));
+    const body = { title: before.title, theme: before.theme, ageGroup: before.ageGroup, objectives: before.objectives,
+      estimatedMinutes: before.estimatedMinutes, version: plan.version, requestId: requestId('provenance'),
+      steps: before.steps.map((s: any) => ({ localStepId: `local-${s.id}`, sourceStepId: s.id, title:s.title, stepType:s.stepType,
+        teacherInstruction:'教师指导', studentContent:'教师修订后学生文字', resourceId:s.resourceId, durationSeconds:s.durationSeconds })),
+      aiProvenance: [{ draftId:draft.id, candidateId:'provenance-candidate', targetLocalStepId:`local-${before.steps[0].id}`, field:'studentContent', decision:'modified' }] };
+    const versions = app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    const count = await versions.count();
+    await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/authoring`).set(auth()).send({ ...body,
+      aiProvenance:[{...body.aiProvenance[0],candidateId:'forged'}] }).expect(400);
+    expect(await versions.count()).toBe(count);
+    const foreign = await repo.save(repo.create({ teacherId:teacherId+999, inputJson:'{}',outputJson:JSON.stringify(output),provider:'test',model:'test',status:LessonAiDraftStatus.Generated }));
+    await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/authoring`).set(auth()).send({ ...body,
+      aiProvenance:[{...body.aiProvenance[0],draftId:foreign.id}] }).expect(403);
+    const saved = await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/authoring`).set(auth()).send(body).expect(200);
+    expect(saved.body.version).toBe(plan.version+1);
+    const version = await versions.findOneByOrFail({lessonPlanId:plan.id,versionNo:saved.body.version});
+    expect(JSON.parse(version.snapshotJson).aiProvenance[0]).toMatchObject({draftId:draft.id,
+      baseVersion:plan.version, sourceStepId:before.steps[0].id, suggestedValue:'建议提问',
+      finalValue:'教师修订后学生文字', matchesSuggestion:false, savedStepId:saved.body.steps[0].id});
+    expect(await repo.findOneByOrFail({id:draft.id})).toEqual(draft);
+    await request(app.getHttpServer()).put(`/lesson-plans/${plan.id}/authoring`).set(auth()).send({ ...body,
+      version:saved.body.version, requestId:requestId('stale-provenance') }).expect(409);
+    expect(await versions.count()).toBe(count+1);
+  });
+
+  it('2C-1 builds read-only evidence with strict permissions and a privacy whitelist', async () => {
+    const plan = await createPlan();
+    const one = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const list = () => request(app.getHttpServer()).get(`/lesson-plans/${plan.id}/reference-runs`).set(auth());
+    expect((await list()).body.total).toBe(0);
+    await request(app.getHttpServer()).post(`/classroom-runs/${one.body.id}/complete`).set(auth())
+      .send({deviceId,version:one.body.version,requestId:requestId('evidence-complete')}).expect(201);
+    const privacyEvent = await events.save(events.create({classroomRunId:one.body.id,eventType:ClassroomEventType.Pause,
+      operatorType:AuthUserType.Teacher,operatorId:teacherId,requestId:requestId('private-event'),result:'success' as any,
+      payload:JSON.stringify({studentId:98765,name:'隐私幼儿姓名',photoUrl:'https://private/photo',voiceUrl:'https://private/audio',stepIndex:0})}));
+    await events.save(events.create({classroomRunId:one.body.id,eventType:ClassroomEventType.ChangeStep,
+      operatorType:AuthUserType.Teacher,operatorId:teacherId,requestId:requestId('failed-event'),result:'failure' as any,payload:'{}'}));
+    const rows=(await list().expect(200)).body; expect(rows.total).toBe(1); expect(rows.items[0].runId).toBe(one.body.id);
+    const runs=app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+    const summaries=app.get<Repository<ClassroomSummary>>(getRepositoryToken(ClassroomSummary));
+    await summaries.save(summaries.create({classroomRunId:one.body.id,draftId:999,teacherId,
+      classroomSummary:'隐私幼儿姓名今天回答了问题',participation:'教师确认意见',interestPoints:'[]',commonQuestions:'[]',teachingStrategies:'[]',confirmedAt:new Date()}));
+    const versions=app.get<Repository<LessonPlanVersion>>(getRepositoryToken(LessonPlanVersion));
+    const runBefore=await runs.findOneByOrFail({id:one.body.id}); const summariesBefore=await summaries.find();
+    const versionsBefore=await versions.find(); const eventsBefore=await events.find({where:{classroomRunId:one.body.id}});
+    const model=jest.spyOn((app.get(LessonPlanAiService) as any).openai.chat.completions,'create');
+    const summaryModel=jest.spyOn(app.get(ClassroomSummaryAiService),'generate');
+    const body={baseVersion:plan.version,runIds:[one.body.id]};
+    try {
+      const pack=(await request(app.getHttpServer()).post(`/lesson-plans/${plan.id}/evidence-pack`).set(auth()).send(body).expect(201)).body;
+      expect(pack.sourceManifest[0].runId).toBe(one.body.id);
+      expect(pack.safeFacts.runs[0].facts.some((e:any)=>e.evidenceId===`event:${privacyEvent.id}`)).toBe(true);
+      const safe=JSON.stringify(pack.safeFacts);
+      for(const secret of ['隐私幼儿姓名','studentId','photoUrl','voiceUrl','payload','98765','https://']) expect(safe).not.toContain(secret);
+      expect(pack.safeFacts.runs[0].facts.filter((e:any)=>e.type==='change_step')).toHaveLength(0);
+      const repeat=(await request(app.getHttpServer()).post(`/lesson-plans/${plan.id}/evidence-pack`).set(auth()).send(body).expect(201)).body;
+      expect(repeat.digest).toBe(pack.digest); expect(model).not.toHaveBeenCalled();
+      expect(summaryModel).not.toHaveBeenCalled();
+      expect(pack.teacherReview[0].formalSummary.classroomSummary).toContain('隐私幼儿姓名');
+      expect(JSON.stringify(pack.safeFacts)).not.toContain('隐私幼儿姓名');
+      const duplicate=(await request(app.getHttpServer()).post(`/lesson-plans/${plan.id}/evidence-pack`).set(auth()).send({...body,runIds:[one.body.id,one.body.id]}).expect(201)).body;
+      expect(duplicate.sourceManifest).toHaveLength(1);
+      const savedSummary=await summaries.findOneByOrFail({classroomRunId:one.body.id});
+      await summaries.update(savedSummary.id,{classroomSummary:'教师后来更新了总结'});
+      const changed=(await request(app.getHttpServer()).post(`/lesson-plans/${plan.id}/evidence-pack`).set(auth()).send(body).expect(201)).body;
+      expect(changed.sourceManifest[0].summary.digest).not.toBe(pack.sourceManifest[0].summary.digest);
+      await summaries.save(savedSummary);
+      await request(app.getHttpServer()).post(`/lesson-plans/${plan.id}/evidence-pack`).set(auth()).send({...body,baseVersion:plan.version+1}).expect(409);
+      await request(app.getHttpServer()).post(`/lesson-plans/${plan.id}/evidence-pack`).set(auth()).send({...body,runIds:[one.body.id,999999]}).expect(403);
+      await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}/reference-runs`).set('Authorization',`Bearer ${otherToken}`).expect(403);
+      expect(await runs.findOneByOrFail({id:one.body.id})).toEqual(runBefore);
+      expect(await summaries.find()).toEqual(summariesBefore); expect(await versions.find()).toEqual(versionsBefore);
+      expect(await events.find({where:{classroomRunId:one.body.id}})).toEqual(eventsBefore);
+    } finally { model.mockRestore(); summaryModel.mockRestore(); }
+  });
+
   it('drives the classroom screen from server state and restores player snapshots', async () => {
     const idle = await request(app.getHttpServer())
       .get(`/classroom-runs/screen-state?deviceId=${deviceId}`)
@@ -623,9 +916,261 @@ describe('Task four classroom run state machine (e2e)', () => {
       .set(auth())
       .expect(200);
     expect(summary.body).toMatchObject({
-      page: 'summary',
-      classroomState: { status: 'completed' },
+      page: 'idle',
+      classroomState: null,
     });
+  });
+
+  it('screen isolates terminal history, restores paused, and blocks cross-day activity', async () => {
+    const repo = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+    const plan = await createPlan(true, approvedResourceId);
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const id = started.body.id;
+    const read = () => request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth());
+    await repo.update(id, { status: ClassroomRunStatus.Paused });
+    expect((await read().expect(200)).body.classroomState).toMatchObject({ id, status: 'paused' });
+    for (const status of [ClassroomRunStatus.Running, ClassroomRunStatus.Paused]) {
+      await repo.update(id, { status, startedAt: new Date(Date.now() - 48 * 60 * 60 * 1000) });
+      const stale = await read().expect(409);
+      expect(stale.body.message).toContain('不是今天');
+      expect((await repo.findOneByOrFail({ id })).status).toBe(status);
+    }
+    await repo.update(id, { startedAt: new Date() });
+    const bindings = app.get<Repository<DeviceBinding>>(getRepositoryToken(DeviceBinding));
+    const binding = await bindings.findOneByOrFail({ deviceId, status: BindingStatus.Active });
+    await bindings.update(binding.id, { classroomId: classroom2Id });
+    expect((await read().expect(409)).body.message).toContain('绑定不一致');
+    await bindings.update(binding.id, { classroomId: binding.classroomId });
+    await app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot)).update({ classroomRunId: id }, { checksum: 'invalid' });
+    expect((await read().expect(200)).body).toMatchObject({ page: 'recovery', classroomState: { manualInterventionRequired: true } });
+    for (const status of [ClassroomRunStatus.Completed, ClassroomRunStatus.Cancelled, ClassroomRunStatus.Failed]) {
+      await repo.update(id, { status, endedAt: null });
+      expect((await read().expect(200)).body).toMatchObject({ page: 'idle', classroomState: null });
+      expect((await request(app.getHttpServer()).get(`/classroom-runs/${id}`).set(auth()).expect(200)).body.status).toBe(status);
+      await request(app.getHttpServer()).get(`/classroom-runs/${id}/restore?deviceId=${deviceId}`).set(auth()).expect(200);
+    }
+  });
+
+  it('READY creates no Run or Snapshot, cancels safely, and starts one real Run idempotently', async () => {
+    const repo = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+    const snapshots = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
+    const plan = await createPlan(true, approvedResourceId);
+    const url = `/devices/${deviceId}/screen-preparations`;
+    const body = { classId, classroomId, lessonPlanId: plan.id, lessonPlanVersion: plan.version, requestId: requestId('ready') };
+    const before = [await repo.count(), await snapshots.count(), await events.count()];
+    const ready = await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201);
+    expect([await repo.count(), await snapshots.count(), await events.count()]).toEqual(before);
+    const screen = await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200);
+    expect(screen.body).toMatchObject({ page: 'ready', classroomState: null, preparation: { preparationId: ready.body.preparationId, welcomeText: '欢迎小朋友，老师准备好后我们一起开始。' } });
+    expect(screen.body.preparation).not.toHaveProperty('steps');
+    const retry = await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201);
+    expect(retry.body.expiresAt).toBe(ready.body.expiresAt);
+    await request(app.getHttpServer()).delete(`${url}/${ready.body.preparationId}?revision=${ready.body.revision}`).set(auth()).expect(200);
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body.page).toBe('idle');
+    await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(410);
+    const second = await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, requestId: requestId('ready-new') }).expect(201);
+    // An old cancel must not remove a newer preparation.
+    await request(app.getHttpServer()).delete(`${url}/${ready.body.preparationId}?revision=${ready.body.revision}`).set(auth()).expect(200);
+    expect((await request(app.getHttpServer()).get(url).set(auth()).expect(200)).body.preparation.preparationId).toBe(second.body.preparationId);
+    await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(409);
+    const start = startBody(plan.id, { preparationId: second.body.preparationId, preparationRevision: second.body.revision });
+    const results = await Promise.all([0, 1].map(() => request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(start).expect(201)));
+    expect(results[0].body.id).toBe(results[1].body.id);
+    expect(await repo.count()).toBe(before[0]! + 1);
+    expect((await request(app.getHttpServer()).get(url).set(auth()).expect(200)).body.preparation).toBeNull();
+    const opening = await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200);
+    expect(opening.body.phase).toBe('opening');
+    expect(opening.body.lifecycle).toMatchObject({ runId: results[0].body.id, deviceId, phase: 'opening', revision: 1 });
+    const snapshotRepo = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
+    const countBeforeRetry = await snapshotRepo.count({ where: { classroomRunId: results[0].body.id } });
+    await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(start).expect(201);
+    expect(await snapshotRepo.count({ where: { classroomRunId: results[0].body.id } })).toBe(countBeforeRetry);
+    await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, requestId: requestId('ready-over-active') }).expect(409);
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body.page).toBe('classroom');
+    await request(app.getHttpServer()).post(`/classroom-runs/${results[0].body.id}/complete`).set(auth()).send({ deviceId, version: results[0].body.version, requestId: requestId('ready-complete') }).expect(201);
+  });
+
+  it('opening complete/skip are idempotent projections, with pause priority and GET/SSE parity', async () => {
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const id = started.body.id as number;
+    const read = () => request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200);
+    const opening = (await read()).body;
+    const dto = { deviceId, bindingId: opening.lifecycle.bindingId, expectedRevision: 1 };
+    const actor = { sub: teacherId, userType: AuthUserType.Teacher, role: TeacherRole.Teacher, schoolId: 'garden-run' } as JwtTeacherPayload;
+    const stream = await firstValueFrom(app.get(ClassroomMobileService).screenStream(actor, deviceId));
+    expect(stream.type).toBe('screen_state');
+    expect(stream.data).toMatchObject({ phase: opening.phase, lifecycle: opening.lifecycle, classroomState: { id } });
+    const paused = await request(app.getHttpServer()).post(`/classroom-runs/${id}/pause`).set(auth()).send({ deviceId, version: started.body.version, requestId: requestId('opening-pause') }).expect(201);
+    expect((await read()).body).toMatchObject({ phase: 'paused', classroomState: { status: 'paused' }, lifecycle: { phase: 'opening' } });
+    const completed = await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/complete`).set(auth()).send(dto).expect(201);
+    expect(completed.body).toMatchObject({ phase: 'teaching', revision: 2 });
+    const snapshots = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
+    const count = await snapshots.count({ where: { classroomRunId: id } });
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/skip`).set(auth()).send(dto).expect(201);
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/complete`).set(auth()).send(dto).expect(201);
+    expect(await snapshots.count({ where: { classroomRunId: id } })).toBe(count);
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/opening/complete`).set(auth()).send({ ...dto, expectedRevision: 3 }).expect(409);
+    const unchanged = await request(app.getHttpServer()).get(`/classroom-runs/${id}`).set(auth()).expect(200);
+    expect(unchanged.body).toMatchObject({ status: 'paused', currentStepIndex: 0, version: paused.body.version });
+    const resumed = await request(app.getHttpServer()).post(`/classroom-runs/${id}/resume`).set(auth()).send({ deviceId, version: paused.body.version, requestId: requestId('opening-resume') }).expect(201);
+    expect((await read()).body.phase).toBe('teaching');
+    await request(app.getHttpServer()).post(`/classroom-runs/${id}/complete`).set(auth()).send({ deviceId, version: resumed.body.version, requestId: requestId('opening-end') }).expect(201);
+    const second = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const secondState = (await read()).body;
+    await request(app.getHttpServer()).post(`/classroom-runs/${second.body.id}/opening/skip`).set(auth()).send({ deviceId, bindingId: secondState.lifecycle.bindingId, expectedRevision: 1 }).expect(201);
+    expect((await read()).body).toMatchObject({ phase: 'teaching', classroomState: { currentStepIndex: 0, status: 'running' } });
+    await request(app.getHttpServer()).post(`/classroom-runs/${second.body.id}/complete`).set(auth()).send({ deviceId, version: second.body.version, requestId: requestId('opening-second-end') }).expect(201);
+  });
+
+  it('failed opening initialization rolls back Run and snapshot and preserves READY', async () => {
+    const plan = await createPlan();
+    const url = `/devices/${deviceId}/screen-preparations`;
+    const ready = await request(app.getHttpServer()).post(url).set(auth()).send({ classId, classroomId,
+      lessonPlanId: plan.id, lessonPlanVersion: plan.version, requestId: requestId('opening-failure-ready') }).expect(201);
+    const runs = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+    const snapshots = app.get<Repository<ClassroomSnapshot>>(getRepositoryToken(ClassroomSnapshot));
+    const before = [await runs.count(), await snapshots.count()];
+    const stub = jest.spyOn(app.get(ScreenLifecycleService), 'createOpening').mockRejectedValueOnce(new Error('isolated opening initialization failure'));
+    try {
+      await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id, {
+        preparationId: ready.body.preparationId, preparationRevision: ready.body.revision,
+      })).expect(500);
+    } finally { stub.mockRestore(); }
+    expect([await runs.count(), await snapshots.count()]).toEqual(before);
+    expect((await request(app.getHttpServer()).get(url).set(auth()).expect(200)).body.preparation.preparationId).toBe(ready.body.preparationId);
+    await request(app.getHttpServer()).delete(`${url}/${ready.body.preparationId}?revision=${ready.body.revision}`).set(auth()).expect(200);
+  });
+
+  it('legacy active Run without lifecycle remains teaching and is never backfilled', async () => {
+    const plan = await createPlan();
+    const runs = app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun));
+    const run = await runs.save(runs.create({ lessonPlanId: plan.id, lessonPlanVersion: plan.version,
+      teacherId, classId, classroomId, deviceId, title: 'legacy', status: ClassroomRunStatus.Running,
+      startedAt: new Date(), resumedAt: new Date(), currentStepIndex: 0, elapsedSeconds: 0, version: 1 }));
+    await app.get(ClassroomSnapshotService).capture(run.id, ClassroomSnapshotReason.Start, true);
+    const screen = await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200);
+    expect(screen.body).toMatchObject({ phase: 'teaching', lifecycle: null, classroomState: { id: run.id, status: 'running' } });
+    expect(screen.body.classroomState.interactionState).not.toHaveProperty('screenLifecycle');
+    await request(app.getHttpServer()).post(`/classroom-runs/${run.id}/complete`).set(auth()).send({ deviceId, version: 1, requestId: requestId('legacy-end') }).expect(201);
+  });
+
+  it('SUMMARY requires observed active handoff, persists static refresh, and READY revokes it permanently', async () => {
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const active = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body;
+    const handoffId = active.handoff.id;
+    const complete = { deviceId, version: started.body.version, requestId: requestId('summary-complete') };
+    await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth()).send(complete).expect(201);
+    const read = () => request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}&handoffId=${handoffId}`).set(auth()).expect(200);
+    const summary = (await read()).body;
+    expect(summary).toMatchObject({ page: 'summary', phase: 'summary', classroomState: null, lifecycle: { phase: 'summary', revision: 2, runId: started.body.id } });
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body.page).toBe('idle');
+    await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth()).send(complete).expect(201);
+    expect((await read()).body.lifecycle).toEqual(summary.lifecycle);
+    const actor = { sub: teacherId, userType: AuthUserType.Teacher, role: TeacherRole.Teacher, schoolId: 'garden-run' } as JwtTeacherPayload;
+    const stream = await firstValueFrom(app.get(ClassroomMobileService).screenStream(actor, deviceId, handoffId));
+    expect(stream.data).toMatchObject({ page: 'summary', lifecycle: summary.lifecycle });
+    const leases = app.get(ScreenHandoffService);
+    expect(leases.resolve(actor, 'tampered-id', deviceId, summary.lifecycle.bindingId)).toBeNull();
+    expect(() => leases.resolve({ ...actor, sub: teacherId + 1 }, handoffId, deviceId, summary.lifecycle.bindingId)).toThrow();
+    expect(() => leases.resolve(actor, handoffId, deviceId + 1, summary.lifecycle.bindingId)).toThrow();
+    const ready = await request(app.getHttpServer()).post(`/devices/${deviceId}/screen-preparations`).set(auth()).send({ classId, classroomId, lessonPlanId: plan.id, lessonPlanVersion: plan.version, requestId: requestId('summary-new-ready') }).expect(201);
+    await request(app.getHttpServer()).delete(`/devices/${deviceId}/screen-preparations/${ready.body.preparationId}?revision=${ready.body.revision}`).set(auth()).expect(200);
+    expect((await read()).body.page).toBe('idle');
+  });
+
+  it('SUMMARY expires, closes, and failed summary creation rolls complete back atomically', async () => {
+    const plan = await createPlan();
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const active = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body;
+    const complete = { deviceId, version: started.body.version, requestId: requestId('summary-rollback') };
+    const spy = jest.spyOn(app.get(ScreenLifecycleService), 'createSummary').mockRejectedValueOnce(new Error('isolated summary failure'));
+    try { await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth()).send(complete).expect(500); } finally { spy.mockRestore(); }
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}`).set(auth()).expect(200)).body.status).toBe('running');
+    await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth()).send(complete).expect(201);
+    const read = () => request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}&handoffId=${active.handoff.id}`).set(auth()).expect(200);
+    const summary = (await read()).body;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.parse(summary.lifecycle.expiresAt) + 1);
+    try { expect((await read()).body.page).toBe('idle'); } finally { nowSpy.mockRestore(); }
+    expect((await read()).body.page).toBe('idle');
+    const second = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const secondActive = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body;
+    await request(app.getHttpServer()).post(`/classroom-runs/${second.body.id}/complete`).set(auth()).send({ deviceId, version: second.body.version, requestId: requestId('summary-close-end') }).expect(201);
+    const state = (await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}&handoffId=${secondActive.handoff.id}`).set(auth()).expect(200)).body;
+    await request(app.getHttpServer()).post(`/classroom-runs/${second.body.id}/summary/close`).set(auth()).send({ deviceId, bindingId: state.lifecycle.bindingId, expectedRevision: state.lifecycle.revision }).expect(201);
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}&handoffId=${secondActive.handoff.id}`).set(auth()).expect(200)).body.page).toBe('idle');
+  });
+
+  it('new Run revokes old summary lease; cancelled/failed never project SUMMARY', async () => {
+    const plan = await createPlan();
+    const begin = () => request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+    const screen = (id?: string) => request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}${id ? `&handoffId=${id}` : ''}`).set(auth()).expect(200);
+    const first = await begin(); const old = (await screen()).body.handoff.id;
+    await request(app.getHttpServer()).post(`/classroom-runs/${first.body.id}/complete`).set(auth()).send({ deviceId, version: first.body.version, requestId: requestId('summary-old-end') }).expect(201);
+    const second = await begin(); const secondLease = (await screen()).body.handoff.id;
+    await request(app.getHttpServer()).post(`/classroom-runs/${second.body.id}/cancel`).set(auth()).send({ deviceId, version: second.body.version, requestId: requestId('summary-cancel') }).expect(201);
+    expect((await screen(old)).body.page).toBe('idle');
+    expect((await screen(secondLease)).body.page).toBe('idle');
+    const third = await begin(); const thirdLease = (await screen()).body.handoff.id;
+    await app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).update(third.body.id, { status: ClassroomRunStatus.Failed, endedAt: new Date() });
+    await app.get(ClassroomSnapshotService).capture(third.body.id, ClassroomSnapshotReason.Timed, true);
+    expect((await screen(thirdLease)).body.page).toBe('idle');
+  });
+
+  it('READY expiration releases the target without extending its deadline or creating a Run', async () => {
+    const plan = await createPlan();
+    const url = `/devices/${deviceId}/screen-preparations`;
+    const body = { classId, classroomId, lessonPlanId: plan.id, lessonPlanVersion: plan.version, requestId: requestId('ready-expiry') };
+    const ready = await request(app.getHttpServer()).post(url).set(auth()).send(body).expect(201);
+    const count = await app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).count();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.parse(ready.body.expiresAt) + 1);
+    try {
+      expect((await request(app.getHttpServer()).get(url).set(auth()).expect(200)).body.preparation).toBeNull();
+      expect((await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(200)).body.page).toBe('idle');
+      await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id, { preparationId: ready.body.preparationId, preparationRevision: ready.body.revision })).expect(410);
+      expect(await app.get<Repository<ClassroomRun>>(getRepositoryToken(ClassroomRun)).count()).toBe(count);
+    } finally { clock.mockRestore(); }
+    const next = await request(app.getHttpServer()).post(url).set(auth()).send({ ...body, requestId: requestId('ready-after-expiry') }).expect(201);
+    await request(app.getHttpServer()).delete(`${url}/${next.body.preparationId}?revision=${next.body.revision}`).set(auth()).expect(200);
+  });
+
+  it('READY cannot overwrite another preparation and device faults retain priority', async () => {
+    const plan = await createPlan();
+    const url = `/devices/${deviceId}/screen-preparations`;
+    const body = { classId, classroomId, lessonPlanId: plan.id, lessonPlanVersion: plan.version };
+    const responses = await Promise.all([0, 1].map(i => request(app.getHttpServer()).post(url).set(auth()).send({ ...body, requestId: requestId(`ready-race-${i}`) })));
+    expect(responses.map(r => r.status).sort()).toEqual([201, 409]);
+    const context = responses.find(r => r.status === 201)!.body;
+    await request(app.getHttpServer()).delete(`${url}/${context.preparationId}?revision=${context.revision}`).set('Authorization', `Bearer ${otherToken}`).expect(403);
+    const devices = app.get<Repository<Device>>(getRepositoryToken(Device));
+    await devices.update(deviceId, { status: DeviceStatus.Fault });
+    await request(app.getHttpServer()).get(`/classroom-runs/screen-state?deviceId=${deviceId}`).set(auth()).expect(409);
+    await devices.update(deviceId, { status: DeviceStatus.Online, lastOnlineAt: new Date() });
+    await request(app.getHttpServer()).delete(`${url}/${context.preparationId}?revision=${context.revision}`).set(auth()).expect(200);
+  });
+
+  it('two authorized teachers cannot overwrite each other READY contexts', async () => {
+    const profile = await request(app.getHttpServer()).get('/auth/profile').set('Authorization', `Bearer ${otherToken}`).expect(200);
+    const relation = app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass));
+    const shared = await relation.save(relation.create({ teacherId: profile.body.teacherId, classId, role: TeacherClassRole.Assistant }));
+    const otherAuth = { Authorization: `Bearer ${otherToken}` };
+    const firstPlan = await createPlan();
+    const otherPlan = await request(app.getHttpServer()).post('/lesson-plans').set(otherAuth).send({ title: '另一位教师的教案', theme: '准备并发', ageGroup: '4-5', objectives: '验证准备归属', estimatedMinutes: 10 }).expect(201);
+    const saved = await request(app.getHttpServer()).put(`/lesson-plans/${otherPlan.body.id}/steps`).set(otherAuth).send({ version: 1, steps: [{ title: '互动', stepType: 'teacher_talk', content: '老师的私人提示', durationSeconds: 60 }] }).expect(200);
+    const url = `/devices/${deviceId}/screen-preparations`;
+    const [first, second] = await Promise.all([
+      request(app.getHttpServer()).post(url).set(auth()).send({ classId, classroomId, lessonPlanId: firstPlan.id, lessonPlanVersion: firstPlan.version, requestId: requestId('ready-teacher-one') }),
+      request(app.getHttpServer()).post(url).set(otherAuth).send({ classId, classroomId, lessonPlanId: otherPlan.body.id, lessonPlanVersion: saved.body.version, requestId: requestId('ready-teacher-two') }),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([201, 409]);
+    const winner = first.status === 201 ? first : second;
+    const winnerAuth = first.status === 201 ? auth() : otherAuth;
+    const loserAuth = first.status === 201 ? otherAuth : auth();
+    await request(app.getHttpServer()).get(url).set(loserAuth).expect(403);
+    await request(app.getHttpServer()).delete(`${url}/${winner.body.preparationId}?revision=${winner.body.revision}`).set(loserAuth).expect(403);
+    await request(app.getHttpServer()).delete(`${url}/${winner.body.preparationId}?revision=${winner.body.revision}`).set(winnerAuth).expect(200);
+    await relation.delete(shared.id);
   });
 
   it('allows administrators to audit but not control an active classroom', async () => {
@@ -679,7 +1224,7 @@ describe('Task four classroom run state machine (e2e)', () => {
     });
     expect(started.body.steps).toHaveLength(2);
     expect(started.body.steps[0]).toMatchObject({
-      content: '观察第一张图片',
+      content: '', // Legacy content has not been explicitly reviewed for student display.
       resourceId: approvedResourceId,
       actionConfig: [expect.objectContaining({ actionName: 'wave' })],
     });
@@ -703,7 +1248,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .set(auth())
       .expect(200);
     expect(frozen.body.steps).toHaveLength(2);
-    expect(frozen.body.steps[0].content).toBe('观察第一张图片');
+    expect(frozen.body.steps[0].content).toBe('');
     await request(app.getHttpServer())
       .get(`/classroom-runs/${started.body.id}`)
       .set('Authorization', `Bearer ${otherToken}`)
@@ -1107,6 +1652,36 @@ describe('Task four classroom run state machine (e2e)', () => {
   });
 
   describe('unified classroom command bus (e2e)', () => {
+    it('runtime queue edits preserve player and lesson; explicit show tracks its item and survives restore', async () => {
+      const plan = await createPlan();
+      const original = await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth()).expect(200);
+      const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id)).expect(201);
+      const base = { runId: started.body.id, deviceId, source: 'teacher_panel' };
+      const edited = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...base,
+        requestId: requestId('queue-edit'), expectedVersion: started.body.version, operation: 'update_presentation_queue',
+        parameters: { stepIndex: 0, items: [{ id: 'first', kind: 'resource', resourceId: approvedResourceId, enabled: true }, { id: 'avatar', kind: 'avatar', enabled: true }] },
+      }).expect(201);
+      expect(edited.body.classroomState.interactionState.presentationQueues['0']).toHaveLength(2);
+      expect(edited.body.classroomState.playerRecoverySuggestion).toEqual(started.body.playerRecoverySuggestion);
+      const shown = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...base,
+        targetDeviceId: deviceId, requestId: requestId('queue-show'), expectedVersion: edited.body.classroomState.version,
+        operation: 'open_resource', parameters: { resourceId: approvedResourceId, presentationItemId: 'first' },
+      }).expect(201);
+      expect(shown.body.classroomState.playerRecoverySuggestion).toMatchObject({ presentationItemId: 'first', resourceId: approvedResourceId, presentationMode: 'resource' });
+      const reordered = await request(app.getHttpServer()).post('/classroom-commands').set(auth()).send({ ...base,
+        requestId: requestId('queue-reorder'), expectedVersion: shown.body.classroomState.version, operation: 'update_presentation_queue',
+        parameters: { stepIndex: 0, items: [{ id: 'avatar', kind: 'avatar', enabled: true }, { id: 'first', kind: 'resource', resourceId: approvedResourceId, enabled: false }] },
+      }).expect(201);
+      expect(reordered.body.classroomState.playerRecoverySuggestion).toEqual(shown.body.classroomState.playerRecoverySuggestion);
+      const restored = await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/restore`).query({ deviceId }).set(auth()).expect(200);
+      expect(restored.body.interactionState.presentationQueues['0'][0].id).toBe('avatar');
+      expect(restored.body.playerRecoverySuggestion.presentationItemId).toBe('first');
+      const unchanged = await request(app.getHttpServer()).get(`/lesson-plans/${plan.id}`).set(auth()).expect(200);
+      expect(unchanged.body.steps).toEqual(original.body.steps);
+      expect(unchanged.body.version).toBe(original.body.version);
+      await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth())
+        .send({ version: reordered.body.classroomState.version, deviceId, requestId: requestId('queue-cleanup') }).expect(201);
+    });
     it('executes once, replays the first result, and rejects requestId payload changes', async () => {
       const plan = await createPlan();
       const started = await request(app.getHttpServer())

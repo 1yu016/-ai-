@@ -31,6 +31,7 @@ async function mountView() {
     routes: [
       { path: '/classroom/lesson/:runId/summary', name: 'lesson-classroom-summary', component: ClassroomRunSummaryView, meta: { requiresAuth: true } },
       { path: '/classes/:classId/students', name: 'students', component: { template: '<div>班级学生页</div>' } },
+      { path: '/classes/:classId', name: 'class-detail', component: { template: '<div>班级详情</div>' } },
       { path: '/classes/:classId/rewards', name: 'class-rewards', component: { template: '<div>成长榜</div>' } },
       { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
     ],
@@ -116,17 +117,30 @@ describe('ClassroomRunSummaryView · 课堂总结页', () => {
     wrapper.unmount()
   })
 
-  it('离开出口「结束并返回」→ 当前班级 students（不再回 /my-classes）', async () => {
+  it('已结束课堂的「返回班级」出口进入当前班级详情', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: runPayload } as never)
     vi.spyOn(checkpoint, 'listRunRewards').mockResolvedValue({ items: [], total: 0, runTitle: '' } as never)
     const { wrapper, router } = await mountView()
     await flushPromises()
     const leave = wrapper.find('[data-test="leave-class"]')
     expect(leave.exists()).toBe(true)
-    expect(leave.text()).toContain('结束并返回班级')
+    expect(leave.text()).toContain('返回班级')
     await leave.trigger('click')
     await flushPromises()
-    expect(router.currentRoute.value.name).toBe('students')
+    expect(router.currentRoute.value.name).toBe('class-detail')
     expect(router.currentRoute.value.params.classId).toBe('1')
+  })
+  it('教师关闭大屏告别只调用生命周期 API，不重复结束课堂', async () => {
+    const lifecycle = { schemaVersion: 1, phase: 'summary', runId: 9, deviceId: 1, bindingId: 2,
+      revision: 3, enteredAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 20000).toISOString() }
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { ...runPayload, interactionState: { screenLifecycle: lifecycle } } } as never)
+    vi.spyOn(checkpoint, 'listRunRewards').mockResolvedValue({ items: [], total: 0, runTitle: '' } as never)
+    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { ...lifecycle, phase: 'dismissed', revision: 4 } } as never)
+    const { wrapper } = await mountView(); await flushPromises()
+    const close = wrapper.findAll('button').find(x => x.text().includes('结束大屏告别'))!
+    expect(close.exists()).toBe(true); await close.trigger('click'); await flushPromises()
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith('/classroom-runs/9/summary/close', { deviceId: 1, bindingId: 2, expectedRevision: 3 })
+    wrapper.unmount()
   })
 })

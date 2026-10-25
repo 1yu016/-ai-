@@ -41,6 +41,8 @@ export class StartClassroomRunDto extends RequestIdDto {
   @Type(() => Number) @IsInt() @Min(1) classroomId: number;
   @Type(() => Number) @IsInt() @Min(1) deviceId: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) avatarVersionId?: number;
+  @IsOptional() @IsString() @MaxLength(100) preparationId?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) preparationRevision?: number;
 }
 
 export class ClassroomRunOperationDto extends RequestIdDto {
@@ -58,6 +60,7 @@ export class ActiveClassroomRunsQueryDto {
 
 export class ClassroomScreenStateQueryDto {
   @Type(() => Number) @IsInt() @Min(1) deviceId: number;
+  @IsOptional() @IsString() @MaxLength(100) handoffId?: string;
 }
 
 export class RestoreClassroomRunQueryDto {

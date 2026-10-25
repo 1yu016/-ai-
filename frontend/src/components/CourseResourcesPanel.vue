@@ -14,6 +14,7 @@ import {
   type ResourceForm,
   useCourseResourceStore,
 } from '@/stores/courseResource'
+import ProtectedResourceImage from '@/components/resources/ProtectedResourceImage.vue'
 import { useResourcePlayerStore } from '@/stores/resourcePlayer'
 import { useUserStore } from '@/stores/user'
 
@@ -377,10 +378,7 @@ function formatUploadTime(value?: string): string {
           @click="openResource(resource)" @keydown.enter.prevent="openResource(resource)"
         >
           <div class="thumbnail-wrap">
-            <img
-              v-if="resource.mediaType === 'image'" :src="resource.contentUrl || resource.dataUrl"
-              :alt="resource.title"
-            />
+            <ProtectedResourceImage v-if="resource.mediaType === 'image'" :resource="resource" />
             <video v-else-if="resource.mediaType === 'video' && resource.coverUrl" :poster="resource.coverUrl"></video>
             <div v-else class="media-placeholder" aria-hidden="true">
               <span>{{ mediaIcon(resource) }}</span>

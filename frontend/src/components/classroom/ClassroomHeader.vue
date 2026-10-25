@@ -20,6 +20,7 @@ function formatTime(value: number): string {
 
 <template>
   <header class="classroom-header">
+    <slot name="navigation" />
     <div class="header-left">
       <span class="status-pill" :class="{ paused }">{{ paused ? '已暂停' : '正在上课' }}</span>
       <h1 class="lesson-title">{{ lessonTitle }}</h1>
@@ -32,6 +33,7 @@ function formatTime(value: number): string {
       <div class="metric"><small>已上课</small><strong>{{ formatTime(elapsedSeconds) }}</strong></div>
       <div class="metric"><small>本环节</small><strong>约 {{ stepMinutes }} 分钟</strong></div>
     </div>
+    <slot name="actions" />
     <ElProgress class="lesson-progress" :percentage="progress" :show-text="false" :stroke-width="8" :color="'#D88A4D'" />
   </header>
 </template>
@@ -92,4 +94,5 @@ function formatTime(value: number): string {
 .metric strong { color: #4F3D31; font-size: 18px; font-weight: 800; }
 .lesson-progress { flex-basis: 100%; }
 .lesson-progress :deep(.el-progress-bar__inner) { border-radius: 99px; }
+.classroom-header{gap:8px 16px}.header-left{flex:1;min-width:200px}.lesson-title{font-size:22px}.header-center{flex:0 1 210px;text-align:left}.header-right{gap:12px}.metric:nth-child(2){display:none}.lesson-progress{margin-top:2px}
 </style>

@@ -64,6 +64,7 @@ try {
     E2E_FRONTEND_PORT: frontendPort,
     E2E_EXTERNAL_SERVERS: '1',
     E2E_GATE_SPEC: 'device-online-gate',
+    E2E_GATE_DATABASE: resolve(target, 'gate.sqlite'),
   }
   const backendEnv = {
     ...testEnv,
@@ -73,11 +74,11 @@ try {
     RESOURCE_UPLOAD_PATH: resolve(target, 'uploads', 'resources'),
     JWT_SECRET: 'gate-only-secret-never-use-in-production',
     JWT_EXPIRES_IN: '2h',
-    TEST_TEACHER_ACCOUNT: 'gate_teacher',
-    TEST_TEACHER_PASSWORD: 'GateTeacher123!',
+    TEST_TEACHER_ACCOUNT: 'e2e_teacher',
+    TEST_TEACHER_PASSWORD: 'E2eTeacher123!',
     TEST_TEACHER_NAME: '门禁验收教师',
-    INITIAL_ADMIN_ACCOUNT: 'gate_admin',
-    INITIAL_ADMIN_PASSWORD: 'GateAdmin123!',
+    INITIAL_ADMIN_ACCOUNT: 'e2e_admin',
+    INITIAL_ADMIN_PASSWORD: 'E2eAdmin123!',
     INITIAL_ADMIN_NAME: '门禁验收管理员',
     ARK_API_KEY: 'gate-placeholder-not-a-real-key',
     ARK_ENDPOINT_ID: 'gate-placeholder-model',

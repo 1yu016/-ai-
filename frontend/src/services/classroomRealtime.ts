@@ -3,6 +3,7 @@ import { apiUrl } from '@/api/classroomMobile'
 export function connectScreenRealtime<T>(options: {
   deviceId: number
   accessToken: string
+  handoffId?: string
   onState: (state: T) => void | Promise<void>
   onDisconnect?: (message: string) => void
 }): AbortController {
@@ -11,6 +12,7 @@ export function connectScreenRealtime<T>(options: {
     try {
       const url = new URL(apiUrl('/classroom-mobile/screen-events'))
       url.searchParams.set('deviceId', String(options.deviceId))
+      if (options.handoffId) url.searchParams.set('handoffId', options.handoffId)
       const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${options.accessToken}`,

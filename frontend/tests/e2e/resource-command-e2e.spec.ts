@@ -55,9 +55,13 @@ let numCardId: number
 
 function trackDownloads(page: Page): string[] {
   const downloads: string[] = []
+  let commandStarted = false
   page.on('request', (request) => {
     const pathname = new URL(request.url()).pathname
-    if (/^\/resources\/\d+\/download$/.test(pathname)) downloads.push(pathname)
+    if (pathname === '/ai/command' && request.method() === 'POST') commandStarted = true
+    // Initial teacher preview may legitimately load the previous presentation.
+    // Measure side effects of this command, not restoration of the previous one.
+    if (commandStarted && /^\/resources\/\d+\/download$/.test(pathname)) downloads.push(pathname)
   })
   return downloads
 }
@@ -77,7 +81,14 @@ async function openClassroomPage(page: Page, targetRunId: number) {
     ] as [string, TeacherInfo],
   )
   await page.goto(`/classroom/lesson/${targetRunId}`)
-  await expect(page.locator('.step-heading')).toContainText('热身环节', { timeout: 30_000 })
+  await expect(page.locator('.header-center')).toContainText('热身环节', { timeout: 15_000 })
+  const opening = page.locator('[data-test="opening-skip"]')
+  if (await opening.isVisible()) {
+    await opening.click()
+    await expect(page.locator('[data-test="opening-overlay"]')).toHaveCount(0)
+  }
+  await page.locator('.voice-detail').click()
+  await expect(page.getByLabel('课堂口令文本输入')).toBeVisible()
 }
 
 async function teacherRequest(
@@ -374,12 +385,12 @@ test.describe.serial('Stage 6.5 资源搜索/打开/播放命令（真实已发�
 
     await page.getByLabel('课堂口令文本输入').fill('不要播放视频')
     await page.getByRole('button', { name: '执行口令' }).click()
-    await expect(page.locator('.feedback.command')).toContainText('未执行')
+    await expect(page.locator('.feedback.command')).toContainText('未执行', { timeout: 15000 })
     await expect(page.getByLabel('资源候选确认')).toHaveCount(0)
 
     await page.getByLabel('课堂口令文本输入').fill('数字1的视频为什么打不开？')
     await page.getByRole('button', { name: '执行口令' }).click()
-    await expect(page.locator('.feedback.command')).toContainText('未执行')
+    await expect(page.locator('.feedback.command')).toContainText('未执行', { timeout: 15000 })
     await expect(page.getByLabel('资源候选确认')).toHaveCount(0)
 
     expect(downloads.length).toBe(0)

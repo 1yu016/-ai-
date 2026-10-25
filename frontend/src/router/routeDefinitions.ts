@@ -66,11 +66,11 @@ const routeMetadata: Record<string, RouteMeta> = {
   'classroom-join': meta('加入课堂', '', [{ label: '加入课堂' }], { layout: 'mobile', backRoute: { name: 'my-classes' } }),
   'classroom-screen': meta('课堂大屏', '', [{ label: '课堂大屏' }], { layout: 'screen' }),
   'lesson-plans': meta('备课中心', 'lesson-plans', [{ label: '备课中心' }]),
-  'lesson-plan-new': meta('新建教案', 'lesson-plans', [{ label: '备课中心', to: { name: 'lesson-plans' } }, { label: '新建教案' }], { backRoute: { name: 'lesson-plans' } }),
-  'lesson-plan-edit': meta('编辑教案', 'lesson-plans', [{ label: '备课中心', to: { name: 'lesson-plans' } }, { label: '编辑教案' }], { backRoute: { name: 'lesson-plans' } }),
+  'lesson-plan-new': meta('新建教案', 'lesson-plans', [{ label: '备课中心', to: (route) => ({ name: 'lesson-plans', query: route.query.classId ? { classId: route.query.classId } : {} }) }, { label: '新建教案' }], { backRoute: (route) => ({ name: 'lesson-plans', query: route.query.classId ? { classId: route.query.classId } : {} }) }),
+  'lesson-plan-edit': meta('编辑教案', 'lesson-plans', [{ label: '备课中心', to: (route) => ({ name: 'lesson-plans', query: route.query.classId ? { classId: route.query.classId } : {} }) }, { label: '编辑教案' }], { backRoute: (route) => ({ name: 'lesson-plans', query: route.query.classId ? { classId: route.query.classId } : {} }) }),
   'lesson-classroom-preflight': meta('课堂准备', 'lesson-plans', [{ label: '备课中心', to: { name: 'lesson-plans' } }, { label: '课堂准备' }], { layout: 'classroom', backRoute: { name: 'lesson-plans' } }),
   'lesson-classroom': meta('课堂', '', [{ label: '课堂' }], { layout: 'classroom', backRoute: { name: 'my-classes' } }),
-  'classroom-record': meta('课堂记录', 'my-classes', [{ label: '课堂记录' }], { backRoute: { name: 'my-classes' } }),
+  'classroom-record': meta('课堂记录', 'classroom-history', [{ label: '课堂记录', to: { name: 'classroom-history' } }, { label: '课堂详情' }], { backRoute: { name: 'classroom-history' } }),
   'lesson-classroom-summary': meta('课堂总结', '', [{ label: '课堂总结' }], { layout: 'classroom', backRoute: (route) => ({ name: 'classroom-record', params: { runId: route.params.runId } }) }),
   'classroom-engagement': meta('课堂互动', '', [{ label: '课堂互动' }], { layout: 'classroom', backRoute: { name: 'my-classes' } }),
   'classroom-insights': meta('课堂洞察', '', [{ label: '课堂洞察' }], { layout: 'classroom', backRoute: { name: 'my-classes' } }),
@@ -123,6 +123,18 @@ export function enhanceRoutes(base: RouteRecordRaw[]): RouteRecordRaw[] {
 
   return [
     ...enriched,
+    {
+      path: '/teacher/home',
+      name: 'teacher-home',
+      component: () => import('../views/TeacherHomeView.vue'),
+      meta: meta('教师首页', 'teacher-home', [{ label: '教师首页' }], { roles: ['teacher'] }),
+    },
+    {
+      path: '/classroom/history',
+      name: 'classroom-history',
+      component: () => import('../views/ClassroomHistoryView.vue'),
+      meta: meta('课堂记录', 'classroom-history', [{ label: '课堂记录' }]),
+    },
     {
       path: '/admin/classes/:classId',
       name: 'class-detail',

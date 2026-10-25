@@ -82,12 +82,12 @@ describe('LessonClassroomView 本节课奖励入口', () => {
       attachTo: document.body,
     })
     await flushPromises()
-    await vi.waitFor(() => expect(wrapper.text()).toContain('本节课奖励（3）'))
+    await wrapper.findAll('button').find((button) => button.text() === '更多')!.trigger('click')
+    await flushPromises()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('本节奖励记录（3）'))
 
-    await wrapper
-      .findAll('button')
-      .find((b) => b.text().includes('本节课奖励'))!
-      .trigger('click')
+    const recordsButton = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.includes('本节奖励记录'))!
+    recordsButton.click()
     await flushPromises()
 
     expect(document.body.querySelectorAll('.reward-item')).toHaveLength(3)

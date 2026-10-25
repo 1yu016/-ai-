@@ -30,6 +30,7 @@ function routerFor(path: string, routes?: RouteRecordRaw[]) {
     { path: '/lesson-plans', component: { template: '<div>教案列表</div>' } },
     { path: '/lesson-plans/new', component: LessonPlanEditorView },
     { path: '/classroom/lesson/:runId', component: LessonClassroomView },
+    { path: '/classroom/lesson/:runId/summary', name: 'lesson-classroom-summary', component: { template: '<div>课堂总结</div>' } },
   ] })
   return router.push(path).then(() => router.isReady()).then(() => router)
 }
@@ -244,43 +245,31 @@ describe('resource components', () => {
 describe('lesson components', () => {
   beforeEach(() => { setActivePinia(createPinia()); loginTeacher() })
 
-  it('edits lesson steps and previews AI output locally', async () => {
-    let resolveResources!: (value: { data: { items: never[]; total: number } }) => void
-    const get = vi.spyOn(http, 'get').mockImplementation(() => new Promise((resolve) => { resolveResources = resolve }))
-    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: { id: 8, output: { title: 'AI春天教案', theme: '春天', ageGroup: '4-5', domain: '科学', estimatedMinutes: 20, teachingObjectives: ['观察颜色'], teachingProcess: [{ title: 'AI观察', stepType: 'question', content: '你看到了什么？', durationSeconds: 120 }] } } })
+  it('edits teacher and student fields locally without AI generation or automatic saving', async () => {
+    vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [], total: 0 } })
+    const post = vi.spyOn(http, 'post').mockResolvedValue({ data: {} })
     const router = await routerFor('/lesson-plans/new')
     const wrapper = mount(LessonPlanEditorView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true, LessonResourceSelector: true } } })
     await flushPromises()
     const lessonStore = (wrapper.vm as unknown as { store: ReturnType<typeof useLessonPlanStore> }).store
-    await vi.waitFor(() => expect(get).toHaveBeenCalled())
-    resolveResources({ data: { items: [], total: 0 } })
-    await flushPromises()
-    await vi.waitFor(() => expect(lessonStore.loading).toBe(false))
     await wrapper.findAll('button').find((button) => button.text().includes('新增步骤'))!.trigger('click')
-    expect(wrapper.text()).toContain('课堂步骤')
     expect(lessonStore.steps).toHaveLength(1)
-    Object.assign(lessonStore.draft, { theme: '春天', objectives: '观察颜色', estimatedMinutes: 20 })
-    await wrapper.findAll('button').find((button) => button.text().includes('AI 生成草稿'))!.trigger('click')
+    await wrapper.get('textarea[placeholder="教师指导语（仅教师可见，必填）"]').setValue('老师拿苹果，引导观察')
+    await wrapper.get('textarea[placeholder="学生在大屏上看到的文字"]').setValue('苹果是什么颜色？')
+    expect(lessonStore.steps[0]?.teacherInstruction).toBe('老师拿苹果，引导观察')
+    expect(lessonStore.steps[0]?.studentContent).toBe('苹果是什么颜色？')
+    await wrapper.findAll('button').find((button) => button.text().includes('AI备课建议'))!.trigger('click')
     await flushPromises()
-    await vi.waitFor(() => expect(wrapper.text()).toContain('先告诉 AI 本次活动的主题'))
-    let confirm = wrapper.findAll('button').find((button) => button.text().includes('开始生成'))
-    expect(confirm).toBeTruthy()
-    expect(confirm!.attributes('disabled')).toBeDefined()
-    await wrapper.get('input[placeholder="例如：春天里的小花"]').setValue('春天')
-    confirm = wrapper.findAll('button').find((button) => button.text().includes('开始生成'))
-    expect(confirm!.attributes('disabled')).toBeUndefined()
-    await confirm!.trigger('click')
-    await flushPromises()
-    await vi.waitFor(() => expect(lessonStore.steps[0]?.title).toBe('AI观察'))
-    expect(post).toHaveBeenCalledWith('/lesson-plans/ai-drafts', expect.objectContaining({ theme: '春天', teachingObjectives: '春天' }))
+    expect(post).not.toHaveBeenCalled()
     expect(lessonStore.current).toBeNull()
+    expect(lessonStore.steps[0]?.studentContent).toBe('苹果是什么颜色？')
     wrapper.unmount()
   })
 
   it('starts a lesson from the list with one click', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [plan], total: 1 } })
     vi.spyOn(http, 'post').mockResolvedValue({ data: { runId: 9 } })
-    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/preflight/:planId', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
+    const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/preflight/:planId', name: 'lesson-classroom-preflight', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
     const wrapper = mount(LessonPlanListView, { global: { plugins: [router, ElementPlus] } })
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text().includes('开始上课'))!.trigger('click')
@@ -304,10 +293,13 @@ describe('lesson components', () => {
       pause() {}
     })
     const router = await routerFor('/classroom/lesson/9')
-    const wrapper = mount(LessonClassroomView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true } } })
+    const wrapper = mount(LessonClassroomView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true, teleport: true } } })
     await flushPromises()
-    await vi.waitFor(() => expect(wrapper.text()).toContain('启发式课堂助教'))
-    await wrapper.findAll('button').find((button) => button.text().includes('打开助教'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('AI教学伙伴'))!.trigger('click')
+    await flushPromises()
+    const assistantDrawer = wrapper.findComponent({ name: 'ClassroomAssistantPanel' })
+    expect(assistantDrawer.exists()).toBe(true)
+    await assistantDrawer.findAll('button').find((button) => button.text().includes('打开助教'))!.trigger('click')
     await wrapper.get('textarea[placeholder="输入老师想让助教回答的问题或课堂要求"]').setValue('请问孩子数字1像什么')
     await wrapper.findAll('button').find((button) => button.text().includes('生成AI草稿'))!.trigger('click')
     await flushPromises()
@@ -332,7 +324,9 @@ describe('lesson components', () => {
     const router = await routerFor('/classroom/lesson/9')
     const wrapper = mount(LessonClassroomView, { global: { plugins: [router, ElementPlus], stubs: { ResourcePlayer: true } } })
     await flushPromises()
-    const next = wrapper.findAll('button').find((button) => button.text().includes('下一步'))!
+    const expand = wrapper.find('button[aria-label="展开环节导航"]')
+    if (expand.exists()) await expand.trigger('click')
+    const next = wrapper.findAll('button').find((button) => button.text().includes('进入下一环节'))!
     expect(next.attributes('disabled')).toBeDefined()
     await wrapper.findAll('button').find((button) => button.text().includes('结束课堂'))!.trigger('click')
     await flushPromises()

@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as checkpointService from '@/services/classroomCheckpoint'
+import * as commandBus from '@/services/classroomCommandBus'
 import type { LessonRun } from '@/stores/lessonRun'
 import ClassroomInteractionPanel from '@/components/classroom/operations/ClassroomInteractionPanel.vue'
 import type { Student } from '@/api/platform'
@@ -64,7 +65,7 @@ describe('ClassroomInteractionPanel 课堂互动（点名 + 快速奖励）', ()
   })
 
   it('随机点名只能从当前班学生中选择', async () => {
-    const rand = vi.spyOn(Math, 'random').mockReturnValue(0)
+    const command = vi.spyOn(commandBus, 'executeClassroomCommand').mockResolvedValue({ result: { student: { id: 2 } }, classroomState: { id: 9, version: 3 } } as never)
     const wrapper = mountPanel()
     wrapper.find('.row-line .mini').trigger('click')
     await flushPromises()
@@ -74,7 +75,18 @@ describe('ClassroomInteractionPanel 课堂互动（点名 + 快速奖励）', ()
     expect(students.some((s) => s.id === pickedId && s.status !== 'disabled')).toBe(true)
     const rolled = wrapper.emitted('random-roll')
     expect(rolled![0]![0]).toMatchObject({ id: pickedId })
-    rand.mockRestore()
+    expect(pickedId).toBe(2)
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ id: 9, version: 2 }), 'random_roll_call', { source: 'teacher_panel' })
+  })
+
+  it('点名请求失败时不本地随机、不改变选中幼儿', async () => {
+    vi.spyOn(commandBus, 'executeClassroomCommand').mockRejectedValue(new Error('网络失败'))
+    const wrapper = mountPanel({ selectedStudentId: 1 })
+    await wrapper.find('.row-line .mini').trigger('click'); await flushPromises()
+    expect(wrapper.emitted('random-roll')).toBeUndefined()
+    expect(wrapper.emitted('update:selectedStudentId')).toBeUndefined()
+    expect(wrapper.text()).toContain('网络失败')
+    wrapper.unmount()
   })
 
   it('手动选择学生后 current student 更新', async () => {

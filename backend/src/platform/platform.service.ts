@@ -54,6 +54,7 @@ import { Student } from './entities/student.entity';
 import { TeacherClass } from './entities/teacher-class.entity';
 import { AuditService } from './audit.service';
 import { PlatformAccessService } from './platform-access.service';
+import { deviceHeartbeatTimeoutMs, deviceOnlineStatus } from './device-online-policy';
 import {
   BindingStatus,
   ConsentStatus,
@@ -100,10 +101,7 @@ export class PlatformService {
   ) {}
 
   private get heartbeatTimeoutMs(): number {
-    const seconds = Number(
-      this.config.get<string>('DEVICE_HEARTBEAT_TIMEOUT_SECONDS') ?? '90',
-    );
-    return (Number.isFinite(seconds) && seconds >= 15 ? seconds : 90) * 1000;
+    return deviceHeartbeatTimeoutMs(this.config.get('DEVICE_HEARTBEAT_TIMEOUT_SECONDS'));
   }
 
   async createClass(actor: JwtTeacherPayload, dto: CreateClassDto) {
@@ -1292,13 +1290,8 @@ export class PlatformService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const allDevices = await devices.getMany();
-    const heartbeatCutoff = Date.now() - this.heartbeatTimeoutMs;
     const onlineDevices = allDevices.filter(
-      (device) =>
-        device.status !== DeviceStatus.Disabled &&
-        device.status !== DeviceStatus.Fault &&
-        device.lastOnlineAt != null &&
-        device.lastOnlineAt.getTime() >= heartbeatCutoff,
+      (device) => deviceOnlineStatus(device, this.heartbeatTimeoutMs) === DeviceStatus.Online,
     ).length;
     const aiBuilder = this.aiCallLogs.createQueryBuilder('ai');
     if (schoolId)
@@ -1614,16 +1607,7 @@ export class PlatformService {
   }
 
   private deviceStatusSummary(device: Device) {
-    const heartbeatFresh =
-      device.lastOnlineAt != null &&
-      Date.now() - device.lastOnlineAt.getTime() <= this.heartbeatTimeoutMs;
-    const status = [DeviceStatus.Disabled, DeviceStatus.Fault].includes(
-      device.status,
-    )
-      ? device.status
-      : heartbeatFresh
-        ? DeviceStatus.Online
-        : DeviceStatus.Offline;
+    const status = deviceOnlineStatus(device, this.heartbeatTimeoutMs);
     return { ...device, status, online: status === DeviceStatus.Online };
   }
 

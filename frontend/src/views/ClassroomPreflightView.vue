@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElButton, ElMessage, ElOption, ElSelect } from 'element-plus'
 import { storeToRefs } from 'pinia'
@@ -7,6 +7,8 @@ import { useLessonPlanStore } from '@/stores/lessonPlan'
 import { useLessonRunStore } from '@/stores/lessonRun'
 import { platformApi, type ClassDeviceBinding, type Classroom, type Device, type SchoolClass } from '@/api/platform'
 import { apiErrorMessage, http } from '@/api/http'
+import BackButton from '@/components/BackButton.vue'
+import { screenPreparationApi, type ScreenPreparation } from '@/api/screenPreparation'
 
 type CheckStatus = 'checking' | 'ok' | 'degraded' | 'failed'
 type CheckItem = { key: string; label: string; detail: string; status: CheckStatus }
@@ -28,6 +30,80 @@ const deviceIssueMessage = computed(() => {
   return `大屏设备「${device.name}」当前离线，请确认设备已开机并打开大屏页面后，重新尝试开始课堂。`
 })
 const canEnter = computed(() => Boolean(plan.value?.steps?.length && classId.value && classroomId.value && deviceId.value && deviceOnline.value && !hasFailed.value && !checking.value && !starting.value))
+const preparation = ref<ScreenPreparation | null>(null)
+const preparing = ref(false)
+const cancelling = ref(false)
+const preparationError = ref('')
+const preparationNow = ref(Date.now())
+let preparationOffset = 0
+let preparationQuery = 0
+let preparationRequestId: string | null = null
+type PendingStart = { requestId: string; lessonPlanId: number; classId: number; classroomId: number; deviceId: number; preparationId: string; preparationRevision: number }
+const pendingStart = ref<PendingStart | null>(null)
+const selectionLocked = computed(() => Boolean(preparation.value || preparing.value || cancelling.value || pendingStart.value || starting.value))
+const secondsRemaining = computed(() => preparation.value ? Math.max(0, Math.ceil((Date.parse(preparation.value.expiresAt) - preparationNow.value - preparationOffset) / 1000)) : 0)
+const canPrepare = computed(() => canEnter.value && !selectionLocked.value && !preparationError.value)
+const canStart = computed(() => !starting.value && !cancelling.value && (pendingStart.value != null || (canEnter.value && preparation.value != null && secondsRemaining.value > 0)))
+let preparationTimer: ReturnType<typeof setInterval> | null = null
+async function refreshPreparation() {
+  const selected = deviceId.value
+  if (!selected || preparing.value || cancelling.value || starting.value) return
+  const sequence = ++preparationQuery
+  try {
+    const { data } = await screenPreparationApi.get(selected)
+    if (selected !== deviceId.value || sequence !== preparationQuery) return
+    preparationOffset = Date.parse(data.serverNow) - Date.now()
+    preparationNow.value = Date.now()
+    const context = data.preparation
+    if (context && (context.lessonPlanId !== plan.value?.id || context.classId !== classId.value || context.classroomId !== classroomId.value)) {
+      preparationError.value = '此设备已准备其他课程，请先返回对应课程取消准备。'
+      preparation.value = null
+      return
+    }
+    preparation.value = context
+    preparationError.value = ''
+  } catch (cause) {
+    if (selected !== deviceId.value || sequence !== preparationQuery) return
+    preparationError.value = apiErrorMessage(cause, '无法核实准备状态，请重试。')
+    preparation.value = null
+  }
+}
+async function prepareScreen() {
+  if (!canPrepare.value || !plan.value || !classId.value || !classroomId.value || !deviceId.value) return
+  preparing.value = true; preparationError.value = ''; preparationQuery += 1
+  preparationRequestId ??= newRequestId()
+  try {
+    const { data } = await screenPreparationApi.create(deviceId.value, { classId: classId.value, classroomId: classroomId.value, lessonPlanId: plan.value.id, lessonPlanVersion: plan.value.version, requestId: preparationRequestId })
+    preparation.value = data
+    preparationOffset = Date.parse(data.serverNow || data.createdAt) - Date.now()
+    preparationNow.value = Date.now()
+    preparationRequestId = null
+  } catch (cause) {
+    preparationError.value = apiErrorMessage(cause, '准备到大屏失败，请检查设备和教案。')
+    if ((cause as { response?: unknown }).response) preparationRequestId = null
+  } finally { preparing.value = false }
+}
+async function cancelPreparation() {
+  if (!preparation.value || cancelling.value || starting.value || pendingStart.value) return
+  cancelling.value = true; preparationQuery += 1
+  try {
+    await screenPreparationApi.cancel(preparation.value.deviceId, preparation.value)
+    preparation.value = null; preparationError.value = ''; preparationRequestId = null
+  } catch (cause) { preparationError.value = apiErrorMessage(cause, '取消准备失败，请重试。') }
+  finally { cancelling.value = false }
+}
+let deviceRefreshTimer: ReturnType<typeof setInterval> | null = null
+let deviceRefreshPending = false
+onMounted(() => {
+  deviceRefreshTimer = setInterval(async () => {
+    if (!classId.value || deviceRefreshPending || checking.value || starting.value) return
+    deviceRefreshPending = true
+    try { await loadBindings(classId.value, false); checks.value = buildChecks() }
+    catch { devices.value = []; checks.value = buildChecks() }
+    finally { deviceRefreshPending = false }
+  }, 10_000)
+})
+onBeforeUnmount(() => { preparationQuery += 1; if (deviceRefreshTimer !== null) clearInterval(deviceRefreshTimer); if (preparationTimer !== null) clearInterval(preparationTimer) })
 const statusText: Record<CheckStatus, string> = { checking: '检查中', ok: '正常', degraded: '可降级', failed: '异常' }
 function buildChecks(): CheckItem[] { const online = typeof navigator === 'undefined' || navigator.onLine !== false; const hasSteps = Boolean(plan.value?.steps?.length); return [
   { key: 'screen', label: '大屏显示', detail: '当前浏览器可以显示课堂页面', status: 'ok' },
@@ -57,7 +133,29 @@ async function runChecks(refreshDevices = true) {
   }
 }
 function newRequestId() { return globalThis.crypto?.randomUUID?.() ?? `classroom-${Date.now()}-${Math.random().toString(36).slice(2)}` }
-async function enterClassroom() { if (!canEnter.value || !plan.value || !classId.value || !classroomId.value || !deviceId.value) return; starting.value = true; try { const { data } = await http.post<{ id: number }>('/classroom-runs/start', { lessonPlanId: plan.value.id, classId: classId.value, classroomId: classroomId.value, deviceId: deviceId.value, requestId: newRequestId() }); sessionStorage.setItem(`classroom-run-device:${data.id}`, String(deviceId.value)); runStore.newlyStarted = true; await router.push({ name: 'lesson-classroom', params: { runId: data.id } }) } catch (cause) { ElMessage.error(apiErrorMessage(cause, '课堂启动失败，请重新选择班级、教室和设备。')) } finally { starting.value = false } }
+async function enterClassroom() {
+  if (!canStart.value || !deviceId.value) return
+  if (!pendingStart.value && preparation.value) {
+    const p = preparation.value
+    const key = `screen-preparation-start:${p.preparationId}`
+    const requestId = sessionStorage.getItem(key) || newRequestId()
+    sessionStorage.setItem(key, requestId)
+    pendingStart.value = { requestId, preparationId: p.preparationId, preparationRevision: p.revision, lessonPlanId: p.lessonPlanId, classId: p.classId, classroomId: p.classroomId, deviceId: p.deviceId }
+  }
+  if (!pendingStart.value) return
+  starting.value = true; preparationQuery += 1
+  try {
+    const { data } = await http.post<{ id: number }>('/classroom-runs/start', pendingStart.value)
+    sessionStorage.setItem(`classroom-run-device:${data.id}`, String(pendingStart.value.deviceId))
+    sessionStorage.removeItem(`screen-preparation-start:${pendingStart.value.preparationId}`)
+    pendingStart.value = null; preparation.value = null
+    runStore.newlyStarted = true
+    await router.push({ name: 'lesson-classroom', params: { runId: data.id } })
+  } catch (cause) {
+    preparationError.value = apiErrorMessage(cause, '启动结果尚未确认，请恢复网络后点击确认启动结果。')
+    if ((cause as { response?: unknown }).response) pendingStart.value = null
+  } finally { starting.value = false; if (!pendingStart.value) void refreshPreparation() }
+}
 onMounted(async () => { try { await planStore.load(Number(route.params.planId)); classes.value = (await platformApi.listClasses()).data.items; const presetClassId = positiveQueryNumber('classId'); if (presetClassId && classes.value.some((item) => item.id === presetClassId)) classId.value = presetClassId; await runChecks(false) } catch (cause) { ElMessage.error(apiErrorMessage(cause, '课堂准备信息加载失败')) } })
 function positiveQueryNumber(key: string) { const value = Number(route.query[key]); return Number.isInteger(value) && value > 0 ? value : null }
 async function loadBindings(classIdValue: number, usePreset = true) {
@@ -80,8 +178,13 @@ watch(classroomId, (value) => {
   const valid = bindings.value.some((item) => item.classroomId === value && item.deviceId === deviceId.value)
   if (!valid) deviceId.value = bindings.value.find((item) => item.classroomId === value)?.deviceId ?? null
 })
+watch(deviceId, () => { preparationQuery += 1; preparation.value = null; preparationError.value = ''; void refreshPreparation() })
+onMounted(() => {
+  let ticks = 0
+  preparationTimer = setInterval(() => { preparationNow.value = Date.now(); if (++ticks % 5 === 0) void refreshPreparation() }, 1000)
+})
 </script>
 
-<template><main class="preflight"><header class="topbar"><div><button class="back" @click="router.push(classId ? `/lesson-plans?classId=${classId}` : '/lesson-plans')">← 备课中心</button><p class="eyebrow">上课前检查</p><h1>{{ plan?.title || '课堂准备' }}</h1><p class="muted">选择本次课堂的班级，再从该班级的有效绑定中选择教室和大屏。</p></div><ElButton :loading="checking || planLoading" @click="runChecks()">重新检查</ElButton></header><div v-if="planError" class="error panel">{{ planError }}<ElButton @click="router.push('/lesson-plans')">返回备课中心</ElButton></div><template v-else><section class="panel selectors"><label>班级<ElSelect v-model="classId" placeholder="请选择班级" clearable><ElOption v-for="item in classes" :key="item.id" :label="item.name" :value="item.id" /></ElSelect></label><label>已绑定教室<ElSelect v-model="classroomId" placeholder="暂无有效绑定" clearable :disabled="!classId || !classrooms.length"><ElOption v-for="item in classrooms" :key="item.id" :label="item.name" :value="item.id" /></ElSelect></label><label>已绑定大屏<ElSelect v-model="deviceId" placeholder="暂无有效绑定" clearable :disabled="!classroomId"><ElOption v-for="item in devices.filter((device) => device.binding?.classroomId === classroomId)" :key="item.id" :label="`${item.name}（${item.status}）`" :value="item.id" /></ElSelect></label></section><section class="summary panel"><div><span>课堂环节</span><strong>{{ plan?.steps?.length ?? 0 }}</strong></div><div><span>预计时长</span><strong>{{ Math.ceil((plan?.steps?.reduce((sum, step) => sum + step.durationSeconds, 0) ?? 0) / 60) }} 分钟</strong></div><div><span>选择状态</span><strong>{{ classId && classroomId && deviceId ? (deviceOnline ? '已完成' : '待选择') : '待选择' }}</strong></div></section><section class="checks panel"><div v-for="item in checks" :key="item.key" class="check" :class="`check-${item.status}`"><span class="icon">{{ item.status === 'ok' ? '✓' : item.status === 'degraded' ? '!' : item.status === 'failed' ? '×' : '…' }}</span><div><strong>{{ item.label }}</strong><p>{{ item.detail }}</p></div><span class="status">{{ statusText[item.status] }}</span></div></section><div class="actions"><p v-if="deviceId && !deviceOnline" class="warning">⚠️ {{ deviceIssueMessage }}</p><p v-if="hasFailed" class="warning">请先处理异常项目后再进入课堂。</p><p v-else-if="!classId || !classroomId || !deviceId" class="warning">请选择有有效绑定的班级、教室和大屏设备。</p><ElButton size="large" type="primary" :disabled="!canEnter" :loading="starting" @click="enterClassroom">进入课堂</ElButton></div></template></main></template>
+<template><main class="preflight"><header class="topbar"><div><BackButton label="返回备课中心" :fallback="{ name: 'lesson-plans', query: classId ? { classId: String(classId) } : {} }" /><p class="eyebrow">上课前检查</p><h1>{{ plan?.title || '课堂准备' }}</h1><p class="muted">选择本次课堂的班级，再从该班级的有效绑定中选择教室和大屏。</p></div><ElButton :loading="checking || planLoading" @click="runChecks()">重新检查</ElButton></header><div v-if="planError" class="error panel">{{ planError }}<ElButton @click="router.push('/lesson-plans')">返回备课中心</ElButton></div><template v-else><section class="panel selectors"><label>班级<ElSelect v-model="classId" placeholder="请选择班级" clearable :disabled="selectionLocked"><ElOption v-for="item in classes" :key="item.id" :label="item.name" :value="item.id" /></ElSelect></label><label>已绑定教室<ElSelect v-model="classroomId" placeholder="暂无有效绑定" clearable :disabled="selectionLocked || !classId || !classrooms.length"><ElOption v-for="item in classrooms" :key="item.id" :label="item.name" :value="item.id" /></ElSelect></label><label>已绑定大屏<ElSelect v-model="deviceId" placeholder="暂无有效绑定" clearable :disabled="selectionLocked || !classroomId"><ElOption v-for="item in devices.filter((device) => device.binding?.classroomId === classroomId)" :key="item.id" :label="`${item.name}（${item.status}）`" :value="item.id" /></ElSelect></label></section><section class="summary panel"><div><span>课堂环节</span><strong>{{ plan?.steps?.length ?? 0 }}</strong></div><div><span>预计时长</span><strong>{{ Math.ceil((plan?.steps?.reduce((sum, step) => sum + step.durationSeconds, 0) ?? 0) / 60) }} 分钟</strong></div><div><span>选择状态</span><strong>{{ classId && classroomId && deviceId ? (deviceOnline ? '已完成' : '待选择') : '待选择' }}</strong></div></section><section class="checks panel"><div v-for="item in checks" :key="item.key" class="check" :class="`check-${item.status}`"><span class="icon">{{ item.status === 'ok' ? '✓' : item.status === 'degraded' ? '!' : item.status === 'failed' ? '×' : '…' }}</span><div><strong>{{ item.label }}</strong><p>{{ item.detail }}</p></div><span class="status">{{ statusText[item.status] }}</span></div></section><section v-if="preparation || preparationError || pendingStart" class="panel preparation-panel" data-test="preparation-status"><h2>{{ pendingStart ? '正在确认启动结果' : preparation ? '已准备到大屏' : '准备状态提示' }}</h2><template v-if="preparation"><p>{{ preparation.courseTitle }} · 等待老师开始</p><p>{{ secondsRemaining > 0 ? `准备有效期剩余 ${secondsRemaining} 秒` : '准备已过期，请重新准备' }}</p><small>准备不会创建课堂，也不会自动播放资源或语音。</small></template><p v-if="preparationError" class="warning" role="alert">{{ preparationError }}</p></section><div class="actions"><p v-if="deviceId && !deviceOnline" class="warning">⚠️ {{ deviceIssueMessage }}</p><p v-if="hasFailed" class="warning">请先处理异常项目后再进入课堂。</p><p v-else-if="!classId || !classroomId || !deviceId" class="warning">请选择有有效绑定的班级、教室和大屏设备。</p><ElButton v-if="!preparation &amp;&amp; !pendingStart" size="large" type="primary" :disabled="!canPrepare" :loading="preparing" @click="prepareScreen">准备到大屏</ElButton><template v-else><ElButton size="large" :disabled="starting || !!pendingStart" :loading="cancelling" @click="cancelPreparation">取消准备</ElButton><ElButton size="large" type="primary" :disabled="!canStart" :loading="starting" @click="enterClassroom">{{ pendingStart ? '确认启动结果' : '开始课堂' }}</ElButton></template></div></template></main></template>
 
 <style scoped>.preflight{min-height:100vh;box-sizing:border-box;padding:36px max(20px,6vw) 70px;background:linear-gradient(145deg,#fffaf1,#eef8f5);color:#493d36}.topbar{max-width:1000px;margin:auto;display:flex;justify-content:space-between;align-items:flex-end;gap:20px}.back{border:0;background:none;padding:0;color:#a56148;cursor:pointer;font-weight:700}.eyebrow{margin:22px 0 5px;color:#da805f;font-weight:800}.topbar h1{margin:0;font-size:clamp(28px,5vw,48px)}.muted{color:#88766b;line-height:1.6}.panel{max-width:1000px;margin:22px auto 0;padding:24px;border:1px solid #eadfd4;border-radius:22px;background:#fffffff0;box-shadow:0 12px 35px #6f5a3512}.selectors{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.selectors label{display:grid;gap:8px;font-weight:700}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.summary div{display:grid;gap:6px;padding:14px 16px;border-radius:14px;background:#fff7ea}.summary span{color:#997c6d;font-size:14px}.summary strong{font-size:22px}.checks{display:grid;gap:10px}.check{display:grid;grid-template-columns:38px 1fr auto;align-items:center;gap:13px;padding:14px;border-radius:14px;background:#f7faf7}.check p{margin:4px 0 0;color:#88766b;font-size:14px}.icon{display:grid;width:32px;height:32px;place-items:center;border-radius:50%;background:#d8f1e2;color:#287b55;font-weight:800}.check-degraded{background:#fffaf0}.check-degraded .icon{background:#ffe4a8;color:#976713}.check-failed{background:#fff2f0}.check-failed .icon{background:#ffd0c8;color:#a53d32}.status{font-size:14px;font-weight:700;color:#4a896a}.check-degraded .status{color:#a47720}.check-failed .status{color:#af4439}.actions{max-width:1000px;margin:24px auto;display:flex;justify-content:flex-end;align-items:center;gap:15px}.warning{margin:0;color:#ad4b3d}.error{display:flex;justify-content:center;align-items:center;gap:15px;color:#a53d32}@media(max-width:700px){.topbar{align-items:flex-start;flex-direction:column}.selectors,.summary{grid-template-columns:1fr}.check{grid-template-columns:34px 1fr}.status{grid-column:2}.actions{align-items:stretch;flex-direction:column}.actions :deep(.el-button){width:100%}}</style>

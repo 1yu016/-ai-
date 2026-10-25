@@ -1,4 +1,8 @@
 import { http } from './http'
+import axios from 'axios'
+
+// Device authentication failures must not refresh/logout a valid teacher session.
+const deviceHttp = axios.create({ baseURL: http.defaults.baseURL, timeout: 15_000 })
 
 export const DEVICE_SESSION_HEADER = 'x-device-session'
 
@@ -22,7 +26,7 @@ export const deviceSessionApi = {
   issue: (deviceId: number) =>
     http.post<DeviceSessionIssued>(`/devices/${deviceId}/device-session`),
   heartbeat: (token: string) =>
-    http.post<DeviceHeartbeatResult>(
+    deviceHttp.post<DeviceHeartbeatResult>(
       '/device-session/heartbeat',
       null,
       { headers: { [DEVICE_SESSION_HEADER]: token } },

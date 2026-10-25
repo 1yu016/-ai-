@@ -64,4 +64,18 @@ test.describe('后台工作台基础架构', () => {
     await page.goto('/classroom/preflight/1')
     await expect(page.locator('.workspace-layout')).toHaveCount(0)
   })
+
+  test('教师首页与课堂记录入口可互相导航，并支持刷新恢复', async ({ page, request }) => {
+    await authenticate(page, request, 'teacher')
+    await page.goto('/teacher/home')
+    await expect(page.getByRole('heading', { name: '今天的教学' })).toBeVisible()
+    await page.locator('aside').getByRole('button', { name: '课堂记录', exact: true }).click()
+    await expect(page).toHaveURL(/\/classroom\/history/)
+    await expect(page.getByRole('heading', { name: '课堂记录', exact: true })).toBeVisible()
+    await page.reload()
+    await expect(page.getByRole('heading', { name: '课堂记录', exact: true })).toBeVisible()
+    await page.locator('aside').getByRole('button', { name: '今天的教学', exact: true }).click()
+    await expect(page).toHaveURL(/\/teacher\/home$/)
+    await expectNoPageOverflow(page)
+  })
 })

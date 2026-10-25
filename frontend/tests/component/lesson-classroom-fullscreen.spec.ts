@@ -54,7 +54,13 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
     vi.restoreAllMocks()
   })
 
-  async function mountView(opts: { newlyStarted?: boolean; rewards?: ReturnType<typeof rec>[] } = {}) {
+  async function mountView(opts: { opening?: boolean; rewards?: ReturnType<typeof rec>[] } = {}) {
+    let opening = opts.opening ?? false
+    const lifecycle = { phase: 'opening', runId: 9, deviceId: 1, bindingId: 2, revision: 1, expiresAt: new Date(Date.now() + 600000).toISOString() }
+    vi.spyOn(http, 'post').mockImplementation(async (url) => {
+      if (/\/opening\/(complete|skip)$/.test(String(url))) opening = false
+      return { data: {} }
+    })
     vi.spyOn(http, 'get').mockImplementation(async (url: string) => {
       const u = String(url)
       if (u.startsWith('/classroom-runs/')) {
@@ -62,13 +68,14 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
           const items = opts.rewards ?? []
           return { data: { items, total: items.length, runTitle: '认识数字1' } } as never
         }
-        return { data: runPayload } as never
+        return { data: { ...runPayload, interactionState: opening ? { screenLifecycle: lifecycle } : {} } } as never
       }
       if (/\/students/.test(u)) return { data: { items: [duoDuo], total: 1 } } as never
       return { data: {} } as never
     })
     const pinia = createPinia()
-    if (opts.newlyStarted) useLessonRunStore(pinia).newlyStarted = true
+    // A local start flag alone must never decide the screen lifecycle.
+    useLessonRunStore(pinia).newlyStarted = true
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [
@@ -172,8 +179,8 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
     wrapper.unmount()
   })
 
-  it('#7 开场：newlyStarted 一次性标记 → 显示 OpeningSequenceOverlay，可跳过进入教学', async () => {
-    const wrapper = await mountView({ newlyStarted: true, rewards: [] })
+  it('#7 服务端 opening → 显示开场，skip确认后进入教学且不推进步骤', async () => {
+    const wrapper = await mountView({ opening: true, rewards: [] })
     await settle()
     expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="opening-overlay"]').text()).toContain('认识数字1')
@@ -182,10 +189,12 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
     // 进入教学：开场关闭，正常课堂渲染。
     expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(false)
     expect(wrapper.find('.assist-col').exists()).toBe(true)
+    expect(http.post).toHaveBeenCalledWith('/classroom-runs/9/opening/skip', { deviceId: 1, bindingId: 2, expectedRevision: 1 })
+    expect(useLessonRunStore().run?.currentStepIndex).toBe(0)
     wrapper.unmount()
   })
 
-  it('#8 不重复开场：非新建（newlyStarted=false）不播放开场', async () => {
+  it('#8 无服务端 lifecycle，即使本地 newlyStarted=true 也不补开场', async () => {
     const wrapper = await mountView({ rewards: [] })
     await settle()
     expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(false)
@@ -193,12 +202,14 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
   })
 
   it('#9 「进入课堂」也可进入教学（跳过开场与正常进入同出口）', async () => {
-    const wrapper = await mountView({ newlyStarted: true, rewards: [] })
+    const wrapper = await mountView({ opening: true, rewards: [] })
     await settle()
     expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(true)
     await wrapper.find('[data-test="opening-enter"]').trigger('click')
     await settle()
     expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(false)
+    expect(http.post).toHaveBeenCalledWith('/classroom-runs/9/opening/complete', { deviceId: 1, bindingId: 2, expectedRevision: 1 })
+    expect(useLessonRunStore().run?.currentStepIndex).toBe(0)
     wrapper.unmount()
   })
 
@@ -217,7 +228,7 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
   })
 
   it('#8 Esc 不会绕过 OpeningSequenceOverlay 开场', async () => {
-    const wrapper = await mountView({ newlyStarted: true, rewards: [] })
+    const wrapper = await mountView({ opening: true, rewards: [] })
     await settle()
     expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(true)
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))

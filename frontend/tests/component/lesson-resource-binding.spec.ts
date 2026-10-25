@@ -88,13 +88,14 @@ describe('备课资源绑定 · Stage 6.6', () => {
     expect(wrapper.emitted('selected')).toHaveLength(1)
   })
 
-  it('保存教案：PUT /steps payload 携带 resourceId', async () => {
+  it('保存教案：单次 authoring 请求携带资源与隔离字段，不分项保存', async () => {
     const store = useLessonPlanStore()
     store.newDraft()
     store.draft.title = '颜色认知'
     store.draft.theme = '认识颜色'
     store.draft.objectives = '目标'
     store.addStep({ title: '看卡片', stepType: 'resource', resourceId: 12 })
+    Object.assign(store.steps[0]!, { teacherInstruction: '请老师引导观察', studentContent: '看看这张卡片' })
     const post = vi
       .spyOn(http, 'post')
       .mockResolvedValue({ data: { id: 1, version: 1 } } as never)
@@ -109,11 +110,12 @@ describe('备课资源绑定 · Stage 6.6', () => {
         },
       } as never)
     const plan = await store.save()
-    expect(post).toHaveBeenCalledWith('/lesson-plans', expect.objectContaining({ title: '颜色认知' }))
-    const putBody = put.mock.calls[0]?.[1]
-    const steps = (putBody as { steps?: Array<{ resourceId?: number | null }> }).steps
-    expect(steps?.[0]?.resourceId).toBe(12)
-    expect(plan.version).toBe(2)
+    expect(post).toHaveBeenCalledExactlyOnceWith('/lesson-plans/authoring', expect.objectContaining({
+      title: '颜色认知', requestId: expect.any(String),
+      steps: [expect.objectContaining({ resourceId: 12, teacherInstruction: '请老师引导观察', studentContent: '看看这张卡片' })],
+    }))
+    expect(put).not.toHaveBeenCalled()
+    expect(plan.version).toBe(1)
   })
 
   it('重开教案：不在已加载列表的 resourceId 经 fallback 回显资源标题', async () => {

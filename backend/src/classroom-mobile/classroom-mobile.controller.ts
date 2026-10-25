@@ -72,8 +72,9 @@ export class ClassroomMobileController {
   screenEvents(
     @Req() request: AuthenticatedRequest,
     @Query('deviceId', ParseIntPipe) deviceId: number,
+    @Query('handoffId') handoffId?: string,
   ) {
-    return this.mobile.screenStream(request.user, deviceId);
+    return this.mobile.screenStream(request.user, deviceId, handoffId);
   }
 
   @Post('commands')

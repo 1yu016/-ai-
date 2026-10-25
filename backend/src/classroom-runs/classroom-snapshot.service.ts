@@ -43,6 +43,38 @@ export type ValidClassroomSnapshot = {
 @Injectable()
 export class ClassroomSnapshotService {
   private readonly logger = new Logger(ClassroomSnapshotService.name);
+  private lifecycleWriterClaimed = false;
+  private snapshotWriteTail: Promise<void> = Promise.resolve();
+
+  /** One internal owner receives the write capability. Controllers/checkpoints
+   * only have capture(), which cannot alter this namespace. */
+  claimScreenLifecycleWriter() {
+    if (this.lifecycleWriterClaimed)
+      throw new Error('Screen lifecycle writer already registered');
+    this.lifecycleWriterClaimed = true;
+    const write = (
+      runId: number,
+      value: JsonMap,
+      expectedRevision: number,
+      manager: EntityManager,
+    ) =>
+      this.captureInternal(
+        runId,
+        value.phase === 'opening' && expectedRevision === 0
+          ? ClassroomSnapshotReason.Start
+          : value.phase === 'summary'
+            ? ClassroomSnapshotReason.Complete
+            : ClassroomSnapshotReason.Timed,
+        true,
+        {},
+        manager,
+        { value, expectedRevision },
+      );
+    return Object.assign(write, {
+      transaction: <T>(work: (manager: EntityManager) => Promise<T>) =>
+        this.serialSnapshotWrite(() => this.runs.manager.transaction(work)),
+    });
+  }
 
   constructor(
     @InjectRepository(ClassroomRun)
@@ -60,6 +92,45 @@ export class ClassroomSnapshotService {
     patch: ClassroomSnapshotPatch = {},
     manager?: EntityManager,
   ): Promise<ValidClassroomSnapshot | null> {
+    // Read the protected namespace and append its successor in one transaction:
+    // a concurrent ordinary checkpoint must not append stale lifecycle metadata.
+    if (manager)
+      return this.captureInternal(
+        classroomRunId,
+        reason,
+        isKey,
+        patch,
+        manager,
+      );
+    return this.serialSnapshotWrite(() =>
+      this.runs.manager.transaction((tx) =>
+        this.captureInternal(classroomRunId, reason, isKey, patch, tx),
+      ),
+    );
+  }
+
+  private async serialSnapshotWrite<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.snapshotWriteTail;
+    let release!: () => void;
+    this.snapshotWriteTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+
+  private async captureInternal(
+    classroomRunId: number,
+    reason: ClassroomSnapshotReason,
+    isKey: boolean,
+    patch: ClassroomSnapshotPatch,
+    manager?: EntityManager,
+    lifecycle?: { value: JsonMap; expectedRevision: number },
+  ): Promise<ValidClassroomSnapshot | null> {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const runs = manager?.getRepository(ClassroomRun) ?? this.runs;
@@ -68,6 +139,12 @@ export class ClassroomSnapshotService {
         const run = await runs.findOne({ where: { id: classroomRunId } });
         if (!run) return null;
         const previous = await this.loadLatestValid(classroomRunId, manager);
+        if (lifecycle) {
+          const prior = previous?.interactionState.screenLifecycle as
+            JsonMap | undefined;
+          if ((prior?.revision ?? 0) !== lifecycle.expectedRevision)
+            throw new Error('Screen lifecycle revision conflict');
+        }
         const latestVersion = await snapshots.maximum('snapshotVersion', {
           classroomRunId,
         });
@@ -89,8 +166,11 @@ export class ClassroomSnapshotService {
             patch.attendanceState ?? previous?.attendanceState ?? {},
           rollCallState: patch.rollCallState ?? previous?.rollCallState ?? {},
           rewardState: patch.rewardState ?? previous?.rewardState ?? {},
-          interactionState:
-            patch.interactionState ?? previous?.interactionState ?? {},
+          interactionState: this.protectedInteractionState(
+            previous?.interactionState,
+            patch.interactionState,
+            lifecycle?.value,
+          ),
           playerState: patch.playerState ?? previous?.playerState ?? {},
           deviceId: run.deviceId,
           avatarVersionId: run.avatarVersionId,
@@ -125,7 +205,8 @@ export class ClassroomSnapshotService {
     classroomRunId: number,
     manager?: EntityManager,
   ): Promise<ValidClassroomSnapshot | null> {
-    const snapshots = manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
+    const snapshots =
+      manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
     const candidates = await snapshots.find({
       where: { classroomRunId },
       order: { snapshotVersion: 'DESC' },
@@ -202,6 +283,27 @@ export class ClassroomSnapshotService {
     }
   }
 
+  /** All ordinary writers (including checkpoints) may replace interaction data,
+   * but cannot create, overwrite or delete the server-owned lifecycle namespace.
+   * No lifecycle writer or lifecycle behaviour is introduced in this batch.
+   */
+  private protectedInteractionState(
+    previous?: JsonMap,
+    patch?: JsonMap,
+    trusted?: JsonMap,
+  ): JsonMap {
+    const next = { ...(patch ?? previous ?? {}) };
+    delete next.screenLifecycle;
+    if (
+      previous &&
+      Object.prototype.hasOwnProperty.call(previous, 'screenLifecycle')
+    ) {
+      next.screenLifecycle = previous.screenLifecycle;
+    }
+    if (trusted) next.screenLifecycle = trusted;
+    return next;
+  }
+
   private checksum(value: object): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
   }
@@ -239,7 +341,8 @@ export class ClassroomSnapshotService {
   }
 
   private async trim(classroomRunId: number, manager?: EntityManager) {
-    const snapshots = manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
+    const snapshots =
+      manager?.getRepository(ClassroomSnapshot) ?? this.snapshots;
     const rows = await snapshots.find({
       where: { classroomRunId },
       order: { snapshotVersion: 'DESC' },

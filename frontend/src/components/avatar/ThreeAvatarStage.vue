@@ -22,7 +22,7 @@ const { action, expression, compact, roleId } = storeToRefs(store)
 const mountEl = ref<HTMLElement | null>(null)
 // opening：开场舞台使用更远的相机机位，确保看到完整身体；不影响普通课堂参数。
 // far：数字人大屏模式，同样使用宽松取景（配合 fit 取景），但保留普通 UI（字幕/角色控制由上层控制）。
-const props = defineProps<{ opening?: boolean; far?: boolean }>()
+const props = defineProps<{ opening?: boolean; far?: boolean; framing?: 'default' | 'screen' }>()
 const isOpening = typeof props.opening === 'boolean' ? props.opening : false
 const isFar = typeof props.far === 'boolean' ? props.far : false
 
@@ -302,6 +302,12 @@ function bindModel(model: AvatarLoadedModel) {
 // 大屏 far 1.5：容器已放大，收紧留白让数字人主体成为大屏视觉焦点。
 function frameCamera() {
   if (!root || !camera) return
+  // Screen-only close framing: use both axes so wide models stay uncropped.
+  // Other consumers retain their existing camera settings.
+  if (props.framing === 'screen') {
+    fitCameraToObject(root)
+    return
+  }
   const box = new THREE.Box3().setFromObject(root)
   if (box.isEmpty()) return
   const size = box.getSize(new THREE.Vector3())

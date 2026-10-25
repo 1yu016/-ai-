@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import { createRequire } from 'node:module'
 import { expect, test } from '@playwright/test'
 
 // 《P0 Device Online Final Runtime Gate》真实双页面浏览器验收。
@@ -50,6 +51,18 @@ test.describe.serial('P0 Device Online Final Gate', () => {
 
     // 设备 A 初始必须为 Offline：只有大屏页自动心跳才允许翻为 Online（禁止手工 heartbeat）。
     expect(device.status).not.toBe('online')
+    const databasePath = process.env.E2E_GATE_DATABASE
+    const Database = createRequire(new URL('../../../backend/package.json', import.meta.url))('better-sqlite3')
+    const evidence = (label: string) => {
+      if (!databasePath) return
+      const db = new Database(databasePath, { readonly: true })
+      try {
+        const deviceRow = db.prepare('SELECT id,status,last_online_at FROM device WHERE id=?').get(device.id)
+        const sessionRow = db.prepare('SELECT id,device_id,expires_at,last_heartbeat_at,revoked_at FROM device_session WHERE device_id=? ORDER BY id DESC LIMIT 1').get(device.id)
+        console.log('DB EVIDENCE', label, JSON.stringify({ device: deviceRow, session: sessionRow }))
+      } finally { db.close() }
+    }
+    evidence('before screen')
 
     const bindTeacher = await request.post(`/classes/${classBody.id}/teachers`, {
       headers: adminAuth,
@@ -120,7 +133,14 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     pageA.on('request', (req) => {
       const url = new URL(req.url())
       if (url.pathname.endsWith('/device-session')) seenIssue.push(req.url())
-      if (url.pathname.endsWith('/device-session/heartbeat')) seenHeartbeat.push(req.url())
+      if (url.pathname.endsWith('/device-session/heartbeat')) {
+        expect(req.headers()['x-device-session']).toBeTruthy()
+        expect(req.headers().authorization).toBeUndefined()
+        seenHeartbeat.push(req.url())
+      }
+    })
+    pageA.on('response', async response => {
+      if (response.url().endsWith('/device-session/heartbeat')) console.log('HEARTBEAT EVIDENCE', response.status(), await response.text())
     })
 
     // 1) A 打开 → 自动获得 device session
@@ -130,6 +150,13 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     await expect.poll(() => seenIssue.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1)
     await expect.poll(() => seenHeartbeat.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1)
     await expect(pageA.locator('.status-dot.online')).toBeVisible({ timeout: 20_000 })
+    evidence('first heartbeat')
+    const issueBeforeReload = seenIssue.length
+    const heartbeatsBeforeReload = seenHeartbeat.length
+    await pageA.reload()
+    await expect.poll(() => seenHeartbeat.length).toBeGreaterThan(heartbeatsBeforeReload)
+    expect(seenIssue.length).toBe(issueBeforeReload)
+    await expect(pageA.locator('.status-dot.online')).toBeVisible()
 
     // 3) 保持打开 >90s → device 始终 online（心跳每 30s 续期，拒绝手工 heartbeat，仅靠页面自动）
     const heartbeatAt90 = seenHeartbeat.length
@@ -140,7 +167,8 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     expect(seenHeartbeat.length).toBeGreaterThan(heartbeatAt90)
 
     // 4) B 刷新设备列表 → 同一设备显示 online
-    await pageB.goto('/lesson-plans')
+    await pageB.goto('/devices')
+    await expect(pageB.locator('tbody tr').filter({ hasText: 'Gate大屏A' }).getByText('在线', { exact: true }).first()).toBeVisible()
     const devResp = await request.get('/devices', { headers: adminAuth })
     const devItems = (await devResp.json()) as Array<{ id: number; status: string }>
     expect(devItems.find((d) => d.id === device.id)?.status).toBe('online')
@@ -150,8 +178,15 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     await pageB.locator('.selectors label').filter({ hasText: '班级' }).locator('.el-select').click()
     await pageB.getByRole('option', { name: 'Gate验收班' }).click()
     await expect(pageB.getByText('已完成')).toBeVisible({ timeout: 15_000 })
-    await pageB.getByRole('button', { name: '进入课堂' }).click()
+    await pageB.getByRole('button', { name: '准备到大屏', exact: true }).click({ timeout: 15000 })
+    await pageB.getByRole('button', { name: '开始课堂', exact: true }).click({ timeout: 15000 })
     await expect(pageB).toHaveURL(/\/classroom\/lesson\/\d+$/, { timeout: 20_000 })
+    // Finish only this isolated test Run before testing an offline fresh start.
+    const runId = Number(new URL(pageB.url()).pathname.split('/').pop())
+    const state = await (await request.get(`/classroom-runs/${runId}`, { headers: teacherAuth })).json()
+    const finished = await request.post(`/classroom-runs/${runId}/complete`, { headers: teacherAuth,
+      data: { version: state.version, deviceId: device.id, requestId: `gate-complete-${runId}` } })
+    expect(finished.ok()).toBeTruthy()
 
     // 6-7) 关闭 A → 不再有 heartbeat
     const heartbeatBeforeClose = seenHeartbeat.length
@@ -169,45 +204,50 @@ test.describe.serial('P0 Device Online Final Gate', () => {
       await pageB.waitForTimeout(10_000)
     }
     expect(offline).toBe(true)
+    evidence('closed screen beyond timeout')
+    if (databasePath) {
+      await expect.poll(() => {
+        const db = new Database(databasePath, { readonly: true })
+        try { return db.prepare('SELECT status FROM device WHERE id=?').get(device.id)?.status }
+        finally { db.close() }
+      }, { timeout: 75_000, intervals: [1000] }).toBe('offline')
+      evidence('cron persisted offline')
+    }
 
     // 9) B 再刷新 → device offline（前端显示）
-    await pageB.goto('/lesson-plans')
+    await pageB.goto('/devices')
+    await expect(pageB.locator('tbody tr').filter({ hasText: 'Gate大屏A' }).getByText('离线', { exact: true }).first()).toBeVisible()
     const offlineResp = await request.get('/devices', { headers: adminAuth })
     expect(((await offlineResp.json()) as Array<{ id: number; status: string }>).find((d) => d.id === device.id)?.status).toBe('offline')
 
-    // 10) 再尝试 start → backend 409 + 前端显示设备离线。
-    // 说明：GET /devices 的 offline 由 last_online_at 新鲜度即时推导；而后端 start() 的依据是权威 stored
-    // device.status 列，该列由 cron `markTimedOutDevicesOffline`（EVERY_MINUTE）在心跳超窗后的下一个分钟刻度
-    // 翻为 Offline。故此处按任务「90s + cron 容差」重复真实 start，直到后端返回离线 409（每次 requestId 唯一，
-    // 均在 status 校验处抛 409，不会创建 run）。
+    // 10) Once the common freshness policy says offline, Start must immediately reject.
+    // No retry/grace period waiting for the persisted status cache.
     await pageB.goto(`/classroom/preflight/${planId}`)
     await pageB.locator('.selectors label').filter({ hasText: '班级' }).locator('.el-select').click()
     await pageB.getByRole('option', { name: 'Gate验收班' }).click()
     await expect(pageB.locator('.warning').filter({ hasText: '离线' }).first()).toBeVisible({ timeout: 15_000 })
 
-    let offline409: { status: number; message: string } | null = null
-    const startDeadline = Date.now() + 100_000
-    while (Date.now() < startDeadline && !offline409) {
-      const r = await request.post('/classroom-runs/start', {
-        headers: teacherAuth,
-        data: {
-          lessonPlanId: planId,
-          classId: classBody.id,
-          classroomId: roomBody.id,
-          deviceId: device.id,
-          requestId: `gate-offline-${Date.now()}`,
-        },
-      })
-      if (r.status() === 409) {
-        const body = (await r.json()) as { message: string }
-        // 命中离线守卫（而非 active-run 冲突）即达到目标状态：authoritative stored status 已翻 Offline。
-        if (body.message.includes('离线')) offline409 = { status: r.status(), message: body.message }
-      }
-      if (!offline409) await pageB.waitForTimeout(5_000)
-    }
-    expect(offline409).not.toBeNull()
-    expect(offline409!.status).toBe(409)
-    expect(offline409!.message).toContain('离线')
+    const rejected = await request.post('/classroom-runs/start', {
+      headers: teacherAuth,
+      data: { lessonPlanId: planId, classId: classBody.id, classroomId: roomBody.id,
+        deviceId: device.id, requestId: `gate-offline-${Date.now()}` },
+    })
+    expect(rejected.status()).toBe(409)
+    expect((await rejected.json()).message).toContain('离线')
+
+    const reopened = await context.newPage()
+    const reconnectedHeartbeat = reopened.waitForResponse(response => response.url().endsWith('/device-session/heartbeat') && response.status() === 200)
+    await reopened.goto(`/classroom/screen/${device.id}`)
+    await reconnectedHeartbeat
+    await expect(reopened).toHaveURL(new RegExp(`/classroom/screen/${device.id}$`))
+    await expect.poll(async () => {
+      const response = await request.get('/devices', { headers: adminAuth })
+      return (await response.json()).find((entry: { id: number }) => entry.id === device.id)?.status
+    }).toBe('online')
+    // Preflight refreshes the authoritative backend status without requiring another login.
+    await expect(pageB.getByRole('button', { name: '准备到大屏', exact: true })).toBeEnabled({ timeout: 20_000 })
+    evidence('screen reopened')
+    await reopened.close()
 
     // A/B token 隔离：后端由 tokenHash 定位唯一 session/deviceId，heartbeat 无目标设备参数，
     // 天然跨设备不可复用（见 device-session.e2e test 3/4 + 前端 A/B localStorage 单测）。

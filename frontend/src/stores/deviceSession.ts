@@ -10,7 +10,9 @@ function readStoredTokens(): StoredTokens {
   if (typeof localStorage === 'undefined') return {}
   try {
     const raw = localStorage.getItem(DEVICE_SESSION_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as StoredTokens) : {}
+    const parsed: unknown = raw ? JSON.parse(raw) : {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter(([key, token]) => /^\d+$/.test(key) && typeof token === 'string' && token.trim() && token !== 'null' && token !== 'undefined')) as StoredTokens
   } catch {
     return {}
   }
@@ -30,6 +32,7 @@ export const useDeviceSessionStore = defineStore('deviceSession', {
     error: {} as Record<number, string>,
     heartbeatTimer: null as ReturnType<typeof setInterval> | null,
     activeDeviceId: null as number | null,
+    heartbeatGeneration: 0,
   }),
   actions: {
     ensureSession(deviceId: number) {
@@ -80,26 +83,32 @@ export const useDeviceSessionStore = defineStore('deviceSession', {
       this.stopHeartbeat()
       if (!deviceId) return
       this.activeDeviceId = deviceId
+      const generation = this.heartbeatGeneration
+      let inFlight = false
       const kickOff = async () => {
-        let token = this.ensureSession(deviceId)
-        if (!token) {
-          try {
-            token = await this.issue(deviceId)
-          } catch {
-            this.error[deviceId] = 'issue-failed'
-            return
+        if (inFlight || this.activeDeviceId !== deviceId || generation !== this.heartbeatGeneration) return
+        inFlight = true
+        try {
+          let token = this.ensureSession(deviceId)
+          if (!token) {
+            try {
+              token = await this.issue(deviceId)
+            } catch (cause) {
+              this.online[deviceId] = false
+              this.error[deviceId] = `issue-${(cause as { response?: { status?: number } })?.response?.status ?? 'failed'}`
+              return
+            }
           }
-        }
-        await this.beat(deviceId, token)
+          if (generation !== this.heartbeatGeneration || this.activeDeviceId !== deviceId) return
+          await this.beat(deviceId, token)
+        } finally { inFlight = false }
       }
       void kickOff()
-      this.heartbeatTimer = setInterval(() => {
-        const current = this.tokens[deviceId]
-        if (current) void this.beat(deviceId, current)
-      }, intervalMs)
+      this.heartbeatTimer = setInterval(() => void kickOff(), intervalMs)
     },
 
     stopHeartbeat() {
+      this.heartbeatGeneration += 1
       if (this.heartbeatTimer !== null) {
         clearInterval(this.heartbeatTimer)
         this.heartbeatTimer = null

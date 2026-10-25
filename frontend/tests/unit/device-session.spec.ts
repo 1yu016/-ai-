@@ -107,6 +107,48 @@ describe('formal screen device-session heartbeat store', () => {
     store.stopHeartbeat()
   })
 
+  it('automatically recovers an invalid persisted credential on the next heartbeat cycle', async () => {
+    localStorage.setItem(DEVICE_SESSION_STORAGE_KEY, JSON.stringify({ '5': 'revoked-token' }))
+    const store = useDeviceSessionStore()
+    const issue = vi.spyOn(deviceSessionApi, 'issue').mockResolvedValue({ data: issued } as never)
+    const heartbeat = vi.spyOn(deviceSessionApi, 'heartbeat')
+      .mockRejectedValueOnce({ response: { status: 401 } })
+      .mockResolvedValue({ data: onlineResult } as never)
+    store.startHeartbeat(5)
+    await ready()
+    expect(issue).not.toHaveBeenCalled()
+    expect(store.tokens[5]).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(issue).toHaveBeenCalledTimes(1)
+    expect(heartbeat).toHaveBeenLastCalledWith(issued.token)
+    expect(store.online[5]).toBe(true)
+    store.stopHeartbeat()
+  })
+
+  it('retries a failed issuance instead of leaving a tokenless interval inert', async () => {
+    const store = useDeviceSessionStore()
+    const issue = vi.spyOn(deviceSessionApi, 'issue').mockRejectedValueOnce(new Error('network')).mockResolvedValue({ data: issued } as never)
+    vi.spyOn(deviceSessionApi, 'heartbeat').mockResolvedValue({ data: onlineResult } as never)
+    store.startHeartbeat(5)
+    await ready()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(issue).toHaveBeenCalledTimes(2)
+    expect(store.online[5]).toBe(true)
+    store.stopHeartbeat()
+  })
+
+  it('does not heartbeat after an in-flight issuance resolves on an unmounted screen', async () => {
+    const store = useDeviceSessionStore()
+    let resolveIssue!: (value: never) => void
+    vi.spyOn(deviceSessionApi, 'issue').mockImplementation(() => new Promise(resolve => { resolveIssue = resolve }))
+    const heartbeat = vi.spyOn(deviceSessionApi, 'heartbeat')
+    store.startHeartbeat(5)
+    store.stopHeartbeat()
+    resolveIssue({ data: issued } as never)
+    await ready()
+    expect(heartbeat).not.toHaveBeenCalled()
+  })
+
   it('stopHeartbeat clears the interval so no further heartbeats fire', async () => {
     const store = useDeviceSessionStore()
     vi.spyOn(deviceSessionApi, 'issue').mockResolvedValue({ data: issued } as never)

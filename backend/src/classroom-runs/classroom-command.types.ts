@@ -26,6 +26,8 @@ export enum ClassroomCommandOperation {
   Unmute = 'unmute',
   SpeakText = 'speak_text',
   DisplayArtwork = 'display_artwork',
+  UpdatePresentationQueue = 'update_presentation_queue',
+  SetPresentation = 'set_presentation',
   AttendanceUpdate = 'attendance_update',
   RandomRollCall = 'random_roll_call',
   SpecifiedRollCall = 'specified_roll_call',
@@ -60,4 +62,5 @@ export const MEDIA_CLASSROOM_COMMANDS = new Set<ClassroomCommandOperation>([
   ClassroomCommandOperation.Unmute,
   ClassroomCommandOperation.SpeakText,
   ClassroomCommandOperation.DisplayArtwork,
+  ClassroomCommandOperation.SetPresentation,
 ]);

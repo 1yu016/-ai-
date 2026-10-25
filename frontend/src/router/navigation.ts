@@ -42,14 +42,18 @@ export async function navigateBack(
     return
   }
 
-  if (browserBack && canAccessLocation(router, browserBack, session)) {
-    router.back()
-    return
-  }
-
   const configured = fallbackOverride ?? resolveRouteTarget(route.meta.backRoute, route)
   if (configured && canAccessLocation(router, configured, session)) {
     await router.push(configured)
+    return
+  }
+
+  // A route's configured back target represents the product's contextual
+  // hierarchy (for example, student detail -> that class's student list).
+  // Browser history can point at an unrelated page or even another workflow,
+  // so only use it after the contextual target has been considered.
+  if (browserBack && canAccessLocation(router, browserBack, session)) {
+    router.back()
     return
   }
 

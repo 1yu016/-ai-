@@ -2,7 +2,8 @@ import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiErrorMessage } from '@/api/http'
 import type { Student } from '@/api/platform'
-import type { LessonRun } from '@/stores/lessonRun'
+import { useLessonRunStore, type LessonRun } from '@/stores/lessonRun'
+import { executeClassroomCommand } from '@/services/classroomCommandBus'
 import { studentDisplayName } from '@/utils/student'
 import {
   postReward,
@@ -44,13 +45,14 @@ export function useClassroomInteraction(
 
   const reason = ref<string>(QUICK_REWARD_REASONS[0])
   const submitting = ref(false)
+  const rolling = ref(false)
   const message = ref('')
   const errorMsg = ref('')
 
   const nameOf = (student: Student) => studentDisplayName(student)
 
   const interactionLocked = computed(
-    () => props.disabled || !props.run || props.busy,
+    () => props.disabled || !props.run || props.busy || rolling.value || submitting.value,
   )
   const canReward = computed(
     () =>
@@ -63,16 +65,24 @@ export function useClassroomInteraction(
     emit('update:selectedStudentId', id)
   }
 
-  function randomRoll() {
+  async function randomRoll() {
     if (interactionLocked.value) return
-    const pool = displayStudents.value
-    if (!pool.length) return
-    const picked = pool[Math.floor(Math.random() * pool.length)]
-    if (!picked) return
-    setSelected(picked.id)
-    message.value = ''
-    errorMsg.value = ''
-    emit('random-roll', picked)
+    const run = props.run
+    if (!run || !displayStudents.value.length) return
+    rolling.value = true
+    errorMsg.value = ''; message.value = ''
+    try {
+      const response = await executeClassroomCommand<{ student: { id: number } }>(run, 'random_roll_call', { source: 'teacher_panel' })
+      if (props.run?.id !== run.id) return
+      const store = useLessonRunStore()
+      if (store.run?.id === run.id && response.classroomState.version >= store.run.version) store.adoptRun(response.classroomState)
+      const picked = displayStudents.value.find(student => student.id === response.result?.student?.id)
+      if (!picked) throw new Error('点名已记录，但幼儿资料尚未加载，请刷新当前班级学生列表。')
+      setSelected(picked.id)
+      emit('random-roll', picked)
+    } catch (cause) {
+      errorMsg.value = apiErrorMessage(cause, '点名失败，请重试。')
+    } finally { rolling.value = false }
   }
 
   // 快速奖励：必须走正式 rewards API（postReward 内部含 requestId 幂等）。
@@ -110,6 +120,7 @@ export function useClassroomInteraction(
     selected,
     reason,
     submitting,
+    rolling,
     message,
     errorMsg,
     // 派生

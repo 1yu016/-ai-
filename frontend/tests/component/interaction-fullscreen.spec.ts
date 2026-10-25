@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { http } from '@/api/http'
+import * as commandBus from '@/services/classroomCommandBus'
 import LessonClassroomView from '@/views/LessonClassroomView.vue'
 
 // 《课堂互动全屏 · UI state》—— 只覆盖全屏操作台的展示层状态：
@@ -98,6 +99,7 @@ describe('LessonClassroomView · 互动全屏 UI state', () => {
   })
 
   it('选中幼儿：点名后显示为视觉焦点，对应 chip 高亮并出现 ✓，点名 CTA 变“再随机一次”', async () => {
+    vi.spyOn(commandBus, 'executeClassroomCommand').mockResolvedValue({ result: { student: { id: 2 } }, classroomState: { ...runPayload, version: 3 } } as never)
     const wrapper = await mountView()
     await settle()
     await wrapper.find('[data-test="open-interaction"]').trigger('click')

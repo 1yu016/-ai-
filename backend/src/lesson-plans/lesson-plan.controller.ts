@@ -25,6 +25,7 @@ import {
   ListLessonPlansQueryDto,
   ReorderLessonStepsDto,
   SaveLessonStepsDto,
+  SaveLessonAuthoringDto,
   UpdateLessonPlanDto,
   UpdateLessonRunProgressDto,
   UpdateLessonStepDto,
@@ -35,6 +36,16 @@ import { LessonPlanService } from './lesson-plan.service';
 @UseGuards(AuthGuard)
 export class LessonPlanController {
   constructor(private readonly service: LessonPlanService) {}
+
+  @Post('lesson-plans/authoring')
+  createAuthoring(@Body() dto: SaveLessonAuthoringDto, @Req() request: AuthenticatedRequest) {
+    return this.service.saveAuthoring(request.user, dto);
+  }
+
+  @Put('lesson-plans/:id/authoring')
+  updateAuthoring(@Param('id', ParseIntPipe) id: number, @Body() dto: SaveLessonAuthoringDto, @Req() request: AuthenticatedRequest) {
+    return this.service.saveAuthoring(request.user, dto, id);
+  }
 
   @Post('lesson-plans')
   create(

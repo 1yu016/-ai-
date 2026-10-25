@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿<script setup lang="ts">
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿<script setup lang="ts">
 import { ref } from 'vue'
 import DigitalHumanDevPanel from '@/components/digital-human/DigitalHumanDevPanel.vue'
 import ClassroomAvatar from '@/components/digital-human/ClassroomAvatar.vue'
@@ -13,6 +13,8 @@ defineProps<{
   micReady: boolean
   assistantOnline: boolean
   classroomStatusText: string
+  debugMode?: boolean
+  compact?: boolean
 }>()
 
 defineOptions({ name: 'ClassroomPartnerPanel' })
@@ -24,10 +26,10 @@ const isDev = import.meta.env.DEV
 </script>
 
 <template>
-  <aside class="partner-panel" data-test="dh-card">
+  <aside class="partner-panel" :class="{ 'is-compact': compact }" data-test="dh-card">
     <div class="dh-card-head">
-      <strong>🤖 AI 教学伙伴</strong>
-      <span class="dh-state">当前状态：{{ actionText }}</span>
+      <strong>{{ compact ? '数字人预览' : 'AI 教学伙伴' }}</strong>
+      <span class="dh-state">{{ actionText === '待机' ? '待命' : actionText }}</span>
       <button class="dh-collapse" type="button" data-test="dh-collapse" :aria-label="collapsed ? '展开数字人' : '收起数字人'" @click="collapsed = !collapsed">
         {{ collapsed ? '展开数字人' : '收起' }}
       </button>
@@ -35,7 +37,7 @@ const isDev = import.meta.env.DEV
 
     <template v-if="!collapsed">
       <!-- 开发调试面板：仅 import.meta.env.DEV 下渲染，按钮走 digitalHuman store -->
-      <DigitalHumanDevPanel v-if="isDev" />
+      <DigitalHumanDevPanel v-if="isDev && debugMode" />
       <div class="dh-stage" data-test="dh-stage" @click="emit('enter-avatar')">
         <!-- 2D 陪伴数字人：ClassroomAvatar 常驻，点击进入大屏 -->
         <ClassroomAvatar />
@@ -169,4 +171,7 @@ const isDev = import.meta.env.DEV
   .dh-collapse { display: inline-flex; }
   .dh-stage { flex-basis: 170px; min-height: 150px; max-height: 200px; }
 }
+</style>
+<style scoped>
+.is-compact{flex:none;gap:6px}.is-compact .dh-card-head{flex-wrap:wrap;gap:4px}.is-compact .dh-stage{flex:none;height:132px;min-height:132px;max-height:132px;box-shadow:none}.is-compact .dh-collapse,.is-compact .dh-status-line{display:none}.is-compact .dh-state{font-size:11px;padding:2px 6px}.is-compact .dh-click-hint{font-size:10px}.is-compact .dh-avatar-entry{padding:7px 8px}
 </style>

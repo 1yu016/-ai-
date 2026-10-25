@@ -141,7 +141,7 @@ describe('LessonClassroomView · 三态数字人结构（Teaching=2D / Fullscree
     await wrapper.find('[data-test="enter-avatar"]').trigger('click')
     await settle()
     expect(wrapper.find('[data-test="fs-avatar"]').exists()).toBe(true)
-    const stage = wrapper.findComponent(DigitalHumanStage)
+    const stage = wrapper.find('[data-test="fs-avatar"]').findComponent(DigitalHumanStage)
     expect(stage.exists()).toBe(true)
     expect(stage.props('far')).toBe(true)
     expect(stage.props('controls')).toBe(false)
