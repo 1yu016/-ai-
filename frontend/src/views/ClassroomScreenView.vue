@@ -229,24 +229,18 @@ async function hydrateArtwork(state: ClassroomScreenState) {
   if (dismissedArtworkId === artworkId) return
   if (dismissedArtworkId !== artworkId) dismissedArtworkId = null
   if (artworkPresentation.value?.id !== artworkId) {
-    try {
-      const { data } = await http.get<Blob>(fileUrl, { responseType: 'blob' })
-      if (disposed || generation !== displayGeneration) return
+    const { data } = await http.get<Blob>(fileUrl, { responseType: 'blob' })
+    if (disposed || generation !== displayGeneration) return
+    clearArtworkPresentation()
+    artworkObjectUrl = URL.createObjectURL(data)
+    artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
+    // 大屏展示是一次性课堂插播；展示完成后关闭覆盖层并停止其语音，回到原课堂画面。
+    artworkTimer = window.setTimeout(() => {
+      dismissedArtworkId = artworkId
+      artworkTimer = null
       clearArtworkPresentation()
-      artworkObjectUrl = URL.createObjectURL(data)
-      artworkPresentation.value = { id: artworkId, imageUrl: artworkObjectUrl, comment }
-      // 大屏展示是一次性课堂插播；展示完成后关闭覆盖层并停止其语音，回到原课堂画面。
-      artworkTimer = window.setTimeout(() => {
-        dismissedArtworkId = artworkId
-        artworkTimer = null
-        clearArtworkPresentation()
-        stopBrowserSpeech()
-      }, 7000)
-    } catch (error) {
-      if (disposed || generation !== displayGeneration) return
-      clearArtworkPresentation()
-      loadError.value = apiErrorMessage(error, '作品展示加载失败，课堂仍可继续。')
-    }
+      stopBrowserSpeech()
+    }, 7000)
   }
   const speechKey = `${snapshot?.updatedAt || ''}:${snapshot?.ttsText || ''}`
   if (snapshot?.ttsText && speechKey !== lastSpokenSnapshot) {
