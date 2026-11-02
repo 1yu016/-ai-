@@ -1,0 +1,622 @@
+[
+  {
+    "path": ".gitignore",
+    "sha256": "14d24d633dfe8d1cd598a7ca71835d099802dfc60ec9822739760c08f45065f6"
+  },
+  {
+    "path": "backend/.env.example",
+    "sha256": "8cb6be4047bb92103c8c33f539cf53c8677fcb7874dbc42874fdb9ae06ff4e85"
+  },
+  {
+    "path": "backend/package.json",
+    "sha256": "026d7d4d021a3d57fea2d35a5050aa24b90bc443f8176fb1d50506842568a5fc"
+  },
+  {
+    "path": "backend/scripts/migrate-database.ts",
+    "sha256": "b9a630967026b6f004c901403327340b36c189bd1a0d4c757607d730b2cd49b7"
+  },
+  {
+    "path": "backend/scripts/verify-migrated-database.ts",
+    "sha256": "c9ff3002e8a610a487da1d16064859e821ff6094f57a628db58d9c7c0d127fd2"
+  },
+  {
+    "path": "backend/src/ai/ai.controller.spec.ts",
+    "sha256": "274ba22225d1640ddd5f413cbd8968ddf315dd346f2a748fa1fe880eb3fa7a3d"
+  },
+  {
+    "path": "backend/src/ai/ai.controller.ts",
+    "sha256": "73eb76a23e411266fc40e177c9b87b2235513bb36c474277a08af2b9390877fb"
+  },
+  {
+    "path": "backend/src/app.module.ts",
+    "sha256": "caa2e26effede3b1e4e07be5d380c2cb4165a176d34d77655fe5fe8e2b126dfa"
+  },
+  {
+    "path": "backend/src/artworks/artwork.controller.ts",
+    "sha256": "4a4192c9bfb5531bc5bcc890df692f86808f6e3c3bb483605925e17e4d707f3d"
+  },
+  {
+    "path": "backend/src/artworks/artwork.service.ts",
+    "sha256": "884d5c2506173259275676b0bb6e71772fcee5e9780d1471a935fb8d24652d6d"
+  },
+  {
+    "path": "backend/src/artworks/dto/artwork.dto.ts",
+    "sha256": "4f11e17286d8b1a5c14c1f8d272aad76c25d8c3699f03f5c162551999792608c"
+  },
+  {
+    "path": "backend/src/classroom-runs/child-qa.core.spec.ts",
+    "sha256": "1880a4aed167fb3e6c56c407672d36c22ca914a74351321c50299ef0413a6672"
+  },
+  {
+    "path": "backend/src/classroom-runs/child-qa.core.ts",
+    "sha256": "d81c4add0782390e4ee207f9dc27a1fdf4b06449f5f0a77f5acd1376d7af8687"
+  },
+  {
+    "path": "backend/src/classroom-runs/child-qa.service.spec.ts",
+    "sha256": "c3f909327447723c249448a282ae284c7fe1af202c007fbabb7971f6efb553ea"
+  },
+  {
+    "path": "backend/src/classroom-runs/child-qa.service.ts",
+    "sha256": "2ac725a97f1699fd6f639f59bde70182cac63bc71340b941a3f3855b4021559d"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-analysis.spec.ts",
+    "sha256": "f064276d3067b0c14de307bd93d3047f205824c636fe6d8a526b2feff167d20a"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-analysis.ts",
+    "sha256": "635fce4e6ed76be58dc162b692505b3aaa20c51251b1d4a2ca44441326edb1d9"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-command.service.ts",
+    "sha256": "e14aa952b923ebf9f65bc3c336d6c9ee595343bebb02e61a9738af95d10e96a5"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-command.types.ts",
+    "sha256": "fd24f345672b56ea99769feb737774b82aa223b60e6f2db87c6916914a53479f"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-operation-policy.spec.ts",
+    "sha256": "e45645c1956285bfb69e6395cdeb8c0a304e0d1141333adfaf7af6e2e4e85a10"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-operation-policy.ts",
+    "sha256": "2fb35e0eebe238f137644d7d62e27a4d8858f3383ebf6393f821c5832fb0cc16"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-record.service.ts",
+    "sha256": "d01e4484d194f834b84dbd5313dbf5de676d93a07a9782b4672bd1120e3dbba9"
+  },
+  {
+    "path": "backend/src/classroom-runs/classroom-run.module.ts",
+    "sha256": "cc8344c391ae2b453aae8768f5ad93dcffecebc13a489919e186019846fc000d"
+  },
+  {
+    "path": "backend/src/classroom-runs/dto/student-question.dto.ts",
+    "sha256": "d1574f8a1b5e6f3985c14bcb1b484e43b808ffa6bf711fa63b024413e74cacc3"
+  },
+  {
+    "path": "backend/src/classroom-runs/entities/student-question-record.entity.ts",
+    "sha256": "d1b38cbd50388a05970a426215411fae2c9e7f5bd9cabf51e07787ee61f1eec1"
+  },
+  {
+    "path": "backend/src/classroom-runs/question-domain.spec.ts",
+    "sha256": "1e37a35995dfe86bad095b5f07fa74536c1e2775dc2462428f253665323bac0f"
+  },
+  {
+    "path": "backend/src/classroom-runs/question-domain.ts",
+    "sha256": "d96cf01c266e403af57b82c230230b9b2b6a5c3316bbf58e9c1227b43a7a8c11"
+  },
+  {
+    "path": "backend/src/classroom-runs/student-question.controller.ts",
+    "sha256": "75a15b7ff8690c07ca8590f7409d9e739229278995124ebf062dc1946c766cdd"
+  },
+  {
+    "path": "backend/src/classroom-runs/student-question.service.ts",
+    "sha256": "20c8764c4bd141a31b6ce87332caf58ea34eb595ca9769036f3707c24d09b020"
+  },
+  {
+    "path": "backend/src/lesson-plans/lesson-plan.service.ts",
+    "sha256": "82f4c409205d5275159a4c1e6f777bcadcb8d3e770005595aa36e0e0a0714a85"
+  },
+  {
+    "path": "backend/src/lesson-plans/lesson-plan.types.ts",
+    "sha256": "2523e735504e77a8dac48e1db9a64e1725499db0803f4c9373bfa6a43e3c966c"
+  },
+  {
+    "path": "backend/src/migrations/1792800000000-ChildQaAnswerFields.ts",
+    "sha256": "c80ea6a0c60daece95d24e68c8c2a249aab77bade34fca4b05efdbb35e4c03b3"
+  },
+  {
+    "path": "backend/src/migrations/1792800001000-ChildQaLessonConfig.ts",
+    "sha256": "bb5daf60c6ded837b402c1f49a06deffab10a57a6a5a3f3891b75fb65f0b35ea"
+  },
+  {
+    "path": "backend/src/migrations/1792800002000-ChildQaCommandTypes.ts",
+    "sha256": "34dfc780ef18665098ef07731d2811f65e1731c9c955fd9f238ac022b16831d9"
+  },
+  {
+    "path": "backend/src/migrations/202610120026-ChildQaAnswerFields.ts",
+    "sha256": "dbe24dd32f43cc50d278fc4656ed43999b17f951dbe0a16705008e0ac037fdbe"
+  },
+  {
+    "path": "backend/src/migrations/202610120027-LessonStepActionColumnName.ts",
+    "sha256": "fb18ccf735e909246535f9af71b18a11001d1b41565ca5ee9a9b977ca8e88b67"
+  },
+  {
+    "path": "backend/src/migrations/202610120028-ChildQaLessonConfig.ts",
+    "sha256": "b02ed58c5d90e7a3cbed3b2f659372ba664b0b319529dae91938514e2f306b89"
+  },
+  {
+    "path": "backend/src/migrations/202610120029-ChildQaCommandTypes.ts",
+    "sha256": "8b8b7575fc20c0fb0d44a3945ad28e83132286e7319cc281deee997c85ef7858"
+  },
+  {
+    "path": "backend/src/migrations/202610120030-ChildQaAnswerColumnLengths.ts",
+    "sha256": "70fe22599aa384cf44cc88a34116a6a64231d7f830f3e2eac435f08892fba7eb"
+  },
+  {
+    "path": "backend/src/migrations/202610120031-StudentQuestionIndexes.ts",
+    "sha256": "e1b13ba855d5cff1bd3eaa0379ff2414f7ce64ba5912dcd34450f04f5dff9fe7"
+  },
+  {
+    "path": "backend/src/migrations/202611020032-IntegrationSchemaCompatibility.ts",
+    "sha256": "ed21d2be423cf9166285a2ca9bf90616dc01b8c8916ec8204dba0995539f7651"
+  },
+  {
+    "path": "backend/src/migrations/202611020033-LegacyFeatureTables.ts",
+    "sha256": "1a42c4990dd3abab7fdcb59b14b54d710821121d404f8edb3fa7a9fc45a2d420"
+  },
+  {
+    "path": "backend/src/migrations/unified-migrations.ts",
+    "sha256": "75049385b56b9e68a3047e60c3ab2a698cb648865adc8f6ebaa01fc0d4aa0b15"
+  },
+  {
+    "path": "backend/src/platform/platform.service.ts",
+    "sha256": "7fa02f4691c04f82b6a550fa4d98be05c10bd5f38ac40e297cf9f5a2ff6459b9"
+  },
+  {
+    "path": "backend/test/artwork.e2e-spec.ts",
+    "sha256": "4fdaedbdfad9009b42743acc152dbc7ad82fb687ae1318d04e2f8d86d5361b11"
+  },
+  {
+    "path": "backend/test/classroom-record.e2e-spec.ts",
+    "sha256": "5d7d6df5a7251c54c4909565b5bafae52aa12123f1f500885ce6789aa42007b2"
+  },
+  {
+    "path": "backend/test/classroom-run.e2e-spec.ts",
+    "sha256": "0fbcb873fbf75db212b347692163ae82c59486a76ea7048b1dc2f8a82dc907f9"
+  },
+  {
+    "path": "backend/test/d9-tts-http-cancel.e2e-spec.ts",
+    "sha256": "c1342b1f0ea8b824ed64c198523381164ca4227ee2e3cea75ab29731fc3c3942"
+  },
+  {
+    "path": "backend/test/integration-migration-safety.e2e-spec.ts",
+    "sha256": "12dd6915c8893b2c12b2c950d54d8a777281787d2ea791d23f19bca0dd272a6d"
+  },
+  {
+    "path": "backend/test/platform-stage-one.e2e-spec.ts",
+    "sha256": "b4ea7e54897d131b4be517e32bce2f9e2a39aa11a26b4237c702b62b0e490674"
+  },
+  {
+    "path": "backend/test/stage8-migrations.e2e-spec.ts",
+    "sha256": "d99edc000118f5681ea6a2bcda3b6dc4704abb021853d5044d2e8bd4f3c47ca6"
+  },
+  {
+    "path": "backend/test/student-question.e2e-spec.ts",
+    "sha256": "18d737a9bcbdf474b8bbd3a4224f075c967b2be714f4c8054ef5fce63dbc4a91"
+  },
+  {
+    "path": "docs/P5_1_VERIFICATION_SUMMARY.json",
+    "sha256": "230bb6369e5b31e5a94eb5f69af86c6c67312102e5108c2cda8188164472a144"
+  },
+  {
+    "path": "docs/UNIFIED_TO_NEW1_P5_1_CODE_INTEGRATION.md",
+    "sha256": "86d680a67e16cb541a51a4c6cd4551e7920d52f0a5c3efa54f69ce6698ee2dd0"
+  },
+  {
+    "path": "docs/images/p5-1/class-question-history.png",
+    "sha256": "3044042f70dd97f9a30a28c135e78ea26c666735e9c9e87b64e6b2bdf121d24f"
+  },
+  {
+    "path": "docs/images/p5-1/mobile-answer-on-screen.png",
+    "sha256": "6348b064f038129e60a3c3b9f66d7e0d8a957ef468726f9bf8659d057f059a80"
+  },
+  {
+    "path": "docs/images/p5-1/mobile-reviewed.png",
+    "sha256": "130823d71d31981c7b84b9763835fad33b21b604e3bc0cc94c890a3c1b2e390c"
+  },
+  {
+    "path": "docs/images/p5-1/screen-approved-drought.png",
+    "sha256": "2fad868d1b100e4c994ac976a034fb0de1384e9fbe4c52f7443114b72a29979c"
+  },
+  {
+    "path": "docs/images/p5-1/screen-pending.png",
+    "sha256": "34bf210d52b4c9953bed20e96e7da67df028eb5806e42727ce8026f0d0964063"
+  },
+  {
+    "path": "frontend/playwright.config.ts",
+    "sha256": "b295ee50f55333f797bd77ecb95e85da8f75e030d642668a38236eac87c75017"
+  },
+  {
+    "path": "frontend/public/vendor/vosk.js",
+    "sha256": "29504515526e974f4cb053cf08811c4de5fb2a74007c0a5a957db50eaa8d5d0c"
+  },
+  {
+    "path": "frontend/public/vosk-model/model.tar.gz",
+    "sha256": "aa91eb9ad0dfd9f9aab044912e7da84cabe3e568f3072d44654d19ae29df8acc"
+  },
+  {
+    "path": "frontend/src/api/classroomMobile.ts",
+    "sha256": "f60a1359a7bdb7a31121a8131a8972785a562f8619c8a98917b5415c5b97b7f9"
+  },
+  {
+    "path": "frontend/src/api/http.ts",
+    "sha256": "27a93a3b32809c323944cb821389c8797e4cef5bffb65ba21136407b8c53b5fb"
+  },
+  {
+    "path": "frontend/src/api/platform.ts",
+    "sha256": "97b41d6b802f428caf4f69d9c94322e4b00bd1fd3695a2f4db894c64fdfd5276"
+  },
+  {
+    "path": "frontend/src/classroom/command/TeacherInstructionSession.ts",
+    "sha256": "285d90b83e76499a4ba725725f78d0c0c023cd43494bcdfc4411ff8da5b01d53"
+  },
+  {
+    "path": "frontend/src/classroom/command/TeacherVoiceCommandRouter.ts",
+    "sha256": "3c1b4b1cb146d377df2f2d42b3e35bfc50091b130984955ed43376e2fcc0a286"
+  },
+  {
+    "path": "frontend/src/classroom/command/TeachingCompanion.ts",
+    "sha256": "98906b2f029c71f186b6e5cb78f40691094e4688fa341c319f9459c065e799b8"
+  },
+  {
+    "path": "frontend/src/classroom/command/TeachingLanguage.ts",
+    "sha256": "e8efe7934e0f0a322a551090d3b52b6ee4138c4629fee92e028408e6dfe3d6b8"
+  },
+  {
+    "path": "frontend/src/classroom/lessonAvatarCue.ts",
+    "sha256": "e1f5d386f39b0f0dbef29778b3e1eb916a6573972bdb6f9564a61fa7c93724ae"
+  },
+  {
+    "path": "frontend/src/components/AdminLayout.vue",
+    "sha256": "44a65fb1f95f18b2ad085591cb30f040684f801fb9dbc5c7667cce021b60b81f"
+  },
+  {
+    "path": "frontend/src/components/BaseWorkspaceLayout.vue",
+    "sha256": "4b05cb902517e25c527201b37e6c97d05fa621ca67fa63badba3e453c5255827"
+  },
+  {
+    "path": "frontend/src/components/ClassWorkspaceLayout.vue",
+    "sha256": "e9c766a2fbd5d01b816c8e2b0184c708c67edcdf4f23bdd58ff2d77c400ec786"
+  },
+  {
+    "path": "frontend/src/components/ResourcePlayer.vue",
+    "sha256": "391aaaf85527645df58fd22dff5c24a6af4418e654cf421cd82ddb9d0791ced1"
+  },
+  {
+    "path": "frontend/src/components/TeacherLayout.vue",
+    "sha256": "ce6ba5d188b6d536962ec9e75fc8cb00d5dd295327e2378843e75f435ad35a52"
+  },
+  {
+    "path": "frontend/src/components/classroom/ChildQaPanel.vue",
+    "sha256": "f3a2de8370c604b78caf4cfc25c101c15cf82321758ddf94b01cde4bb42de996"
+  },
+  {
+    "path": "frontend/src/components/classroom/ClassroomMobileDrawer.vue",
+    "sha256": "97a52be25336d26d80edad4cf0a02eddc8367daee4a06cf735be7cdee5b87eca"
+  },
+  {
+    "path": "frontend/src/components/classroom/ClassroomWakeControl.vue",
+    "sha256": "1c34c5c1aa7d813750de6b84e491a3e974cebf80070dfcbfbd1bff5545d75157"
+  },
+  {
+    "path": "frontend/src/components/classroom/MobilePairingPanel.vue",
+    "sha256": "07f787a61dc29a39c1dd7c23d8eb7e606c4a29b721560c8f37eecb7e8d497153"
+  },
+  {
+    "path": "frontend/src/components/classroom/OpeningSequenceOverlay.vue",
+    "sha256": "7e1d39bbe9003bea6e08e2a4139022ce68ddf2dccb73d4db678468a79e6d7cf3"
+  },
+  {
+    "path": "frontend/src/components/classroom/ScreenOpeningPanel.vue",
+    "sha256": "e69b2931d3873258c0f6a5227ed59966da6fa5362acf6be6274d1f4e01d50017"
+  },
+  {
+    "path": "frontend/src/components/classroom/ScreenSummaryPanel.vue",
+    "sha256": "40773e0311a06c2251321f84b76a32ccc415fc104932061531482702d5630fcd"
+  },
+  {
+    "path": "frontend/src/components/classroom/operations/QuestionRecordPanel.vue",
+    "sha256": "ba9221317a82c4d89cf1b1de55ffb2c5617d967351f588c13c37c2972a1743e9"
+  },
+  {
+    "path": "frontend/src/components/lesson/ChildQaConfigEditor.vue",
+    "sha256": "0f124a17ab2c70bd10a2c721f610019bf2ea8a3a3b4af09638f469bc4674708a"
+  },
+  {
+    "path": "frontend/src/router/authNavigation.ts",
+    "sha256": "f1f54d6c82c2123c70bffe109833c9b36f4ea5404e189a21240d5fc38b5f151b"
+  },
+  {
+    "path": "frontend/src/router/index.ts",
+    "sha256": "29e0f5ed3381bedf87c05002e5932fe0793ea247164c09a65550d3a62b4abb7e"
+  },
+  {
+    "path": "frontend/src/router/navigation.ts",
+    "sha256": "1cc59177c4362411eaae89bc0005ad03eef36dd945efc69b1fca258abdb20247"
+  },
+  {
+    "path": "frontend/src/router/routeDefinitions.ts",
+    "sha256": "33ceb5268d3dff31a07e82fb4b59c0a4238b52af213b03849271ba727e5750cc"
+  },
+  {
+    "path": "frontend/src/services/childQaRecognition.ts",
+    "sha256": "457bc774ad0891bf14e9a2edf77d903cd546a4a3aaa7e3e903d8a133c418d499"
+  },
+  {
+    "path": "frontend/src/services/classroomCapabilities.ts",
+    "sha256": "0bdfee178ee21bb14065f92f3a55f298c8c53633bf1799446c57d120a6d20f20"
+  },
+  {
+    "path": "frontend/src/services/classroomCommandBus.ts",
+    "sha256": "0f5f10879336501036e12ef7c7416d368f4b77251fa821215277b9e98c6283f9"
+  },
+  {
+    "path": "frontend/src/services/classroomQuestions.ts",
+    "sha256": "9b24d4a522fda534e17d6682344cd6b35cb8e6ea883fdfb2293c9bb80dc4003a"
+  },
+  {
+    "path": "frontend/src/services/classroomRecords.ts",
+    "sha256": "8dd252b1f42e9d5089f5f93c3b0a343243824b27ee991db97c532899c9566483"
+  },
+  {
+    "path": "frontend/src/services/localWakeSpeech.ts",
+    "sha256": "350038363a2c99dee70f1b6d4e71677ad6a6403b2fc66bba687409c4b5a8c781"
+  },
+  {
+    "path": "frontend/src/services/studentArtwork.ts",
+    "sha256": "cde95f7082e947774394b48a2505bea8eed2cdfb8248876a5d452ff3bdb02335"
+  },
+  {
+    "path": "frontend/src/stores/classroomMobile.ts",
+    "sha256": "04527af9176ce62c6a8179df66cf93738b62de0e49475b11e23cfca802218cad"
+  },
+  {
+    "path": "frontend/src/stores/lessonPlan.ts",
+    "sha256": "f7566641da35f2377bb56bd42df3064cba47a0784331823412d6a444d5c1afa4"
+  },
+  {
+    "path": "frontend/src/stores/lessonRun.ts",
+    "sha256": "b260cbe5fcda15ca5b65361f96a308b427910466e89a4e73ffae7f296e260e15"
+  },
+  {
+    "path": "frontend/src/stores/user.ts",
+    "sha256": "024050e914563dfb6acc405c1ad2393ad815ef38e7e7968dfb840a3ffc232f97"
+  },
+  {
+    "path": "frontend/src/views/AdminDashboardView.vue",
+    "sha256": "53f201c5fa45681570cdc48e0a1914ad666ba593ed0a49061f9dd246954a6d68"
+  },
+  {
+    "path": "frontend/src/views/ChatView.vue",
+    "sha256": "e360ae3843f3305c5f159d37ecabba0df1b742e2a4b8fe5629aa82d3cdf1ba99"
+  },
+  {
+    "path": "frontend/src/views/ClassArtworkHistoryView.vue",
+    "sha256": "7f9690cd9e94c5223b7428416ca0ecd68d254f6e0ff1767a48f25ea3d4a7aa73"
+  },
+  {
+    "path": "frontend/src/views/ClassDetailView.vue",
+    "sha256": "7c1210220c5a5ee5be4a8302ea851362b52f1b2eb1ddfd1607988c05ad972770"
+  },
+  {
+    "path": "frontend/src/views/ClassQuestionHistoryView.vue",
+    "sha256": "72ef35a42e5daf85adf1ef42ddfeb0b8f4cbf34f784ec118960948a6692e7296"
+  },
+  {
+    "path": "frontend/src/views/ClassroomJoinView.vue",
+    "sha256": "6932533f65b4e980fd4a8aa610c48a5391572e511c698a923e16ef98954d24b4"
+  },
+  {
+    "path": "frontend/src/views/ClassroomMobileRemoteView.vue",
+    "sha256": "702e025cd3f0623671caced01d6cd49ce2ccb72f8c0d81c8694289210fdbf55c"
+  },
+  {
+    "path": "frontend/src/views/ClassroomOperationsView.vue",
+    "sha256": "711f451657368222918c9c5e4c703fa9bf4e832cb4f8b753aa5e76cc68d62404"
+  },
+  {
+    "path": "frontend/src/views/ClassroomPreflightView.vue",
+    "sha256": "c0569655f44bf7e3e1707b38555f445cb1f09dcb6bd7d9a5bf47691633b5c04a"
+  },
+  {
+    "path": "frontend/src/views/ClassroomRecordView.vue",
+    "sha256": "7f5c8383261ec104b4b4320e97ba03c1a105c7add2e5ad2f7abf47e85a1b0705"
+  },
+  {
+    "path": "frontend/src/views/ClassroomScanView.vue",
+    "sha256": "471666ef2ffb7018543db19dc2129827f0effb3fcb4d2a0e0420fb6200e50292"
+  },
+  {
+    "path": "frontend/src/views/ClassroomScreenView.vue",
+    "sha256": "86636d36cdad54ae6b8243f8f063ce7decf59b53c0dbb8da21241673fd5f5b30"
+  },
+  {
+    "path": "frontend/src/views/ClassroomsView.vue",
+    "sha256": "7867ead018bc02d5890d4211aa56bb62e66c9592f1b976aa3d0476118d8dc9dc"
+  },
+  {
+    "path": "frontend/src/views/DevicesView.vue",
+    "sha256": "89f04a8fe77fa11476941f1ebe3832967071de632fe87a59bb40e6b21c4bf0cd"
+  },
+  {
+    "path": "frontend/src/views/LessonClassroomView.vue",
+    "sha256": "db1edebcb9a1140571626897d7dc5688fab182338981d29db3bf5e5e7e683231"
+  },
+  {
+    "path": "frontend/src/views/LessonPlanEditorView.vue",
+    "sha256": "547446123e96e065fed3b0d8aabc7d5f0ea451f2d6ab966e73bf504beeed141d"
+  },
+  {
+    "path": "frontend/src/views/LessonPlanListView.vue",
+    "sha256": "9106156b2091457953d186a44fc635e2a64b9959f58da453eafc83cf962759c7"
+  },
+  {
+    "path": "frontend/src/views/LoginView.vue",
+    "sha256": "23f94de5798d429df4f60732d0a9188a6047e3a1d12f710bdc3a2e515e770639"
+  },
+  {
+    "path": "frontend/src/views/StudentProfileView.vue",
+    "sha256": "cb934ba1cd14dd140b9bee5345037e347ef4cfb13a8a0d3e2a011d9cdf045231"
+  },
+  {
+    "path": "frontend/src/views/TeacherHomeView.vue",
+    "sha256": "84b01ce0811372e6a7b17577bfaf1f3e3fb5dd99670d03c0b38c9fdc8cf85ed8"
+  },
+  {
+    "path": "frontend/tests/component/ClassArtworkHistoryView.spec.ts",
+    "sha256": "c816fcd2e0ed72512f8075b11944b964acfa0575265945efd0f463911928d1ab"
+  },
+  {
+    "path": "frontend/tests/component/ClassroomOperationsView.spec.ts",
+    "sha256": "05eb50435d259c5c30dbcb721ff9f85407cf1e2695277d824da579321a0f568e"
+  },
+  {
+    "path": "frontend/tests/component/ClassroomRecordView.spec.ts",
+    "sha256": "1570dc6401d1f42cf54fa2555c3fc5159e41b0404edf2476d092871959593ea6"
+  },
+  {
+    "path": "frontend/tests/component/ClassroomScreenView.spec.ts",
+    "sha256": "3e4537e2f3ea96b551719552683ed6bece2ef2357bc74cc4a8a053af585e9c53"
+  },
+  {
+    "path": "frontend/tests/component/LessonPlanListView.spec.ts",
+    "sha256": "37878378e6544be33ed6b873f1fa3a3853ac4831554354c1105c405c2055674c"
+  },
+  {
+    "path": "frontend/tests/component/MobilePairingPanel.spec.ts",
+    "sha256": "84828f8678224604c96883f0522c815134498d9498c7579b2341632dad7d00bd"
+  },
+  {
+    "path": "frontend/tests/component/admin-console.spec.ts",
+    "sha256": "d8767b27ab3f6bb5c82daa833e26194c151fd9fba38371cfece0cefe45b850aa"
+  },
+  {
+    "path": "frontend/tests/component/child-qa-panel.spec.ts",
+    "sha256": "ecd8821af9cbe79cd96067fadc0227fae0efdbfb19df919151f0818ab9adb397"
+  },
+  {
+    "path": "frontend/tests/component/classroom-preflight-device.spec.ts",
+    "sha256": "b8a982600c7bc5e584132ce873a52b317d15983694193f62758856b877ed8471"
+  },
+  {
+    "path": "frontend/tests/component/classroom-scan-device-identity.spec.ts",
+    "sha256": "278d4b843d7442172d1fa4854b32506a2c2562cb70a6b001a6313b21e1d0b464"
+  },
+  {
+    "path": "frontend/tests/component/components.spec.ts",
+    "sha256": "7a0157ecd77c6e05a52da69f05f704d2d52abd2a45cf2ef0d429e59fe8aff869"
+  },
+  {
+    "path": "frontend/tests/component/lesson-classroom-fullscreen.spec.ts",
+    "sha256": "1df2c116a3760148dd3713f4f93fa8b7d103bbfcf40d1b8dba190fdeebcc3900"
+  },
+  {
+    "path": "frontend/tests/component/lesson-classroom-wake.spec.ts",
+    "sha256": "51c1f983f699c72982435f7ace7cbbf75b75d1787e1aad00dbc1e02e51cea889"
+  },
+  {
+    "path": "frontend/tests/component/navigation-delivery.spec.ts",
+    "sha256": "caf93cbb31044cf57d4e0232b5c69bd795568b4821f4cfaffc240b1afde0259b"
+  },
+  {
+    "path": "frontend/tests/e2e/auth-lifecycle.spec.ts",
+    "sha256": "8736cb95876e761d61cda2347c28c49e4a815424911b1e6bb4dbdf86bf793a3e"
+  },
+  {
+    "path": "frontend/tests/e2e/classroom-console-composition.spec.ts",
+    "sha256": "ee64ce888feae2f4639684b9bb6ba055a1d9142deb9ffc3c31027ebd2a9d7e98"
+  },
+  {
+    "path": "frontend/tests/e2e/core-flow.spec.ts",
+    "sha256": "72663ac8975f6d4246590115f93e7655e02d37dc54234b147aed385fea259fad"
+  },
+  {
+    "path": "frontend/tests/e2e/device-online-gate.spec.ts",
+    "sha256": "7a2db6ddb9321404d2812ee1444c567a0edfbee81073abead74f959d52a61278"
+  },
+  {
+    "path": "frontend/tests/e2e/gate-run.mjs",
+    "sha256": "aaa15c778a8587ebcf0d44b6fbcee162dab865a30960c636d88d3a16e7d77008"
+  },
+  {
+    "path": "frontend/tests/e2e/p5-unified-qa.spec.ts",
+    "sha256": "1319e55c1bd365a23df1a2c13efc34ec228d1f7a4f5682038461a06c416e0505"
+  },
+  {
+    "path": "frontend/tests/e2e/run.mjs",
+    "sha256": "276cdbc5ec89aa68b74913449c49624b7d43dcc1e9352b596ccecdcc246ced7d"
+  },
+  {
+    "path": "frontend/tests/unit/auth-navigation.spec.ts",
+    "sha256": "9add6f331b63266a185a1f262faed2ac17ed507800cfd30f7a275231b102aa83"
+  },
+  {
+    "path": "frontend/tests/unit/classroom-mobile.spec.ts",
+    "sha256": "2df487fb53b68670a429569cb901a8ac0f4fbd924683b4d36c27ee4178ed8c65"
+  },
+  {
+    "path": "frontend/tests/unit/http.spec.ts",
+    "sha256": "31e6c30f1538d98e548c9bc15f2357dd3242bb5c4f07e483b5ce862858e327b7"
+  },
+  {
+    "path": "frontend/tests/unit/lesson-authoring.spec.ts",
+    "sha256": "2bc69ef5ea0fcffb8347e6482fb45abee605a1883debe440f4a7aed39421b38e"
+  },
+  {
+    "path": "frontend/tests/unit/lesson-avatar-cue.spec.ts",
+    "sha256": "c3db136aa51a60d6a44c4e5d5afb44bd486db52d746f2350852427a8b523c672"
+  },
+  {
+    "path": "frontend/tests/unit/lesson-list-navigation.spec.ts",
+    "sha256": "3a2cbf3380e8a066406be9a65f7c29abf89f01474cb906db3b7c91eb8fb6f681"
+  },
+  {
+    "path": "frontend/tests/unit/local-wake-speech.spec.ts",
+    "sha256": "fd4e4507c48060e4f2a93ade12f4e256deb066add1e0132bc6ee9ab554f097a9"
+  },
+  {
+    "path": "frontend/tests/unit/navigation-delivery.spec.ts",
+    "sha256": "78b68f675f8d7760299737f6a20004933954588514d5abed0f9f3517fadd3867"
+  },
+  {
+    "path": "frontend/tests/unit/resource-player-media.spec.ts",
+    "sha256": "c83bb45b0163513283576159ec346f97b9d183df34cf69777c2394fdd240981f"
+  },
+  {
+    "path": "frontend/tests/unit/router-navigation.spec.ts",
+    "sha256": "067aa2c195718ab615e0e89202c5dbc089fc4aaeabac005f4e0f635d63994f89"
+  },
+  {
+    "path": "frontend/tests/unit/teacher-instruction-session.spec.ts",
+    "sha256": "695c2841feac9da012f881a528733fa33d69620f8161d43ba05454366a158f1c"
+  },
+  {
+    "path": "frontend/tests/unit/teacher-voice-command.spec.ts",
+    "sha256": "40a0b270ee29395fd8d12d73f0f29ba33f41b621a29cd0256ccd4a53f80d8efa"
+  },
+  {
+    "path": "frontend/tests/unit/teaching-companion.spec.ts",
+    "sha256": "d5660fc18f3725f2cb20b3c8c2dd6c1a59e25b7d358cfe549b4b36091216dc69"
+  },
+  {
+    "path": "frontend/tests/unit/teaching-language.spec.ts",
+    "sha256": "f8394db99a16c06a4602c629e60425a9a08ac506ed1017e3c9837f46e930debf"
+  },
+  {
+    "path": "frontend/vite.config.ts",
+    "sha256": "8d380594d6939196cf1be6a75588560f99194935ec444aa757d5f5bdee3f28ba"
+  }
+]
