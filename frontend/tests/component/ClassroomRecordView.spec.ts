@@ -6,6 +6,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as records from '@/services/classroomRecords'
 import ClassroomRecordView from '@/views/ClassroomRecordView.vue'
 import { useUserStore } from '@/stores/user'
+import type { ClassroomAnalysis } from '@/services/classroomRecords'
+
+const emptyAnalysis: ClassroomAnalysis = {
+  actualRunSeconds: 0,
+  plannedRunSeconds: 0,
+  stepTimings: [],
+  stepIndexJumps: [],
+  completedResources: [],
+  metrics: {
+    attendanceRecords: 0, attendanceChanges: 0, rollCalls: 0, activeRewards: 0, childQuestions: 0,
+    answeredQuestions: 0, aiDirectorSuggestions: 0, acceptedAiSuggestions: 0, rejectedAiSuggestions: 0,
+    heuristicAssistantDrafts: 0, avatarUsageRecords: 0,
+  },
+  improvementNotes: [],
+  thresholds: { shortStepRatio: 0.75, overrunStepRatio: 1.25, resourceCountBasis: 'resource_completed checkpoint only' },
+}
 
 const draft = {
   id: 1,
@@ -68,6 +84,7 @@ describe('ClassroomRecordView 正式课堂记录', () => {
           source: 'question',
         },
       ],
+      analysis: emptyAnalysis,
     })
   })
 
@@ -130,6 +147,7 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({
       run: { id: 9, title: '正在上课', status: 'running', startedAt: null, endedAt: null },
       items: [],
+      analysis: emptyAnalysis,
     })
     vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: null, formalSummary: null })
     const generate = vi.spyOn(records, 'ensureClassroomSummaryDraft')
@@ -145,7 +163,7 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     { label: 'another teacher', draft: { ...draft }, owner: 8 },
     { label: 'discarded draft', draft: { ...draft, status: 'discarded' as const }, owner: 7 },
   ])('does not offer editing for $label', async ({ draft: value, owner }) => {
-    vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({ run: { id: 9, teacherId: owner, title: '合成课堂', status: 'completed', startedAt: null, endedAt: null }, items: [] })
+    vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({ run: { id: 9, teacherId: owner, title: '合成课堂', status: 'completed', startedAt: null, endedAt: null }, items: [], analysis: emptyAnalysis })
     vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: value, formalSummary: null })
     const wrapper = await mountView()
     await flushPromises()
@@ -190,6 +208,7 @@ describe('ClassroomRecordView 正式课堂记录', () => {
     vi.spyOn(records, 'getClassroomTimeline').mockResolvedValue({
       run: { id: 9, title: '星星探索课', status: 'completed', startedAt: null, endedAt: null },
       items,
+      analysis: emptyAnalysis,
     })
     vi.spyOn(records, 'getClassroomSummary').mockResolvedValue({ draft: { ...draft }, formalSummary: null })
     vi.spyOn(records, 'ensureClassroomSummaryDraft').mockResolvedValue({ ...draft })

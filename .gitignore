@@ -66,3 +66,6 @@ Thumbs.db
 !**/.vscode/settings.json
 !**/.vscode/tasks.json
 !**/.vscode/launch.json
+
+# P5 integration evidence, isolated databases and pre-edit file snapshots
+/evidence/p5-1/

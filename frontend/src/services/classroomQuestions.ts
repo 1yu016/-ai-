@@ -1,5 +1,9 @@
 import { http } from '@/api/http'
 
+export function questionReviewLabel(status?: string | null): string {
+  return ({pending:'待教师审核',approved:'教师已批准（不代表声音已播放）',rejected:'教师已拒绝',handoff:'转交教师',cancelled:'会话已关闭，回答已取消'} as Record<string,string>)[status ?? ''] ?? '原有问题记录'
+}
+
 /**
  * Stage 7.5 儿童问题记录 —— 前端服务层
  *
@@ -10,6 +14,10 @@ import { http } from '@/api/http'
 
 /** 一条正式幼儿问题，对齐后端 student_question_record 响应结构。 */
 export type ClassroomQuestion = {
+  answerText?: string | null
+  answerStatus?: string | null
+  answerSource?: string | null
+  qaSessionId?: string | null
   id: number
   studentId: number | null
   studentName: string | null
@@ -66,6 +74,7 @@ export type QuestionMap = {
   summary: { total: number; anonymousCount: number; identifiedStudentCount: number }
   topics: Array<{ name: string; count: number }>
   domains: Array<{ name: string; count: number }>
+  canonicalDomains: Array<{ name: string; count: number }>
   frequentQuestions: Array<{ question: string; count: number }>
   interestHotspots: string[]
   suggestionSource: 'ai' | 'safe_rules'

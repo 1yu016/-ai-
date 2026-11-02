@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
-defineProps<{ courseTitle: string }>()
+defineProps<{ courseTitle: string; script?: string }>()
 </script>
 <template>
   <section class="screen-summary" data-test="screen-summary">
     <div class="summary-character"><DigitalHumanStage :controls="false" opening far framing="screen" /></div>
-    <div><span>今天的课堂结束啦</span><h1>{{ courseTitle }}</h1><p>谢谢小朋友一起探索，<br>我们下次再见！</p></div>
+    <div><span>今天的课堂结束啦</span><h1>{{ courseTitle }}</h1><p>{{ script || '谢谢小朋友一起探索，我们下次再见！' }}</p></div>
   </section>
 </template>
 <style scoped>

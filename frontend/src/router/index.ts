@@ -28,6 +28,7 @@ const routes = enhanceRoutes([
     { path: '/classes/:classId/students', name: 'students', meta: { requiresAuth: true }, component: () => import('../views/StudentsView.vue') },
     { path: '/classes/:classId/rewards', name: 'class-rewards', meta: { requiresAuth: true }, component: () => import('../views/ClassRewardHistoryView.vue') },
     { path: '/classes/:classId/questions', name: 'class-questions', meta: { requiresAuth: true }, component: () => import('../views/ClassQuestionHistoryView.vue') },
+    { path: '/classes/:classId/artworks', name: 'class-artworks', meta: { requiresAuth: true }, component: () => import('../views/ClassArtworkHistoryView.vue') },
     { path: '/students/:studentId', name: 'student-profile', meta: { requiresAuth: true }, component: () => import('../views/StudentProfileView.vue') },
     { path: '/classrooms', name: 'classrooms', meta: { requiresAuth: true }, component: () => import('../views/ClassroomsView.vue') },
     { path: '/classrooms/:classroomId', name: 'classroom-detail', meta: { requiresAuth: true }, component: () => import('../views/ClassroomDetailView.vue') },

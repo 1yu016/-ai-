@@ -51,6 +51,11 @@ const routeMetadata: Record<string, RouteMeta> = {
     { entity: 'class', param: 'classId', to: (route) => ({ name: 'class-detail', params: { classId: route.params.classId } }) },
     { label: '儿童问题' },
   ], { backRoute: (route) => ({ name: 'class-detail', params: { classId: route.params.classId } }) }),
+  'class-artworks': meta('儿童作品', { teacher: 'my-classes', administrator: 'classes' }, [
+    ...classRoots,
+    { entity: 'class', param: 'classId', to: (route) => ({ name: 'class-detail', params: { classId: route.params.classId } }) },
+    { label: '儿童作品' },
+  ], { backRoute: (route) => ({ name: 'class-detail', params: { classId: route.params.classId } }) }),
   'student-profile': meta('学生资料', { teacher: 'my-classes', administrator: 'classes' }, [
     ...classRoots,
     { entity: 'class', param: 'classId', to: (route) => ({ name: 'class-detail', params: { classId: route.params.classId } }) },
@@ -62,8 +67,8 @@ const routeMetadata: Record<string, RouteMeta> = {
   devices: meta('设备管理', 'devices', [{ label: '设备管理' }]),
   'device-detail': meta('设备详情', 'devices', [{ label: '设备管理', to: { name: 'devices' } }, { label: '设备详情' }], { backRoute: { name: 'devices' } }),
   avatars: meta('数字人角色库', 'avatars', [{ label: '数字人角色库' }]),
-  'classroom-scan': meta('课堂设备准备', 'classroom-scan', [{ label: '课堂设备准备' }]),
-  'classroom-join': meta('加入课堂', '', [{ label: '加入课堂' }], { layout: 'mobile', backRoute: { name: 'my-classes' } }),
+  'classroom-scan': meta('连接手机', 'classroom-scan', [{ label: '连接手机' }], { roles: ['teacher'] }),
+  'classroom-join': meta('加入课堂', '', [{ label: '加入课堂' }], { roles: ['teacher'], layout: 'mobile', backRoute: { name: 'teacher-home' } }),
   'classroom-screen': meta('课堂大屏', '', [{ label: '课堂大屏' }], { layout: 'screen' }),
   'lesson-plans': meta('备课中心', 'lesson-plans', [{ label: '备课中心' }]),
   'lesson-plan-new': meta('新建教案', 'lesson-plans', [{ label: '备课中心', to: (route) => ({ name: 'lesson-plans', query: route.query.classId ? { classId: route.query.classId } : {} }) }, { label: '新建教案' }], { backRoute: (route) => ({ name: 'lesson-plans', query: route.query.classId ? { classId: route.query.classId } : {} }) }),
@@ -74,7 +79,7 @@ const routeMetadata: Record<string, RouteMeta> = {
   'lesson-classroom-summary': meta('课堂总结', '', [{ label: '课堂总结' }], { layout: 'classroom', backRoute: (route) => ({ name: 'classroom-record', params: { runId: route.params.runId } }) }),
   'classroom-engagement': meta('课堂互动', '', [{ label: '课堂互动' }], { layout: 'classroom', backRoute: { name: 'my-classes' } }),
   'classroom-insights': meta('课堂洞察', '', [{ label: '课堂洞察' }], { layout: 'classroom', backRoute: { name: 'my-classes' } }),
-  'classroom-remote': meta('手机控制', '', [{ label: '手机控制' }], { layout: 'mobile', backRoute: { name: 'my-classes' } }),
+  'classroom-remote': meta('手机控制', '', [{ label: '手机控制' }], { roles: ['teacher'], layout: 'mobile', backRoute: { name: 'teacher-home' } }),
   resources: meta('资源库', 'resources', [{ label: '资源库' }]),
   'resource-upload': meta('上传资源', 'resources', [resourceRoot, { label: '上传资源' }], { backRoute: { name: 'resources' } }),
   'resource-preview': meta('资源预览', 'resources', [
@@ -127,7 +132,7 @@ export function enhanceRoutes(base: RouteRecordRaw[]): RouteRecordRaw[] {
       path: '/teacher/home',
       name: 'teacher-home',
       component: () => import('../views/TeacherHomeView.vue'),
-      meta: meta('教师首页', 'teacher-home', [{ label: '教师首页' }], { roles: ['teacher'] }),
+      meta: meta('教师工作台', 'teacher-home', [{ label: '教师工作台' }], { roles: ['teacher'] }),
     },
     {
       path: '/classroom/history',
@@ -169,6 +174,16 @@ export function enhanceRoutes(base: RouteRecordRaw[]): RouteRecordRaw[] {
       meta: meta('学生资料', { teacher: 'my-classes', administrator: 'classes' }, []),
     },
     { path: '/devices', name: 'legacy-devices', redirect: { name: 'devices' }, meta: meta('设备管理', 'devices', []) },
+    ...[
+      { path: '/classrooms', name: 'legacy-classrooms', target: 'classrooms' },
+      { path: '/classrooms/:classroomId', name: 'legacy-classroom-detail', target: 'classroom-detail' },
+      { path: '/devices/:deviceId', name: 'legacy-device-detail', target: 'device-detail' },
+      { path: '/teachers', name: 'legacy-teachers', target: 'teachers' },
+    ].map(({ path, name, target }): RouteRecordRaw => ({
+      path, name,
+      redirect: route => ({ name: target, params: route.params, query: route.query, hash: route.hash }),
+      meta: meta('兼容入口', '', [], target === 'teachers' ? { roles: ADMIN } : {}),
+    })),
     {
       path: '/students/:studentId',
       name: 'legacy-student-profile',

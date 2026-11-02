@@ -28,7 +28,7 @@ test('teacher console visual composition at both teaching resolutions', async ({
   const context = await browser.newContext()
   const screen = await context.newPage()
   await screen.goto('/login'); await screen.getByLabel('账号').fill('e2e_teacher'); await screen.getByLabel('密码').fill('E2eTeacher123!')
-  await screen.getByRole('button', { name: '登录', exact: true }).click(); await expect(screen).toHaveURL(/my-classes$/)
+  await screen.getByRole('button', { name: '登录', exact: true }).click(); await expect(screen).toHaveURL(/teacher\/home$/)
   await screen.goto(`/classroom/screen/${device.id}`)
   await expect(screen.locator('.status-dot.online')).toBeVisible()
   const started = await request.post('/classroom-runs/start', { headers: teacher, data: { lessonPlanId: plan.id, classId: group.id, classroomId: room.id, deviceId: device.id, requestId: `visual-${Date.now()}` } })

@@ -7,6 +7,7 @@ import { platformApi, type Student } from '@/api/platform'
 import { resourceApi } from '@/api/resources'
 import { useClassroomMobileStore } from '@/stores/classroomMobile'
 import type { ClassroomCommandOperation } from '@/services/classroomCommandBus'
+import ChildQaPanel from '@/components/classroom/ChildQaPanel.vue'
 
 const router = useRouter()
 const mobile = useClassroomMobileStore()
@@ -14,6 +15,8 @@ const { session, state, connection, canControl, lastError, lastConfirmedAt, comm
 const students = ref<Student[]>([])
 const selectedStudentId = ref(0)
 const busy = ref(false)
+const leaving = ref(false)
+const exited = ref(false)
 const preloadedResourceIds = new Set<number>()
 
 const classroom = computed(() => state.value?.classroom ?? null)
@@ -102,7 +105,7 @@ function reward() {
     rewardForms: ['points', 'flower', 'animation'],
     points: 1,
     stars: 1,
-    animationKey: 'encourage',
+    animationKey: 'stars',
   }, '奖励已确认并同步到大屏')
 }
 
@@ -114,8 +117,12 @@ async function completeClass() {
 }
 
 async function leaveRemote() {
-  await mobile.revoke()
-  await router.replace('/chat')
+  if (leaving.value) return
+  leaving.value = true
+  try {
+    await mobile.revoke()
+    exited.value = true
+  } finally { leaving.value = false }
 }
 
 watch(() => state.value?.attendance.classId, (classId) => {
@@ -139,21 +146,23 @@ onBeforeUnmount(() => mobile.stop(false))
         <span class="eyebrow">教师手机控制端</span>
         <h1>{{ classroom?.title || '连接课堂大屏' }}</h1>
       </div>
-      <button class="leave" type="button" @click="leaveRemote">退出控制</button>
+      <button v-if="session" class="leave" type="button" :disabled="leaving" @click="leaveRemote">{{ leaving ? '正在退出…' : '退出手机控制' }}</button>
     </header>
 
     <section class="connection-card" :class="connection">
       <div class="connection-title"><i></i><strong>{{ connectionLabel }}</strong></div>
-      <span>大屏：{{ state?.screen.online ? '在线' : '离线' }}</span>
-      <span>课堂计时：{{ elapsed }}</span>
+      <span>大屏：{{ !state ? '未知（未连接）' : state.screen.online ? '在线' : '离线' }}</span>
+      <span>课堂计时：{{ state ? elapsed : '--:--' }}</span>
       <button v-if="connection !== 'online' && session" type="button" @click="mobile.start">立即重连</button>
     </section>
     <p v-if="lastError" class="network-error">{{ lastError }}</p>
 
     <section v-if="!session" class="empty-card">
-      <div>📱</div><h2>请先扫描大屏二维码</h2>
+      <div>📱</div><h2>{{ exited ? '已退出本机遥控' : '请先扫描大屏二维码' }}</h2>
+      <p v-if="exited">本节课堂继续进行，本机控制会话已清除。再次控制需要重新授权；网络异常时，服务端撤销状态需重新核实。</p>
       <p>手机控制会话只在当前课堂和当前教师账号下有效。</p>
       <button type="button" @click="router.push('/classroom/scan')">前往扫码配对</button>
+      <button type="button" @click="router.push({ name: 'teacher-home' })">返回教师工作台</button>
     </section>
 
     <template v-else-if="state">
@@ -173,6 +182,16 @@ onBeforeUnmount(() => mobile.stop(false))
           <b>{{ currentResourceId ? `资源 #${currentResourceId}` : '未打开' }}</b>
           <em>{{ String(playerState.status || 'stopped') }}</em>
         </div>
+        <div v-if="['avatar','digital_human','child_qa'].includes(currentStep?.type || '')" class="digital-human-step" aria-label="数字人当前教学提示">
+          <strong>数字人教学提示</strong><p>{{ currentStep?.teacherTip || currentStep?.content || '请结合本环节教案引导孩子观察和表达。' }}</p>
+        </div>
+      </section>
+
+      <section v-if="classroom" class="control-card" aria-label="数字人和儿童问答">
+        <h2>数字人课堂互动</h2>
+        <p>课堂数字人已按当前教案环节准备教学提示。儿童问答需要教师在此显式开启，只提供文字提问与审核；手机端不自动开启麦克风。{{ classroom.manualInterventionRequired ? '课堂当前需要教师在电脑端恢复后才能开启互动。' : '' }}</p>
+        <button type="button" :disabled="busy || !canControl" @click="send('stop_media', undefined, '已切回数字人主屏')">停止当前课件并显示数字人</button>
+        <ChildQaPanel :run-id="classroom.id" :step-index="classroom.currentStepIndex" :identity="JSON.stringify([classroom.id,classroom.deviceId,classroom.currentStepIndex])" :allowed="canControl && classroom.status === 'running' && !classroom.breakStartedAt && !classroom.manualInterventionRequired" :speaking="false" mobile :step-config="currentStep?.actionConfig" />
       </section>
 
       <section class="control-card">

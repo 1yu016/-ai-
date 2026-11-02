@@ -38,6 +38,59 @@ async function setup(initial: ClassroomScreenState) {
   return { wrapper, heartbeat, run: useLessonRunStore(), player: useResourcePlayerStore() }
 }
 describe('screen terminal lifecycle', () => {
+  it.each(['audio', 'video', 'image', 'picture_book', 'pdf', 'model_3d'])(
+    'returns the classroom avatar surface after stop_media for %s', async (mediaType) => {
+      const initial=state();initial.classroomState!.playerRecoverySuggestion={resourceId:3,status:'playing',presentationMode:'resource',presentationCommandId:'screen-media',presentationRevision:1,operation:'play_resource'};
+      mocks.resource.mockResolvedValueOnce({ id: 3, title: '测试资源', mediaType });
+      const {wrapper,player,run}=await setup(initial);
+      expect(player.currentResource?.id).toBe(3);
+      const stopped=state();stopped.classroomState!.version=2;stopped.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'screen-stop',presentationRevision:2,operation:'stop_media'};
+      await mocks.onState!(stopped);await flushPromises();
+      expect(player.currentResource).toBeNull();expect(player.playerStatus).toBe('idle');
+      expect(run.run).toMatchObject({ id: 45, status: 'running', currentStepIndex: 0 });
+      expect(wrapper.find('[data-test="avatar"]').exists()).toBe(true);
+      expect(wrapper.find('.lesson-stage').exists()).toBe(true);
+      wrapper.unmount();
+    },
+  );
+  it('accepts repeated stop_media snapshots and an idle player without clearing the run', async () => {
+    const initial=state();initial.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'screen-stop-1',presentationRevision:1,operation:'stop_media'};
+    const {wrapper,player,run}=await setup(initial);
+    const stoppedAgain=state();stoppedAgain.classroomState!.version=2;stoppedAgain.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'screen-stop-2',presentationRevision:2,operation:'stop_media'};
+    await mocks.onState!(stoppedAgain);await flushPromises();
+    expect(player.currentResource).toBeNull();
+    expect(run.run).toMatchObject({ id: 45, status: 'running', currentStepIndex: 0 });
+    expect(wrapper.find('[data-test="avatar"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+  it('moves the shared screen media → child QA → approved answer → classroom → media without losing the Run', async () => {
+    const initial=state();initial.classroomState!.playerRecoverySuggestion={resourceId:3,status:'playing',presentationMode:'resource',presentationCommandId:'before-qa',presentationRevision:1,operation:'play_resource'};
+    const {wrapper,player,run}=await setup(initial);
+    expect(player.currentResource?.id).toBe(3);
+    const qa=state();qa.classroomState!.version=2;qa.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'qa-open',presentationRevision:2,operation:'child_qa_start'};
+    await mocks.onState!(qa);await flushPromises();
+    expect(player.currentResource).toBeNull();expect(wrapper.find('[data-test="avatar"]').exists()).toBe(true);
+    expect(run.run).toMatchObject({id:45,status:'running',currentStepIndex:0});
+    const question=state();question.classroomState!.version=3;question.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'qa-question',presentationRevision:3,operation:'set_presentation',childQaQuestionText:'种子需要什么？',childQaAnswerStatus:'pending',childQaQuestionId:8,childQaSessionId:'qa-session',childQaStepIndex:0,childQaRunVersion:3} as never;
+    await mocks.onState!(question);await flushPromises();
+    expect(wrapper.find('[data-test="approved-child-question"]').text()).toContain('种子需要什么？');
+    expect(wrapper.find('[data-test="child-qa-status"]').text()).toContain('老师正在确认');
+    expect(wrapper.find('[data-test="approved-child-answer"]').exists()).toBe(false);
+    const answer=state();answer.classroomState!.version=4;answer.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'qa-answer',presentationRevision:4,operation:'speak_text',ttsText:'种子喝到适量的水会慢慢发芽。',childQaQuestionText:'种子需要什么？',childQaAnswerStatus:'approved',childQaQuestionId:8,childQaSessionId:'qa-session',childQaStepIndex:0,childQaRunVersion:4} as never;
+    await mocks.onState!(answer);await flushPromises();
+    expect(wrapper.find('[data-test="approved-child-answer"]').text()).toContain('种子喝到适量的水');
+    expect(wrapper.find('[data-test="approved-child-question"]').text()).toContain('种子需要什么？');
+    const exited=state();exited.classroomState!.version=5;exited.classroomState!.playerRecoverySuggestion={resourceId:3,status:'stopped',presentationMode:'avatar',presentationCommandId:'qa-stop',presentationRevision:5,operation:'stop_media'};
+    await mocks.onState!(exited);await flushPromises();
+    expect(wrapper.find('[data-test="approved-child-answer"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="avatar"]').exists()).toBe(true);
+    expect(run.run).toMatchObject({id:45,status:'running',currentStepIndex:0});
+    const media=state();media.classroomState!.version=6;media.classroomState!.playerRecoverySuggestion={resourceId:3,status:'playing',presentationMode:'resource',presentationCommandId:'media-after-qa',presentationRevision:6,operation:'play_resource'};
+    await mocks.onState!(media);await flushPromises();
+    expect(player.currentResource?.id).toBe(3);expect(player.autoPlayOnOpen).toBe(true);
+    expect(run.run).toMatchObject({id:45,status:'running',currentStepIndex:0});
+    wrapper.unmount();
+  });
   it('debounced feedback keeps the original sample and command identity', async () => {
     const { wrapper, player } = await setup(state())
     vi.mocked(http.post).mockClear()

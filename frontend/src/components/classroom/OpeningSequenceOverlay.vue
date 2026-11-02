@@ -10,6 +10,7 @@ withDefaults(
     className?: string
     teacherName?: string
     busy?: boolean
+    error?: string
   }>(),
   { subtitle: '', className: '', teacherName: '' },
 )
@@ -38,8 +39,9 @@ const emit = defineEmits<{ (e: 'enter'): void; (e: 'skip'): void }>()
         <h2 class="info-lesson">{{ lessonTitle }}</h2>
         <p class="info-copy">{{ subtitle }}</p>
         <div class="opening-cta">
+          <p v-if="error" role="alert">{{ error }} 请检查连接后重试，课堂不会被自动结束。</p>
           <button class="enter" type="button" :disabled="busy" data-test="opening-enter" @click="emit('enter')">
-            进入教学
+            {{ busy ? '正在核验课堂…' : '进入教学' }}
           </button>
           <button class="skip" type="button" :disabled="busy" data-test="opening-skip" @click="emit('skip')">
             跳过开场

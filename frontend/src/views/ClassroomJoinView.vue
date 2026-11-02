@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElButton } from 'element-plus'
 import { apiErrorMessage } from '@/api/http'
@@ -19,8 +19,12 @@ const mobileStore = useClassroomMobileStore()
 const loading = ref(true)
 const error = ref('')
 const context = ref<PairingContext | null>(null)
+let generation = 0
 
 async function consume() {
+  const current = ++generation
+  mobileStore.stop(true)
+  context.value = null
   loading.value = true
   error.value = ''
   const ticket = typeof route.query.ticket === 'string' ? route.query.ticket : ''
@@ -32,6 +36,7 @@ async function consume() {
   }
   try {
     const { data } = await classroomMobileApi.join({ ticket, deviceCode })
+    if (current !== generation) return
     context.value = {
       classId: data.classId,
       classroomId: data.classroomId,
@@ -44,9 +49,10 @@ async function consume() {
       return
     }
   } catch (cause) {
+    if (current !== generation) return
     error.value = apiErrorMessage(cause, '扫码配对失败，二维码可能已过期或已使用。')
   } finally {
-    loading.value = false
+    if (current === generation) loading.value = false
   }
 }
 
@@ -63,7 +69,12 @@ async function enterPreparation() {
   })
 }
 
-onMounted(() => void consume())
+watch([() => route.path, () => route.query.ticket, () => route.query.deviceCode], () => {
+  // Navigation to remote removes the join query before this component unmounts.
+  // That is not a new scan and must not clear the freshly issued control session.
+  if (route.path === '/classroom/join') void consume()
+}, { immediate: true })
+onBeforeUnmount(() => { generation++ })
 </script>
 
 <template>

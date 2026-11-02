@@ -24,6 +24,7 @@ import {
   getClassroomSummary,
   getClassroomTimeline,
   type ClassroomSummaryContent,
+  type ClassroomAnalysis,
   type ClassroomSummaryDraft,
   type ClassroomTimelineItem,
   type FormalClassroomSummary,
@@ -38,6 +39,7 @@ const error = ref('')
 const forbidden = ref(false)
 const run = ref<{ id: number; teacherId?: number; title: string; status: string; startedAt: string | null; endedAt: string | null } | null>(null)
 const timeline = ref<ClassroomTimelineItem[]>([])
+const analysis = ref<ClassroomAnalysis | null>(null)
 const draft = ref<ClassroomSummaryDraft | null>(null)
 const formal = ref<FormalClassroomSummary | null>(null)
 const form = reactive<ClassroomSummaryContent>({
@@ -109,6 +111,7 @@ async function load() {
     ])
     run.value = timelineData.run
     timeline.value = timelineData.items
+    analysis.value = timelineData.analysis
     draft.value = summaryData.draft
     formal.value = summaryData.formalSummary
     if (!draft.value && !formal.value && timelineData.run.status === 'completed'
@@ -264,6 +267,33 @@ function changeTimelinePage(next: number) {
         </div>
       </ElCard>
 
+      <ElCard class="analysis-card" shadow="never">
+        <template #header><strong>课堂数据分析</strong></template>
+        <p class="analysis-note">只汇总本节课堂记录，不评价幼儿能力。环节用时按课堂事件计算，暂停和课间不计入；超过或低于计划 25% 才标记偏差。</p>
+        <div class="analysis-metrics">
+          <article><strong>{{ Math.round((analysis?.actualRunSeconds ?? 0) / 60) }} 分钟</strong><span>课堂累计用时</span></article>
+          <article><strong>{{ analysis?.metrics.rollCalls ?? 0 }}</strong><span>点名记录</span></article>
+          <article><strong>{{ analysis?.metrics.activeRewards ?? 0 }}</strong><span>有效奖励</span></article>
+          <article><strong>{{ analysis?.metrics.childQuestions ?? 0 }}</strong><span>幼儿问题</span></article>
+          <article><strong>{{ analysis?.metrics.answeredQuestions ?? 0 }}</strong><span>已有回答</span></article>
+          <article><strong>{{ analysis?.metrics.avatarUsageRecords ?? 0 }}</strong><span>数字人使用记录</span></article>
+        </div>
+        <h3>各环节计划与实际用时</h3>
+        <div v-if="analysis?.stepTimings.length" class="analysis-steps">
+          <article v-for="step in analysis.stepTimings" :key="step.stepIndex">
+            <div><strong>第 {{ step.stepIndex + 1 }} 环节 · {{ step.title }}</strong><ElTag v-if="step.variance === 'over'" type="warning">超时</ElTag><ElTag v-else-if="step.variance === 'short'" type="info">短于计划</ElTag><ElTag v-else-if="step.variance === 'within_plan'" type="success">接近计划</ElTag><ElTag v-else type="info">记录不完整</ElTag></div>
+            <small>计划 {{ Math.round(step.durationSeconds / 60) }} 分钟 · 实际 {{ step.actualSeconds == null ? '未知' : `${Math.round(step.actualSeconds / 60)} 分钟` }}</small>
+          </article>
+        </div>
+        <p v-else class="state">当前没有可用于计算环节用时的教案快照。</p>
+        <h3>已确认完成播放的资源</h3>
+        <p v-if="analysis?.completedResources.length" class="analysis-note">{{ analysis.completedResources.map(item => `${item.title}（#${item.resourceId}）：${item.completedCount} 次`).join('；') }}</p>
+        <p v-else class="state">没有资源播放完成记录。系统不会把教案中计划使用的资源计作已播放。</p>
+        <h3>下一节课可复核的教学线索</h3>
+        <ul class="analysis-notes"><li v-for="(note, index) in analysis?.improvementNotes ?? []" :key="index">{{ note }}</li></ul>
+        <ElAlert v-if="analysis?.stepIndexJumps.length" type="info" :closable="false" title="记录到步骤索引跳跃；这不等同于确认教师跳过环节，请结合课堂情况核对。" />
+      </ElCard>
+
       <ElCard class="timeline-card" shadow="never">
         <template #header>
           <div class="timeline-header">
@@ -306,6 +336,6 @@ function changeTimelinePage(next: number) {
 </template>
 
 <style scoped>
-.record-page{box-sizing:border-box;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions{display:flex;align-items:center;gap:10px}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.state{padding:32px;text-align:center;color:#967f70}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.timeline-card{max-height:none}}
+.record-page{box-sizing:border-box;color:#493d36}header{max-width:1400px;margin:0 auto 24px;display:flex;justify-content:space-between;align-items:flex-start;gap:24px}header small{color:#c27b59;font-weight:800;letter-spacing:.12em}h1{margin:6px 0;font-size:32px}header p{margin:0;color:#8e7768}.header-actions,.card-title,.summary-actions{display:flex;align-items:center;gap:10px}.record-grid{max-width:1400px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(380px,.9fr);gap:22px}.summary-card label{display:grid;gap:7px;margin-top:16px;font-weight:700}.summary-actions{justify-content:flex-end;margin-top:20px}.timeline-card{max-height:calc(100vh - 160px);overflow:auto}.timeline-entry p{margin:5px 0;color:#67564c;line-height:1.6}.timeline-entry small{color:#a08777}.state{padding:20px;text-align:center;color:#967f70}.analysis-card{grid-column:1/-1}.analysis-card h3{margin:20px 0 10px;font-size:15px}.analysis-note{color:#8e7768;font-size:13px;line-height:1.6}.analysis-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}.analysis-metrics article{display:grid;gap:5px;padding:14px;border-radius:12px;background:#fff5ec;text-align:center}.analysis-metrics strong{font-size:22px;color:#b86e4d}.analysis-metrics span,.analysis-steps small{color:#92796a;font-size:12px}.analysis-steps{display:grid;gap:8px}.analysis-steps article{display:grid;gap:7px;padding:12px 14px;border:1px solid #f1e2d7;border-radius:12px}.analysis-steps article>div{display:flex;align-items:center;justify-content:space-between;gap:10px}.analysis-notes{padding-left:20px;line-height:1.7;color:#67564c}@media(max-width:920px){header{flex-direction:column}.record-grid{grid-template-columns:1fr}.analysis-card{grid-column:auto}.timeline-card{max-height:none}}
 .timeline-header{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap}.timeline-filters{display:flex;gap:6px;flex-wrap:wrap}.timeline-filters button{border:1px solid #efd9c8;border-radius:999px;padding:5px 10px;background:#fffdf9;color:#8e6e5d;cursor:pointer}.timeline-filters button.active{background:#e99168;color:#fff;border-color:#e99168}.timeline-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:18px;color:#9a7e6e;font-size:13px}
 </style>

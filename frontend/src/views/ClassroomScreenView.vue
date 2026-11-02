@@ -6,6 +6,7 @@ import ResourcePlayer from '@/components/ResourcePlayer.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 import ScreenOpeningPanel from '@/components/classroom/ScreenOpeningPanel.vue'
 import ScreenSummaryPanel from '@/components/classroom/ScreenSummaryPanel.vue'
+import { lessonAvatarCue } from '@/classroom/lessonAvatarCue'
 import { apiErrorMessage, http } from '@/api/http'
 import { platformApi, type Device } from '@/api/platform'
 import { useCourseResourceStore } from '@/stores/courseResource'
@@ -196,6 +197,34 @@ watch(mediaSpeechBlocked, blocked => { if (blocked) cancelClassroomSpeech() }, {
 const page = ref<ClassroomScreenPage>('idle')
 const screenState = ref<ClassroomScreenState | null>(null)
 const summaryDisplay = ref<ClassroomScreenState['summary'] | null>(null)
+const summaryLessonCue = ref('')
+const qaAnswerCaption = ref('')
+const qaQuestionCaption = ref('')
+const qaStatusCaption = ref('')
+let qaAnswerRun: number | null = null
+let qaAnswerKey = ''
+function applyApprovedQaText(state: ClassroomScreenState) {
+  const classroom = state.classroomState
+  const snapshot = classroom?.playerRecoverySuggestion as Record<string, unknown> | undefined
+  const key = String(snapshot?.presentationCommandId ?? '')
+  const first = qaAnswerRun !== classroom?.id
+  if (first) { qaAnswerRun = classroom?.id ?? null; qaAnswerKey = key }
+  const valid = classroom?.status === 'running' && !classroom.breakStartedAt && snapshot?.childQaQuestionId &&
+    snapshot.childQaStepIndex === classroom.currentStepIndex && snapshot.childQaRunVersion === classroom.version &&
+    ['set_presentation', 'speak_text'].includes(String(snapshot.operation)) && typeof snapshot.childQaQuestionText === 'string'
+  if (!valid) { if (qaAnswerCaption.value) stopBrowserSpeech(); qaAnswerCaption.value = ''; qaQuestionCaption.value = ''; qaStatusCaption.value = ''; return }
+  const changed = !first && Boolean(key) && key !== qaAnswerKey
+  const previousAnswer = qaAnswerCaption.value
+  if (changed && previousAnswer) stopBrowserSpeech()
+  qaQuestionCaption.value = typeof snapshot.childQaQuestionText === 'string' ? snapshot.childQaQuestionText : ''
+  const approved = snapshot.operation === 'speak_text' && typeof snapshot.ttsText === 'string'
+  qaStatusCaption.value = approved ? '' : snapshot.childQaAnswerStatus === 'handoff' ? '这个问题请老师和我们一起想一想。' : '老师正在确认答案。'
+  qaAnswerCaption.value = approved ? String(snapshot.ttsText) : ''
+  if (changed) qaAnswerKey = key
+  if (approved && changed) {
+    if (!speakClassroomText(qaAnswerCaption.value)) loadError.value = '儿童回答文字已显示；当前浏览器未能朗读，请教师接手。'
+  }
+}
 let summaryDeadline = 0
 const closedSummaryRuns = new Set<number>()
 const handoffKey = () => `classroom-screen-handoff:${deviceId.value}`
@@ -234,6 +263,9 @@ const retiredRuns = new Set<number>()
 // Clear this page's classroom, not the resource library or device identity.
 function clearClassroomDisplay(retire = false) {
   summaryDisplay.value = null
+  summaryLessonCue.value = ''
+  if (qaAnswerCaption.value) stopBrowserSpeech()
+  qaAnswerCaption.value = ''; qaQuestionCaption.value = ''; qaStatusCaption.value = ''; qaAnswerRun = null; qaAnswerKey = ''
   summaryDeadline = 0
   if (retire && readyPreparation.value) retiredPreparations.add(readyPreparation.value.preparationId)
   readyPreparation.value = null
@@ -322,8 +354,11 @@ async function hydratePlayer(state: ClassroomScreenState) {
   hydratedRunId = classroom.id
   hydratedSnapshotVersion = presentationKey
   const generation = ++displayGeneration
-  if (snapshot?.presentationMode === 'avatar') {
-    playerStore.requestControl('close')
+  if (snapshot?.operation === 'stop_media' || snapshot?.presentationMode === 'avatar') {
+    // Avatar presentation is the shared-screen owner for both normal teaching
+    // and child QA. Close the local media surface/player; its last progress
+    // remains in the authoritative backend snapshot for a later reopen.
+    playerStore.close()
     return
   }
   const resourceId = Number(snapshot?.resourceId)
@@ -451,9 +486,13 @@ async function applyScreenState(state: ClassroomScreenState) {
         clearClassroomDisplay(); forgetHandoff(); page.value = 'idle'; loading.value = false; return
       }
       const entering = summaryDisplay.value?.runId !== summary.runId
+      const cue = run.value?.id === summary.runId
+        ? lessonAvatarCue(run.value.steps.at(-1), digitalHumanStore.runtime?.character?.name ?? '')
+        : summaryDisplay.value?.runId === summary.runId ? summaryLessonCue.value : ''
       clearClassroomDisplay()
       if (entering) digitalHumanStore.reset()
       summaryDisplay.value = summary
+      summaryLessonCue.value = cue
       summaryDeadline = Date.parse(lifecycle.expiresAt)
       readyServerOffset = timestamp - Date.now()
       page.value = 'summary'; loading.value = false; return
@@ -553,6 +592,7 @@ async function applyScreenState(state: ClassroomScreenState) {
     if (disposed || screenState.value?.serverNow !== state.serverNow || run.value?.id !== classroom.id) return
     try {
       await hydrateArtwork(state)
+      applyApprovedQaText(state)
     } catch (error) {
       if (disposed || screenState.value?.serverNow !== state.serverNow) return
       clearClassroomDisplay()
@@ -755,7 +795,7 @@ onBeforeUnmount(() => {
       <p>大屏已进入低刺激保护状态，请听老师安排，慢慢走、不奔跑。</p>
     </section>
 
-    <ScreenSummaryPanel v-else-if="page === 'summary' && summaryDisplay" :course-title="summaryDisplay.courseTitle" />
+    <ScreenSummaryPanel v-else-if="page === 'summary' && summaryDisplay" :course-title="summaryDisplay.courseTitle" :script="summaryLessonCue" />
     <section v-else-if="page === 'summary'" class="state-card summary-card">
       <div class="state-icon">{{ activeMeta.icon }}</div>
       <span class="eyebrow">{{ activeMeta.eyebrow }}</span>
@@ -775,13 +815,17 @@ onBeforeUnmount(() => {
       <button class="primary-button" type="button" @click="refreshScreen({ initial: true })">重新读取课堂状态</button>
     </section>
 
-    <ScreenOpeningPanel v-else-if="isOpening" :course-title="run?.lessonTitle || '欢迎来到课堂'" :paused="run?.status === 'paused'" />
+    <ScreenOpeningPanel v-else-if="isOpening" :course-title="run?.lessonTitle || '欢迎来到课堂'" :paused="run?.status === 'paused'" :script="lessonAvatarCue(run?.steps.find(step=>step.stepIndex===0),digitalHumanStore.runtime?.character?.name ?? '')" />
 
     <section v-else class="lesson-stage">
       <div class="lesson-copy">
         <span class="eyebrow">{{ activeMeta.icon }} {{ run?.status === 'paused' ? classroomStatusText : activeMeta.eyebrow }}</span>
         <h1>{{ currentStep?.title || activeMeta.title }}</h1>
         <p>{{ currentStep?.content || '请跟随老师一起探索今天的课堂内容。' }}</p>
+        <p v-if="qaQuestionCaption" data-test="approved-child-question">小朋友问：{{qaQuestionCaption}}</p>
+        <p v-if="qaStatusCaption" data-test="child-qa-status" role="status">{{qaStatusCaption}}</p>
+        <p v-if="qaAnswerCaption" data-test="approved-child-answer" role="status">数字人回答：{{qaAnswerCaption}}</p>
+        <p v-if="lessonAvatarCue(currentStep,digitalHumanStore.runtime?.character?.name ?? '')" data-test="screen-lesson-avatar-cue">{{ lessonAvatarCue(currentStep,digitalHumanStore.runtime?.character?.name ?? '') }}</p>
         <div v-if="run" class="progress-summary">
           <span>第 {{ run.currentStepIndex + 1 }} / {{ run.steps.length }} 环节</span>
           <div><i :style="{ width: `${Math.max(4, ((run.currentStepIndex + 1) / run.steps.length) * 100)}%` }"></i></div>
@@ -827,7 +871,7 @@ onBeforeUnmount(() => {
       </div>
     </aside>
 
-    <ResourcePlayer :resources="resourceStore.sortedResources" />
+    <ResourcePlayer :resources="resourceStore.sortedResources" :show-close="true" />
   </main>
 </template>
 
