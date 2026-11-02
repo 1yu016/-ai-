@@ -169,4 +169,5 @@ const emit = defineEmits<{
 .step-pill.done { color: #78B978; }
 .step-pill.active { background: #FBEFE3; border-color: #EACFB4; color: #D88A4D; }
 .step-pill:disabled { cursor: not-allowed; opacity: 0.7; }
+.step-sidebar{width:100%;box-sizing:border-box;box-shadow:none;background:var(--app-surface);border-color:var(--app-border)}.step-name{white-space:normal;overflow:visible;overflow-wrap:anywhere;line-height:1.65}.step-item{align-items:flex-start;padding:10px 8px;gap:8px}.step-flag,.step-check{padding-top:5px}.step-list{gap:10px}
 </style>

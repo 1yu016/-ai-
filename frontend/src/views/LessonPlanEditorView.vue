@@ -4,6 +4,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElInputNumber, ElMessage, ElOption, ElSelect } from 'element-plus'
 import LessonResourceSelector from '@/components/LessonResourceSelector.vue'
+import LessonAiPlanGenerator from '@/components/lesson/LessonAiPlanGenerator.vue'
 import ChildQaConfigEditor from '@/components/lesson/ChildQaConfigEditor.vue'
 import LessonAiSuggestions from '@/components/LessonAiSuggestions.vue'
 import LessonReferenceSelector from '@/components/LessonReferenceSelector.vue'
@@ -20,6 +21,7 @@ const { draft, dirty, saving, loading } = storeToRefs(store)
 const selectorOpen = ref(false); const selectedStepIndex = ref(-1)
 const historyOpen = ref(false); const historyBusy = ref(false); const historyError = ref('')
 const suggestionsOpen = ref(false)
+const aiGeneratorOpen = ref(false)
 const referencesOpen = ref(false); const referencePack = ref<EvidencePack|null>(null)
 watch(()=>[store.current?.id,draft.value.version],()=>{referencePack.value=null})
 async function showHistory() { historyOpen.value = true; historyBusy.value = true; historyError.value = ''; try { await store.fetchVersions() } catch { historyError.value = '版本历史加载失败，请重试。' } finally { historyBusy.value = false } }
@@ -60,8 +62,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 <template>
   <ManagementLayout>
   <PageShell variant="wide">
-  <main class="editor"><header><div><BackButton label="返回备课中心" /><h1>{{ isEdit ? '编辑教案' : '新建教案' }}</h1><p>教师指导与学生展示分开编写 · {{ store.current ? `当前版本 v${draft.version}` : '尚未保存' }}</p></div><div class="top-actions"><ElButton :disabled="!store.current" @click="referencesOpen=true">参考课堂经验</ElButton><ElButton @click="suggestionsOpen = !suggestionsOpen">{{ suggestionsOpen ? '收起AI建议' : 'AI备课建议' }}</ElButton><ElButton :disabled="!store.current" @click="showHistory">版本历史</ElButton><ElButton type="primary" :loading="saving" :disabled="saving || loading || !!store.error" @click="save">保存教案</ElButton></div></header>
-    <section v-if="suggestionsOpen" class="ai-review-sidebar"><LessonAiSuggestions @close="suggestionsOpen=false"/></section>
+  <main class="editor"><header><div><BackButton label="返回备课中心" /><h1>{{ isEdit ? '编辑教案' : '新建教案' }}</h1><p>教师指导与学生展示分开编写 · {{ store.current ? `当前版本 v${draft.version}` : '尚未保存' }}</p></div><div class="top-actions"><ElButton :disabled="!store.current" @click="referencesOpen=true">参考课堂经验</ElButton><ElButton @click="aiGeneratorOpen = true">AI生成教案</ElButton><ElButton @click="suggestionsOpen = !suggestionsOpen">{{ suggestionsOpen ? '收起AI建议' : 'AI备课建议' }}</ElButton><ElButton :disabled="!store.current" @click="showHistory">版本历史</ElButton><ElButton type="primary" :loading="saving" :disabled="saving || loading || !!store.error" @click="save">保存教案</ElButton></div></header>
+    <LessonAiPlanGenerator v-model="aiGeneratorOpen" :theme="draft.theme" :age-group="draft.ageGroup" :minutes="draft.estimatedMinutes" :objectives="draft.objectives" :has-unsaved="dirty" @created="id => router.push({ name: 'lesson-plan-edit', params: { id } })" />
+    <section v-if="suggestionsOpen"  class="ai-review-sidebar"><LessonAiSuggestions @close="suggestionsOpen=false"/></section>
     <p v-if="referencePack" class="reference-notice">本地参考：已选 {{referencePack.sourceManifest.length}} 次课堂 · 基础 v{{referencePack.baseVersion}}（不修改教案，不发送AI）<ElButton text @click="referencePack=null">移除参考</ElButton></p>
     <LessonReferenceSelector v-model:open="referencesOpen" :plan-id="store.current?.id ?? null" :base-version="draft.version" @selected="referencePack=$event"/>
     <p v-if="store.error" role="alert">{{ store.error }}</p>

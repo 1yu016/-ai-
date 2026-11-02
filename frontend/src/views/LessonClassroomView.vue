@@ -25,7 +25,6 @@ import ClassroomAssistantPanel from '@/components/classroom/ClassroomAssistantPa
 import ClassroomDirectorPanel from '@/components/classroom/ClassroomDirectorPanel.vue'
 import ClassroomVoiceControl from '@/components/classroom/ClassroomVoiceControl.vue'
 import ClassroomWakeControl from '@/components/classroom/ClassroomWakeControl.vue'
-import ClassroomPartnerPanel from '@/components/classroom/ClassroomPartnerPanel.vue'
 import ChildQaPanel from '@/components/classroom/ChildQaPanel.vue'
 import ClassRewardDrawer from '@/components/classroom/ClassRewardDrawer.vue'
 import { useLessonRunStore } from '@/stores/lessonRun'
@@ -76,6 +75,7 @@ import {
 
 const route = useRoute(); const router = useRouter(); const store = useLessonRunStore(); const assistant = useClassroomAssistantStore(); const resources = useCourseResourceStore()
 const user = useUserStore()
+const consoleTab = ref<'interaction' | 'assistant'>('interaction')
 const presentationDrawerOpen = ref(false)
 const lessonDetailsOpen = ref(false)
 const assistantDrawerOpen = ref(false)
@@ -946,26 +946,12 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
       >
         <template #navigation><ElButton text @click="router.push({ name: 'my-classes' })">← 工作台</ElButton></template>
         <template #actions>
-          <ElButton @click="mobileDrawerOpen = true">连接手机</ElButton>
-          <ElButton text @click="assistantDrawerOpen = true">AI{{ copilotStatus }}</ElButton>
+          <span class="console-status">AI 助教：{{ copilotStatus }} · 手机连接以手机端为准</span>
           <ElButton :disabled="busy || !store.can(paused ? 'resume' : 'pause')" @click="safe(paused ? store.resume : store.pause, paused ? 'resume' : 'pause')">{{ paused ? '恢复课堂' : '暂停课堂' }}</ElButton>
           <ElButton :disabled="busy || !store.can('complete')" @click="finish('complete')">结束课堂</ElButton>
           <ElButton text @click="moreDrawerOpen = true">更多</ElButton>
         </template>
       </ClassroomHeader>
-      <ElButton v-if="currentResource" data-test="show-step-resource" :disabled="!store.can('resource_start')" @click="safe(() => store.openResource(), 'resource_start')">展示本环节课件</ElButton>
-      <template v-if="run && currentResource?.mediaType === 'pdf'">
-        <ElButton :disabled="!store.can('media_control')" @click="safe(() => store.command('previous_page', undefined, 'teacher_panel', run?.deviceId), 'media_control')">大屏上一页</ElButton>
-        <ElButton :disabled="!store.can('media_control')" @click="safe(() => store.command('next_page', undefined, 'teacher_panel', run?.deviceId), 'media_control')">大屏下一页</ElButton>
-      </template>
-      <p v-if="currentAvatarCue" class="lesson-avatar-cue" data-test="lesson-avatar-cue">{{ digitalHuman.runtime?.character?.name || '课堂伙伴' }}：{{ currentAvatarCue }}</p>
-      <section v-if="intelligentTeachingEnabled" class="teaching-suggestion" aria-label="课堂教学建议">
-        <p v-if="teachingSuggestion">{{ teachingSuggestion }}</p>
-        <ElButton @click="suggestionAction('有什么适合现在的小活动？')" :disabled="commandBusy">教学建议</ElButton>
-        <template v-if="teachingSuggestion"><ElButton @click="suggestionAction('采用建议')" :disabled="commandBusy">采用建议</ElButton><ElButton @click="suggestionAction('忽略建议')">忽略建议</ElButton><ElButton @click="suggestionAction('稍后提醒')">稍后提醒</ElButton></template>
-        <ElButton @click="suggestionAction(suggestionEnabled ? '关闭主动建议' : '开启主动建议')">{{ suggestionEnabled ? '关闭主动建议' : '开启主动建议' }}</ElButton>
-        <p v-if="commandFeedback" role="status">{{ commandFeedback }}</p>
-      </section>
       <div class="workspace" :class="{ 'flow-collapsed': stepSidebarCollapsed }">
         <ClassroomStepSidebar
           :steps="run.steps"
@@ -977,13 +963,31 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
           @go-step="goToStep"
           @toggle-collapse="stepSidebarCollapsed = !stepSidebarCollapsed"
         >
-          <div class="next-teaching-step"><small>下一环节</small><strong>{{ nextTeachingStep?.title || '课堂总结' }}</strong><ElButton text :disabled="busy || !store.can('change_step') || !nextTeachingStep" @click="safe(store.next, 'change_step')">进入下一环节</ElButton></div>
+          <div class="next-teaching-step"><small>下一环节</small><strong>{{ nextTeachingStep?.title || '课堂总结' }}</strong></div>
         </ClassroomStepSidebar>
         <section class="center-panel">
           <div class="center-scroll">
-            <LivePresentationPreview>
+            <LivePresentationPreview />
+            <section class="console-card console-controls" aria-label="课堂展示与环节控制">
+              <h2>课堂控制</h2>
+              <ElButton tag="a" :href="'/classroom/screen/' + run.deviceId" target="_blank" rel="noopener">打开独立大屏</ElButton>
+              <ElButton @click="mobileDrawerOpen = true">连接手机</ElButton>
               <ElButton type="primary" @click="presentationDrawerOpen = true">调整课堂内容</ElButton>
-            </LivePresentationPreview>
+              <ElButton v-if="currentResource" data-test="show-step-resource" :disabled="busy || !store.can('resource_start')" @click="safe(() => store.openResource(), 'resource_start')">展示本环节课件</ElButton>
+              <ElButton :disabled="busy || !store.can('safe_stop')" @click="safe(() => store.teacherCommand('stop_media', undefined, 'teacher_panel', run?.deviceId), 'safe_stop')">停止媒体</ElButton>
+              <template v-if="run.playerRecoverySuggestion?.resourceId">
+                <ElButton :disabled="busy || !store.can('media_control')" @click="safe(() => store.command('previous_page', undefined, 'teacher_panel', run?.deviceId), 'media_control')">大屏上一页</ElButton>
+                <ElButton :disabled="busy || !store.can('media_control')" @click="safe(() => store.command('next_page', undefined, 'teacher_panel', run?.deviceId), 'media_control')">大屏下一页</ElButton>
+              </template>
+              <div class="step-controls">
+                <ElButton :disabled="busy || !store.can('change_step') || run.currentStepIndex === 0" @click="safe(store.previous, 'change_step')">上一环节</ElButton>
+                <ElButton :disabled="busy || !store.can('change_step') || !nextTeachingStep" @click="safe(store.next, 'change_step')">下一环节</ElButton>
+                <ElButton text @click="lessonDetailsOpen = true">查看完整教案</ElButton>
+              </div>
+            </section>
+            <section class="console-card"><h2>当前教学提示</h2>
+      <p v-if="currentAvatarCue" class="lesson-avatar-cue" data-test="lesson-avatar-cue">{{ digitalHuman.runtime?.character?.name || '课堂伙伴' }}：{{ currentAvatarCue }}</p>
+<p>{{ currentStep.teacherTip || teacherTip || '给小朋友一点观察和表达的时间。' }}</p></section>
             <ElDrawer v-model="lessonDetailsOpen" title="课堂教案 · 仅教师可见" size="min(640px, 95vw)">
             <section class="step-card">
               <ElTag effect="light" class="step-type-tag">{{ typeText[currentStep.type] ?? currentStep.type }}</ElTag>
@@ -1054,6 +1058,11 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
           </div>
         </section>
         <div class="assist-col">
+          <section class="console-card console-notice" role="status">
+            <strong>课堂互动与 AI 助教</strong>
+            <span>当前展示待审核：{{ run.playerRecoverySuggestion?.childQaAnswerStatus === 'pending' ? 1 : 0 }}</span>
+            <p v-if="commandFeedback">{{ commandFeedback }}</p>
+          </section>
           <ChildQaPanel @active="onChildQaActive"
             :run-id="run.id"
             :step-index="run.currentStepIndex"
@@ -1061,23 +1070,32 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
             :allowed="!!run && Number(route.params.runId) === run.id && run.status === 'running' && classroomPhase === 'teaching' && !isBreakActive && !run.manualInterventionRequired && voiceRecState === 'idle' && !childRecording && !childRequestingMicrophone"
             :speaking="assistantSpeaking || digitalHuman.isSpeaking"
           />
-          <ClassroomQuickActions :can-roll="store.can('roll_call')" :can-reward="store.can('reward')" :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" />
-          <!-- 1. AI 教学伙伴：常驻主卡（数字人常驻 + 状态 + 进入大屏），约占右栏 55~65% -->
-          <ClassroomPartnerPanel
-            compact
-            :debug-mode="allowDebugPanel"
-            :action-text="dhActionText"
-            :mic-ready="micReady"
-            :assistant-online="assistantOnline"
-            :classroom-status-text="paused ? '已暂停' : '进行中'"
-            @enter-avatar="openFullscreen('avatar')"
-          />
-          <!-- 2/3. 课堂互动 / 本节榜单：compact launcher（完整点名+奖励、Top5 榜单都在对应全屏） -->
+          <div class="console-tabs" role="tablist" aria-label="课堂工具">
+            <button role="tab" :aria-selected="consoleTab === 'interaction'" @click="consoleTab = 'interaction'">课堂互动</button>
+            <button role="tab" :aria-selected="consoleTab === 'assistant'" @click="consoleTab = 'assistant'">AI 助教</button>
+          </div>
+          <section v-show="consoleTab === 'interaction'" class="console-card" role="tabpanel" aria-label="课堂互动">
+          <ClassroomQuickActions console-mode :can-roll="store.can('roll_call')" :can-reward="store.can('reward')" :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" />
+          <ElButton @click="openClassroomTool('classroom-engagement')">考勤与课间设置</ElButton>
+          <ElButton @click="openClassroomTool('classroom-insights')">儿童问题与作品</ElButton>
+          <ElButton :disabled="rewardsLoading" @click="openRewardDrawer">本节奖励记录（{{ runRewardTotal }}）</ElButton>
+          </section>
+          <section v-show="consoleTab === 'assistant'" class="console-card" role="tabpanel" aria-label="AI 助教">
+          <ElButton @click="assistantDrawerOpen = true">AI教学伙伴</ElButton>
+      <section v-if="intelligentTeachingEnabled" class="teaching-suggestion" aria-label="课堂教学建议">
+        <p v-if="teachingSuggestion">{{ teachingSuggestion }}</p>
+        <ElButton @click="suggestionAction('有什么适合现在的小活动？')" :disabled="commandBusy">教学建议</ElButton>
+        <template v-if="teachingSuggestion"><ElButton @click="suggestionAction('采用建议')" :disabled="commandBusy">采用建议</ElButton><ElButton @click="suggestionAction('忽略建议')">忽略建议</ElButton><ElButton @click="suggestionAction('稍后提醒')">稍后提醒</ElButton></template>
+        <ElButton @click="suggestionAction(suggestionEnabled ? '关闭主动建议' : '开启主动建议')">{{ suggestionEnabled ? '关闭主动建议' : '开启主动建议' }}</ElButton>
+        <p v-if="commandFeedback" role="status">{{ commandFeedback }}</p>
+      </section>
+
+          <ElButton data-test="enter-avatar" @click="openFullscreen('avatar')">进入数字人大屏</ElButton>
+          </section>
         </div>
       </div>
       <footer class="teacher-hint-bar">
         <div class="teacher-hint"><strong>教师提示</strong><span>{{ currentStep.teacherTip || teacherTip || '给小朋友一点观察和表达的时间。' }}</span></div>
-        <ElButton text @click="lessonDetailsOpen = true">查看完整教案</ElButton>
         <button class="voice-status" type="button" :disabled="commandBusy || voiceRecState === 'recognizing' || busy" @click="toggleVoiceRecording">{{ voiceRecState === 'recording' ? '结束录音' : '语音控制' }}</button>
         <button
           class="voice-status wake-status-button"
@@ -1091,10 +1109,7 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
       </footer>
       <ElDrawer v-model="moreDrawerOpen" title="更多课堂操作" size="min(480px, 95vw)">
         <div class="more-actions">
-          <ElButton @click="openClassroomTool('classroom-engagement')">考勤与课间设置</ElButton>
-          <ElButton @click="openClassroomTool('classroom-insights')">儿童问题与作品</ElButton>
           <ElButton :disabled="busy || !store.can('change_step')" @click="store.can('change_step') && store.repeat()">重复本环节</ElButton>
-          <ElButton :disabled="rewardsLoading" @click="openRewardDrawer">本节奖励记录（{{ runRewardTotal }}）</ElButton>
           <hr /><p>中止后无法继续当前课堂，请确认后操作。</p>
           <ElButton type="danger" plain :disabled="busy || !store.can('cancel')" @click="finish('cancel')">中止课堂</ElButton>
         </div>
@@ -1474,22 +1489,22 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
 }
 </style>
 <style scoped>
-.classroom{height:100dvh;padding:16px;gap:10px;background:var(--app-bg);color:var(--app-text)}
-.workspace{grid-template-columns:160px minmax(0,1fr) 188px;gap:12px;margin:0;min-height:0;flex:1}
-.workspace.flow-collapsed{grid-template-columns:68px minmax(0,1fr) 188px}
-.workspace :deep(.step-sidebar){width:160px;padding:10px 8px;background:transparent;box-shadow:none;border:0;border-right:1px solid var(--app-border);border-radius:0}
-.workspace :deep(.step-sidebar.collapsed){width:68px}.workspace :deep(.step-item){padding:10px 7px;gap:7px}.workspace :deep(.step-flag){display:none}.workspace :deep(.step-no){width:24px;height:24px;min-width:24px}
-.center-panel,.center-scroll{min-height:0;height:100%;overflow:hidden;padding:0;gap:0}.assist-col{gap:14px;overflow:auto;padding:2px}
-.next-teaching-step{display:flex;flex-direction:column;gap:8px;margin-top:auto;padding:14px 8px 4px;border-top:1px solid var(--app-border)}.next-teaching-step small{color:var(--app-muted)}.next-teaching-step strong{font-size:14px}
-.teacher-hint-bar{display:flex;align-items:center;gap:12px;flex:none;min-height:54px;padding:8px 12px;background:var(--app-surface);border:1px solid var(--app-border);border-radius:14px}
-.teacher-hint{display:flex;gap:10px;align-items:center;min-width:0;flex:1;font-size:13px}.teacher-hint strong{white-space:nowrap;color:var(--app-primary-dark)}.teacher-hint span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--app-muted)}
-.voice-status,.voice-detail{border:0;background:transparent;font:inherit;font-size:12px;color:var(--app-text);cursor:pointer}.voice-status{background:var(--app-primary-soft);border-radius:10px;padding:9px 12px;white-space:nowrap}.voice-status:disabled{opacity:.5;cursor:not-allowed}.voice-detail{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;color:var(--app-muted)}
-.wake-status-button.wake-waiting{background:#E7F4EA;color:#2F6B47}
-.wake-status-button.wake-awake{background:#FFF1D6;color:#8A5A12}
-.wake-inline{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--app-muted)}
-.more-actions{display:flex;flex-direction:column;gap:16px}.more-actions :deep(.el-button){margin:0}.more-actions p{font-size:13px;color:var(--app-muted)}.more-actions hr{border:0;border-top:1px solid var(--app-border);width:100%}
-.lesson-detail-step{margin-top:16px;padding:16px;border:1px solid var(--app-border);border-radius:12px}.lesson-detail-step summary{cursor:pointer;font-weight:700}.lesson-detail-step p{color:var(--app-muted);line-height:1.7}
-:global(body:has(.classroom:not(.classroom-debug)) #__vue-devtools-container__){display:none!important}
-@media(max-width:1100px){.workspace{grid-template-columns:140px minmax(0,1fr) 180px}.workspace :deep(.step-sidebar){width:140px}.workspace.flow-collapsed{grid-template-columns:68px minmax(0,1fr) 180px}.voice-detail{max-width:120px}}
-@media(max-width:760px){.classroom{height:auto;min-height:100dvh;overflow:visible}.workspace{grid-template-columns:68px minmax(0,1fr);min-height:520px}.workspace :deep(.step-sidebar){width:68px}.assist-col{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr}.teacher-hint-bar{flex-wrap:wrap}.teacher-hint{flex-basis:70%}.center-panel{min-height:450px}}
+.classroom{height:auto;min-height:100dvh;overflow:visible;padding:16px;gap:14px;background:var(--app-bg);color:var(--app-text)}
+.workspace{display:grid;grid-template-columns:minmax(210px,1fr) minmax(0,2fr) minmax(0,2fr);gap:16px;margin:0;min-height:0;flex:none;align-items:start}
+.workspace.flow-collapsed{grid-template-columns:68px minmax(0,1fr) minmax(0,1fr)}
+.center-panel,.center-scroll,.assist-col{height:auto;min-width:0;overflow:visible}
+.center-scroll,.assist-col{display:flex;flex-direction:column;gap:14px}
+.workspace :deep(.step-sidebar){height:auto;max-height:none;overflow:visible}
+.console-card{padding:16px;border:1px solid var(--app-border);border-radius:16px;background:var(--app-surface);min-width:0}
+.console-card h2{font-size:16px;margin:0 0 12px}.console-card p{line-height:1.7;margin:8px 0;color:var(--app-muted)}
+.console-controls{display:flex;flex-wrap:wrap;gap:8px}.console-controls h2{flex-basis:100%;margin:0}.console-card :deep(.el-button){margin:0;white-space:nowrap}
+.step-controls{display:flex;flex-wrap:wrap;gap:8px;flex-basis:100%;border-top:1px solid var(--app-border);padding-top:12px;margin-top:4px}
+.console-notice{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.console-notice span{margin-left:auto;color:var(--app-primary-dark);font-size:13px}.console-notice p{flex-basis:100%}
+.console-tabs{display:flex;gap:8px}.console-tabs button{flex:1;padding:12px;border-radius:12px;border:1px solid var(--app-border);background:var(--app-surface);color:var(--app-text);font:inherit;cursor:pointer}.console-tabs button[aria-selected=true]{background:var(--app-primary-soft);border-color:var(--app-primary);font-weight:700}
+.console-status{font-size:12px;color:var(--app-muted);align-self:center}
+.next-teaching-step{display:grid;gap:8px;padding-top:12px;border-top:1px solid var(--app-border);line-height:1.7}.next-teaching-step small{color:var(--app-muted)}
+.teacher-hint-bar{display:flex;flex-wrap:wrap;gap:10px;border-radius:16px;padding:14px;background:var(--app-surface);border:1px solid var(--app-border);margin:0}.teacher-hint{flex:1 1 260px;display:flex;gap:10px;line-height:1.6}.voice-status,.voice-detail{white-space:nowrap}
+.teaching-suggestion{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.teaching-suggestion p{flex-basis:100%}
+@media(max-width:1100px){.workspace{grid-template-columns:190px minmax(0,1fr) minmax(0,1fr);gap:12px}.classroom{padding:12px}}
+@media(max-width:800px){.workspace,.workspace.flow-collapsed{grid-template-columns:1fr}.workspace :deep(.step-sidebar.collapsed){width:100%}.console-status{flex-basis:100%}}
 </style>

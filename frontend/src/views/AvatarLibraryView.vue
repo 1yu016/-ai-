@@ -50,6 +50,7 @@ let previewGeneration = 0
 const classes = ref<SchoolClass[]>([])
 const plans = ref<LessonPlan[]>([])
 const previewUrls = reactive<Record<number, string>>({})
+const previewErrors = reactive<Record<number, boolean>>({})
 
 const characterForm = reactive({ name: '', category: 'teacher_assistant', description: '' })
 const voiceForm = reactive({ provider: 'system', voiceId: 'default-child-safe', language: 'zh-CN', speed: 1, volume: 1, pitch: 0, status: 'active' as 'active' | 'disabled' | 'unavailable' })
@@ -78,6 +79,7 @@ function report(cause: unknown, fallback: string) { console.error(fallback, caus
 
 function revokePreviews() {
   previewGeneration++
+  Object.keys(previewErrors).forEach(key => delete previewErrors[Number(key)])
   Object.values(previewUrls).forEach((url) => URL.revokeObjectURL(url))
   Object.keys(previewUrls).forEach((key) => delete previewUrls[Number(key)])
 }
@@ -92,7 +94,7 @@ async function loadProtectedPreviews(detail: AvatarCharacterDetail) {
       if (generation !== previewGeneration) return
       previewUrls[asset.id] = URL.createObjectURL(data)
     }
-    catch (cause) { console.error('数字人预览图加载失败：', cause) }
+    catch (cause) { if (generation === previewGeneration) previewErrors[asset.id] = true; console.error('数字人预览图加载失败：', cause) }
   }))
 }
 
@@ -305,12 +307,12 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
 
       <section v-if="selected" class="detail">
         <div class="preview-grid">
-          <div class="panel stage"><DigitalHumanStage /><div class="action-row"><button v-for="action in DIGITAL_HUMAN_ACTIONS" :key="action" @click="playAction(action)">{{ action }}</button></div></div>
+          <div class="panel stage"><DigitalHumanStage :controls="false" /><p class="preview-role-name">{{ selected.name }}</p><div class="action-row"><button v-for="action in DIGITAL_HUMAN_ACTIONS" :key="action" @click="playAction(action)">{{ action }}</button></div></div>
           <div class="panel images">
             <h2>安全预览</h2>
             <div class="image-pair">
-              <figure><img v-if="firstImageAsset('preview') && previewUrls[firstImageAsset('preview')!.id]" :src="previewUrls[firstImageAsset('preview')!.id]" alt="角色预览图"><div v-else class="placeholder">暂无预览图</div><figcaption>角色预览</figcaption></figure>
-              <figure><img v-if="firstImageAsset('fallback_2d') && previewUrls[firstImageAsset('fallback_2d')!.id]" :src="previewUrls[firstImageAsset('fallback_2d')!.id]" alt="2D备用角色"><div v-else class="placeholder">程序化角色兜底</div><figcaption>2D备用图</figcaption></figure>
+              <figure><img v-if="firstImageAsset('preview') && !previewErrors[firstImageAsset('preview')!.id] && previewUrls[firstImageAsset('preview')!.id]" :src="previewUrls[firstImageAsset('preview')!.id]" alt="角色预览图" @error="previewErrors[firstImageAsset('preview')!.id] = true"><div v-else class="placeholder" role="status">{{ firstImageAsset('preview') ? (previewErrors[firstImageAsset('preview')!.id] ? '图片加载失败，请刷新重试' : '图片加载中…') : '暂无预览图' }}</div><figcaption>角色预览</figcaption></figure>
+              <figure><img v-if="firstImageAsset('fallback_2d') && !previewErrors[firstImageAsset('fallback_2d')!.id] && previewUrls[firstImageAsset('fallback_2d')!.id]" :src="previewUrls[firstImageAsset('fallback_2d')!.id]" alt="2D备用角色" @error="previewErrors[firstImageAsset('fallback_2d')!.id] = true"><div v-else class="placeholder" role="status">{{ firstImageAsset('fallback_2d') ? (previewErrors[firstImageAsset('fallback_2d')!.id] ? '图片加载失败，请刷新重试' : '图片加载中…') : '程序化角色兜底' }}</div><figcaption>2D备用图</figcaption></figure>
             </div>
             <p class="muted">加载顺序：VRM → GLB → 2D备用图 / 程序化角色。</p>
           </div>
@@ -360,4 +362,4 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
 
 <style scoped>
 .page-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.page-head h1{margin:0 0 7px}.toolbar{display:flex;gap:10px;align-items:center;margin:22px 0}.toolbar select,.form-grid input,.form-grid select,.form-grid textarea,.binding-row select,.admin-tools input,.admin-tools select{border:1px solid #ead7c8;border-radius:11px;background:#fff;color:#60483e;padding:9px 11px}.secondary,.action-row button,.version-row button,.button-row button{border:1px solid #e8cbb8;background:#fff;color:#9a6248;border-radius:10px;padding:8px 12px;cursor:pointer}.workspace{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start}.role-list{display:grid;gap:8px;position:sticky;top:20px;max-height:calc(100dvh - 150px);overflow:auto}.role-card{border:0;background:#fff8f0;border-radius:13px;padding:11px;display:flex;gap:10px;text-align:left;color:#634c41;cursor:pointer}.role-card.active{background:#ffe3d0;box-shadow:inset 0 0 0 2px #e9976e}.role-card small{display:block;margin-top:4px;color:#a17f6d}.role-icon{font-size:28px}.detail{display:grid;gap:16px}.preview-grid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(280px,1fr);gap:16px}.stage{min-height:350px}.stage :deep(.digital-human){height:280px;max-width:320px}.action-row{display:flex;gap:5px;flex-wrap:wrap;justify-content:center;margin-top:8px}.action-row button{font-size:11px;padding:5px 8px}.images h2,.form-grid h2,.bindings h2,.admin-tools h2{grid-column:1/-1;margin:0 0 8px}.image-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}.image-pair figure{margin:0}.image-pair img,.placeholder{width:100%;aspect-ratio:1;object-fit:contain;border-radius:12px;background:#fff6eb}.placeholder{display:grid;place-items:center;color:#af8e7c}.image-pair figcaption{text-align:center;margin-top:6px;color:#8b6e5f}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.form-grid label{display:grid;gap:6px;font-size:13px}.form-grid textarea{min-height:74px;resize:vertical}.form-grid .wide,.form-grid .button-row{grid-column:1/-1}.button-row{display:flex;gap:9px;flex-wrap:wrap}.bindings{display:grid;gap:10px}.binding-row,.upload-row,.version-row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.binding-row select{min-width:240px}.version-row{padding:10px 0;border-top:1px solid #f0e2d8}.version-row span:first-child{font-weight:700}.notice{padding:10px 13px;border-radius:11px}.notice.error{background:#ffebeb;color:#a83e3e}.notice.success{background:#e9f7ec;color:#397c50}.notice.warning{background:#fff3dc;color:#93651e}.danger{color:#bd4f4f!important;border-color:#e9b2b2!important}.empty,.empty-main{padding:40px;text-align:center;color:#a38270}.button:disabled,button:disabled{opacity:.5;cursor:not-allowed}@media(max-width:900px){.workspace,.preview-grid{grid-template-columns:1fr}.role-list{position:static;max-height:none}.form-grid{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}}
-</style>
+.preview-role-name{text-align:center;font-weight:700;color:var(--app-text)}.image-pair .placeholder{box-sizing:border-box;min-height:160px;padding:16px;text-align:center;border:1px dashed var(--app-border);background:var(--app-surface-soft);color:var(--app-muted)}.image-pair img{display:block;max-width:100%}</style>

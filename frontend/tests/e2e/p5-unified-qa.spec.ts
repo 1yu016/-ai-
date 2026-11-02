@@ -108,10 +108,25 @@ test('integrated seed lesson: review gate, actual screen captions, media exit an
   await mobile.getByRole('button', { name: '登录', exact: true }).click()
   await expect(mobile).toHaveURL(/classroom\/remote$/)
   await expect(mobile.getByText('实时在线', { exact: true })).toBeVisible()
+  for (const [width,height] of [[360,800],[375,812],[390,844],[430,932]]) {
+    await mobile.setViewportSize({width:width!,height:height!})
+    await mobile.screenshot({path:info.outputPath('compact-'+width+'x'+height+'.png')})
+    expect(await mobile.evaluate('document.documentElement.scrollWidth <= innerWidth')).toBeTruthy()
+  }
+  const beforePanels = await (await request.get('/classroom-runs/' + runId, { headers: teacher })).json()
+  await mobile.getByRole('button',{name:'🎲 点名',exact:true}).click()
+  await expect(mobile.getByRole('button',{name:'🎲 随机点名',exact:true})).toBeVisible()
+  await mobile.getByRole('button',{name:'语音控制',exact:true}).click()
+  await expect(mobile.getByText('手机端暂不支持教师语音识别。',{exact:false})).toBeVisible()
+  const afterPanels = await (await request.get('/classroom-runs/' + runId, { headers: teacher })).json()
+  expect(afterPanels.version).toBe(beforePanels.version)
+  expect(afterPanels.playerRecoverySuggestion).toEqual(beforePanels.playerRecoverySuggestion)
+
   await page.getByRole('button', { name: '展示本环节课件', exact: true }).click()
   await expect(screen.locator('.resource-player')).toBeVisible()
   const mobileQa = mobile.getByRole('region', { name: '教师控制儿童自由问答' })
-  await expect(mobile.locator('em')).toHaveText('paused')
+  await expect(mobile.locator('em')).toHaveText('媒体已暂停')
+  await mobile.getByRole('button', {name:'问答',exact:true}).click()
   const startedOnMobile = mobile.waitForResponse(response => new URL(response.url()).pathname === '/classroom-mobile/commands' && response.request().postDataJSON()?.operation === 'child_qa_start')
   await mobileQa.getByRole('button', { name: '教师开启儿童问答', exact: true }).click()
   const startResponse = await startedOnMobile
@@ -121,6 +136,11 @@ test('integrated seed lesson: review gate, actual screen captions, media exit an
     await mobileQa.getByRole('button', { name: '教师开启儿童问答', exact: true }).click()
   }
   await expect(mobileQa.getByLabel('儿童问题', { exact: true })).toBeVisible()
+  for (const [width, height] of [[360,800],[375,812],[390,844],[430,932]]) {
+    await mobile.setViewportSize({width:width!,height:height!})
+    await mobile.screenshot({path: info.outputPath((process.env.MOBILE_UI_PHASE || 'after') + '-' + width + 'x' + height + '.png'),fullPage:true})
+    expect(await mobile.evaluate('document.documentElement.scrollWidth <= innerWidth')).toBeTruthy()
+  }
   await expect(screen.locator('.resource-player')).toHaveCount(0)
   await mobileQa.getByLabel('儿童问题', { exact: true }).fill('种子不浇水会怎样')
   await mobileQa.getByRole('button', { name: '提交儿童问题', exact: true }).click()
@@ -132,6 +152,7 @@ test('integrated seed lesson: review gate, actual screen captions, media exit an
   await screen.screenshot({ path: info.outputPath('mobile-answer-on-screen.png') })
   await mobileQa.getByRole('button', { name: '结束儿童问答，恢复教师模式', exact: true }).click()
   await expect(mobileQa.getByRole('button', { name: '教师开启儿童问答', exact: true })).toBeEnabled()
+  await mobile.getByRole('button', {name:'更多工具',exact:true}).click()
   await mobile.getByRole('button', { name: '▶ 播放', exact: true }).click()
   await expect(screen.locator('.resource-player')).toBeVisible()
   await mobile.getByRole('button', { name: '停止媒体', exact: true }).click()
@@ -152,6 +173,8 @@ test('integrated seed lesson: review gate, actual screen captions, media exit an
   const items = Array.isArray(records) ? records : records.items
   expect(items).toHaveLength(6)
   await info.attach('qa-results', { body: JSON.stringify({ runId, results, unrelated: 'teacher_handoff', records: items.length }), contentType: 'application/json' })
+  await page.getByRole('button', { name: '刷新课堂状态', exact: true }).click()
+  await expect(page.getByRole('button', { name: '结束课堂', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: '结束课堂', exact: true }).click()
   await page.getByRole('button', { name: '确认结束', exact: true }).click()
   await expect(page).toHaveURL(/classroom\/lesson\/\d+\/summary$/)

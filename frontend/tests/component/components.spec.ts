@@ -330,7 +330,7 @@ describe('lesson components', () => {
     await flushPromises()
     const expand = wrapper.find('button[aria-label="展开环节导航"]')
     if (expand.exists()) await expand.trigger('click')
-    const next = wrapper.findAll('button').find((button) => button.text().includes('进入下一环节'))!
+    const next = wrapper.findAll('button').find((button) => button.text().includes('下一环节'))!
     expect(next.attributes('disabled')).toBeDefined()
     await wrapper.findAll('button').find((button) => button.text().includes('结束课堂'))!.trigger('click')
     await flushPromises()
