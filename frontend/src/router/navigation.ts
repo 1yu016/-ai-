@@ -59,7 +59,7 @@ export async function navigateBack(
 
   const home: RouteLocationRaw = session.teacherInfo?.userType === 'administrator' || session.teacherInfo?.role === 'admin'
     ? { name: 'admin-dashboard' }
-    : { name: 'my-classes' }
+    : { name: 'teacher-home' }
   if (canAccessLocation(router, home, session)) await router.push(home)
   else await router.push({ name: 'chat' })
 }

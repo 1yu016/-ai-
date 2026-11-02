@@ -105,16 +105,19 @@ export class ArtworkService {
 
   async listRun(actor: JwtTeacherPayload, runId: number, query: ArtworkListQueryDto) {
     const run = await this.requireOwnedRun(actor, runId);
-    return this.page({ classroomRunId: run.id }, query);
+    return this.page(this.scope({ classroomRunId: run.id }, query), query);
   }
 
   async listClass(actor: JwtTeacherPayload, classId: number, query: ArtworkListQueryDto) {
     await this.access.requireClassAccess(actor, classId);
-    return this.page({ classId }, query);
+    return this.page(this.scope({ classId }, query), query);
   }
 
   async file(actor: JwtTeacherPayload, artworkId: number) {
     const artwork = await this.requireOwned(actor, artworkId, false);
+    if (artwork.studentId == null)
+      throw new ForbiddenException('无法确认作品所属幼儿及监护授权');
+    await this.requireGuardianConsents(artwork.studentId);
     return { artwork, path: this.filePath(artwork) };
   }
 
@@ -146,6 +149,10 @@ export class ArtworkService {
     const granted = new Set(rows.filter((item) => item.status === ConsentStatus.Granted).map((item) => item.consentType));
     if (!granted.has(ConsentType.Photo) || !granted.has(ConsentType.Artwork))
       throw new ForbiddenException('监护人尚未同时授予照片和作品使用授权');
+  }
+
+  private scope(base: FindOptionsWhere<StudentArtworkRecord>, query: ArtworkListQueryDto) {
+    return query.studentId != null ? { ...base, studentId: query.studentId } : base;
   }
 
   private async page(where: FindOptionsWhere<StudentArtworkRecord>, query: ArtworkListQueryDto) {

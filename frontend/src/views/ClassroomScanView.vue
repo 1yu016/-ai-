@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import QRCode from 'qrcode'
+import { computed, onMounted, ref, watch } from 'vue'
+import MobilePairingPanel from '@/components/classroom/MobilePairingPanel.vue'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import { platformApi, type ClassDeviceBinding, type SchoolClass } from '@/api/platform'
 import { apiErrorMessage } from '@/api/http'
@@ -10,24 +10,20 @@ const bindings = ref<ClassDeviceBinding[]>([])
 const classId = ref(0)
 const classroomId = ref(0)
 const deviceId = ref(0)
-const ticket = ref('')
-const expiresAt = ref('')
-const qrDataUrl = ref('')
-const qrNetworkHint = ref('')
-const loading = ref(false)
+
+
+
+
+
 const error = ref('')
-const now = ref(Date.now())
-let clockTimer: number | undefined
+let bindingRead = 0
+
+
 
 const selectedBinding = computed(() =>
   bindings.value.find(
     (item) => item.classroomId === classroomId.value && item.deviceId === deviceId.value,
   ),
-)
-const secondsLeft = computed(() =>
-  expiresAt.value
-    ? Math.max(0, Math.ceil((new Date(expiresAt.value).getTime() - now.value) / 1000))
-    : 0,
 )
 const canCreate = computed(() =>
   Boolean(classId.value && classroomId.value && deviceId.value && selectedBinding.value),
@@ -44,13 +40,15 @@ async function loadClasses() {
 }
 
 async function loadBindings(value: number) {
+  const current = ++bindingRead
   bindings.value = []
   classroomId.value = 0
   deviceId.value = 0
-  clearTicket()
+
   if (!value) return
   try {
     const response = await platformApi.classDeviceBindings(value)
+    if (current !== bindingRead || value !== classId.value) return
     bindings.value = response.data.filter((item) => item.device?.type === 'classroom_screen')
   } catch (cause) {
     error.value = apiErrorMessage(cause, '无法加载该班级绑定的大屏。')
@@ -69,72 +67,12 @@ async function refreshDeviceList() {
   }
 }
 
-async function create() {
-  if (!canCreate.value || !selectedBinding.value || loading.value) return
-  loading.value = true
-  error.value = ''
-  try {
-    const result = await platformApi.createTicket({
-      classId: classId.value,
-      classroomId: classroomId.value,
-      deviceId: deviceId.value,
-      expiresInSeconds: 120,
-    })
-    ticket.value = result.data.ticket
-    expiresAt.value = result.data.expiresAt
-    const configuredLanUrl = String(import.meta.env.VITE_LAN_APP_URL || '').trim()
-    const configuredPublicUrl = String(import.meta.env.VITE_PUBLIC_APP_URL || '').trim()
-    const url = new URL('/classroom/join', configuredLanUrl || configuredPublicUrl || window.location.origin)
-    qrNetworkHint.value = ['localhost', '127.0.0.1', '::1'].includes(url.hostname)
-      ? '当前二维码使用本机地址，手机实测前请配置 VITE_PUBLIC_APP_URL 为手机可访问的局域网或正式地址。'
-      : ''
-    url.searchParams.set('ticket', result.data.ticket)
-    url.searchParams.set('deviceCode', result.data.deviceCode)
-    qrDataUrl.value = await QRCode.toDataURL(url.toString(), {
-      errorCorrectionLevel: 'M',
-      margin: 2,
-      width: 320,
-      color: { dark: '#3f544c', light: '#ffffff' },
-    })
-  } catch (cause) {
-    clearTicket()
-    error.value = apiErrorMessage(cause, '二维码生成失败，请检查设备绑定及状态。')
-  } finally {
-    loading.value = false
-  }
-}
-
-
-function clearTicket() {
-  ticket.value = ''
-  expiresAt.value = ''
-  qrDataUrl.value = ''
-  qrNetworkHint.value = ''
-}
-
 watch(classId, (value) => void loadBindings(value))
 watch(classroomId, () => {
   deviceId.value = 0
-  clearTicket()
-})
-watch(deviceId, () => {
-  clearTicket()
-})
-watch(secondsLeft, (value) => {
-  if (ticket.value && value === 0) {
-    clearTicket()
-  }
-})
 
-onMounted(() => {
-  void loadClasses()
-  clockTimer = window.setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
 })
-onBeforeUnmount(() => {
-  if (clockTimer !== undefined) window.clearInterval(clockTimer)
-})
+onMounted(() => void loadClasses())
 </script>
 
 <template>
@@ -180,25 +118,12 @@ onBeforeUnmount(() => {
             </option>
           </select>
         </label>
-        <button class="button" type="button" :disabled="!canCreate || loading" @click="create">
-          {{ loading ? '生成中…' : ticket ? '刷新二维码' : '生成扫码二维码' }}
-        </button>
         <p v-if="error" class="bad">{{ error }}</p>
         <p v-if="deviceId" class="device-hint">本页只生成配对二维码，不维持设备在线。请在教室大屏打开
           <a :href="`/classroom/screen/${deviceId}`" target="_blank" rel="noopener">正式课堂大屏页面</a>，由设备会话心跳证明在线。
         </p>
 
-        <div v-if="qrDataUrl" class="ticket" aria-live="polite">
-          <div class="qr-shell"><img :src="qrDataUrl" alt="教师扫码进入课堂二维码" /></div>
-          <div class="ticket-copy">
-            <strong>请使用教师手机扫码</strong>
-            <p>扫码后会先检查登录状态、班级权限和设备绑定，再进入课堂准备。</p>
-            <small>剩余有效时间：{{ secondsLeft }} 秒</small>
-            <span class="secure">二维码不包含教师登录 Token，使用一次后立即失效</span>
-            <span v-if="qrNetworkHint" class="network-hint">{{ qrNetworkHint }}</span>
-            <button class="button secondary" type="button" :disabled="loading" @click="create">刷新二维码</button>
-          </div>
-        </div>
+        <MobilePairingPanel v-if="canCreate" :key="`${classId}:${classroomId}:${deviceId}`" :class-id="classId" :classroom-id="classroomId" :device-id="deviceId" />
       </section>
     </main>
   </ManagementLayout>
@@ -209,3 +134,5 @@ onBeforeUnmount(() => {
 .network-hint{padding:10px 12px;border-radius:10px;background:#fff3da;color:#9a642a;font-size:13px;line-height:1.5}
 .device-hint{grid-column:1/-1;color:var(--app-muted);line-height:1.6}.device-hint a{color:var(--app-primary-dark)}
 </style>
+
+<style scoped>.scan-form :deep(.pairing-panel){grid-column:1 / -1}</style>

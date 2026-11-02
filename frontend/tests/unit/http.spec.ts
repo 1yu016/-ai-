@@ -53,6 +53,42 @@ function installFakeXhr(body: Record<string, unknown>, status = 200, onCall?: ()
   vi.stubGlobal('XMLHttpRequest', FakeXHR as unknown as typeof XMLHttpRequest)
 }
 
+// 模拟断网：XHR 无响应直接触发 onerror。
+function installOfflineXhr() {
+  class OfflineXHR {
+    readyState = 0
+    status = 0
+    statusText = ''
+    responseText = ''
+    response = ''
+    onreadystatechange: (() => void) | null = null
+    onabort: (() => void) | null = null
+    onerror: (() => void) | null = null
+
+    open(): void {}
+
+    setRequestHeader(): void {}
+
+    getAllResponseHeaders(): string {
+      return ''
+    }
+
+    getResponseHeader(): string | null {
+      return null
+    }
+
+    send(): void {
+      setTimeout(() => this.onerror?.(), 0)
+    }
+
+    abort(): void {
+      this.readyState = 0
+      this.onabort?.()
+    }
+  }
+  vi.stubGlobal('XMLHttpRequest', OfflineXHR as unknown as typeof XMLHttpRequest)
+}
+
 function seededLogin(): void {
   localStorage.setItem(USER_STORAGE_KEYS.accessToken, 'expired-token')
   localStorage.setItem(USER_STORAGE_KEYS.refreshToken, 'refresh-1')
@@ -248,6 +284,46 @@ describe('HTTP interceptors', () => {
 
     expect(refreshCalls).toBe(0)
     expect(user.isLogin).toBe(true)
+  })
+
+  it('CASE E: network failure during refresh keeps the session instead of logging out', async () => {
+    seededLogin()
+    const user = useUserStore(pinia)
+    installOfflineXhr()
+
+    const error = { config: { url: '/lesson-plans' }, response: { status: 401, data: { message: 'expired' } }, statusText: 'Unauthorized', headers: {}, isAxiosError: true, toJSON: () => ({}) }
+    await expect(http.get('/lesson-plans', { adapter: async () => Promise.reject(error) })).rejects.toBe(error)
+    await new Promise((resolve) => window.setTimeout(resolve, 20))
+
+    expect(user.isLogin).toBe(true)
+    expect(localStorage.getItem(USER_STORAGE_KEYS.refreshToken)).toBe('refresh-1')
+  })
+
+  it('CASE F: adopts the token another tab already refreshed instead of rotating the old one', async () => {
+    seededLogin()
+    const user = useUserStore(pinia)
+    let refreshCalls = 0
+    installFakeXhr({ access_token: 'tab-refreshed' }, 200, () => { refreshCalls += 1 })
+
+    // 另一个标签页在本次 401 之前已完成续期并写回 localStorage。
+    localStorage.setItem(USER_STORAGE_KEYS.accessToken, 'tab-refreshed')
+    localStorage.setItem(USER_STORAGE_KEYS.refreshToken, 'refresh-2')
+
+    let calls = 0
+    const result = await http.get('/lesson-plans', {
+      adapter: async (config) => {
+        calls += 1
+        if (calls === 1) {
+          return Promise.reject({ config, response: { status: 401, data: { message: 'expired' } }, statusText: 'Unauthorized', headers: {}, isAxiosError: true, toJSON: () => ({}) })
+        }
+        return response(config)
+      },
+    })
+
+    expect(result.data).toEqual({ ok: true })
+    expect(calls).toBe(2)
+    expect(refreshCalls).toBe(0)
+    expect(user.accessToken).toBe('tab-refreshed')
   })
 
   it.each([

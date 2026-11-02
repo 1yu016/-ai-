@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiErrorMessage, http } from '@/api/http'
+import { classroomRequestId } from '@/services/classroomCommandBus'
 
 export const LESSON_AGE_GROUPS = ['3-4', '4-5', '5-6'] as const
 export const LESSON_STATUSES = ['draft', 'ready', 'archived'] as const
@@ -53,7 +54,7 @@ function emptyDraft(): LessonDraft {
 }
 
 function editableStep(step: LessonStep): LessonStep {
-  return { ...step, localStepId: crypto.randomUUID(), teacherInstruction: step.teacherInstruction ?? step.instruction ?? '',
+  return { ...step, localStepId: classroomRequestId('lesson-step'), teacherInstruction: step.teacherInstruction ?? step.instruction ?? '',
     studentContent: step.contentReviewRequired === false ? step.studentContent ?? '' : '',
     contentReviewRequired: step.contentReviewRequired !== false }
 }
@@ -81,13 +82,15 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
   const aiDraftId = ref<number | null>(null)
   const steps = computed(() => draft.value.steps ?? [])
 
+  let listRead = 0
   async function fetchList() {
+    const generation = ++listRead
     loading.value = true; error.value = ''
     try {
       const { data } = await http.get<{ items: LessonPlan[]; total: number }>('/lesson-plans', { params: { page: page.value, pageSize: pageSize.value, keyword: keyword.value || undefined, ageGroup: ageGroup.value || undefined, status: status.value || undefined } })
-      items.value = data.items; total.value = data.total
-    } catch (cause) { console.error('加载教案失败：', cause); error.value = apiErrorMessage(cause, '教案加载失败，请稍后重试。') }
-    finally { loading.value = false }
+      if (generation === listRead) { items.value = data.items; total.value = data.total }
+    } catch (cause) { if (generation === listRead) { console.error('加载教案失败：', cause); error.value = apiErrorMessage(cause, '教案加载失败，请稍后重试。') } }
+    finally { if (generation === listRead) loading.value = false }
   }
 
   function newDraft() { aiProvenance.value = []; editRevision.value++; current.value = null; aiDraftId.value = null; draft.value = emptyDraft(); dirty.value = false; changeSummary.value = ''; versions.value = []; pendingSave = null }
@@ -99,9 +102,9 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
     finally { loading.value = false }
   }
   function markDirty() { dirty.value = true; editRevision.value++ }
-  function addStep(step?: Partial<LessonStep>) { steps.value.push({ localStepId: crypto.randomUUID(), sortOrder: steps.value.length + 1, title: step?.title ?? '', stepType: step?.stepType ?? 'teacher_talk', instruction: step?.instruction ?? '', expectedResponse: step?.expectedResponse ?? '', teacherTip: step?.teacherTip ?? '', resourceId: step?.resourceId ?? null, durationSeconds: step?.durationSeconds ?? 120 }); normalizeOrder(); markDirty() }
+  function addStep(step?: Partial<LessonStep>) { steps.value.push({ localStepId: classroomRequestId('lesson-step'), sortOrder: steps.value.length + 1, title: step?.title ?? '', stepType: step?.stepType ?? 'teacher_talk', instruction: step?.instruction ?? '', expectedResponse: step?.expectedResponse ?? '', teacherTip: step?.teacherTip ?? '', resourceId: step?.resourceId ?? null, durationSeconds: step?.durationSeconds ?? 120 }); normalizeOrder(); markDirty() }
   function removeStep(index: number) { steps.value.splice(index, 1); normalizeOrder(); markDirty() }
-  function copyStep(index: number) { const source = steps.value[index]; if (!source) return; steps.value.splice(index + 1, 0, { ...JSON.parse(JSON.stringify(source)), id: undefined, localStepId: crypto.randomUUID() }); normalizeOrder(); markDirty() }
+  function copyStep(index: number) { const source = steps.value[index]; if (!source) return; steps.value.splice(index + 1, 0, { ...JSON.parse(JSON.stringify(source)), id: undefined, localStepId: classroomRequestId('lesson-step') }); normalizeOrder(); markDirty() }
   function moveStep(index: number, offset: -1 | 1) { const target = index + offset; if (target < 0 || target >= steps.value.length) return; const [step] = steps.value.splice(index, 1); if (step) steps.value.splice(target, 0, step); normalizeOrder(); markDirty() }
   function normalizeOrder() { steps.value.forEach((step, index) => { step.sortOrder = index + 1 }) }
 
@@ -125,12 +128,12 @@ export const useLessonPlanStore = defineStore('lessonPlan', () => {
           teacherTip: step.teacherTip,
           resourceId: step.resourceId,
           durationSeconds: step.durationSeconds,
-          actions: step.actions?.map(action => ({ ...action, content: action.content ?? undefined, targetStudentId: action.targetStudentId ?? undefined })),
-          recoveryPoint: step.recoveryPoint ? { ...step.recoveryPoint, prompt: step.recoveryPoint.prompt ?? undefined } : undefined,
+          actions: step.actions?.map(action => ({ actionType: action.actionType, actionName: action.actionName, content: action.content ?? undefined, targetStudentId: action.targetStudentId ?? undefined })),
+          recoveryPoint: step.recoveryPoint ? { name: step.recoveryPoint.name, trigger: step.recoveryPoint.trigger, recoveryStepOrder: step.recoveryPoint.recoveryStepOrder, enabled: step.recoveryPoint.enabled, prompt: step.recoveryPoint.prompt ?? undefined } : undefined,
         })),
       }
       const fingerprint = JSON.stringify({ id: current.value?.id, payload })
-      if (pendingSave?.fingerprint !== fingerprint) pendingSave = { fingerprint, requestId: crypto.randomUUID() }
+      if (pendingSave?.fingerprint !== fingerprint) pendingSave = { fingerprint, requestId: classroomRequestId('lesson-step') }
       const body = { ...payload, requestId: pendingSave.requestId }
       const { data: plan } = current.value
         ? await http.put<LessonPlan>(`/lesson-plans/${current.value.id}/authoring`, body)

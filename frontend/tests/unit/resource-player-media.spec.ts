@@ -68,6 +68,20 @@ async function openVideo(store: ReturnType<typeof useResourcePlayerStore>, serve
 }
 
 describe('ResourcePlayer protected media blob lifecycle', () => {
+  it('offers a classroom return action that closes the active big-screen resource', async () => {
+    mocks.fetchBlob.mockResolvedValue({ url: 'blob:classroom-return', revoke: vi.fn() })
+    const wrapper = mount(ResourcePlayer, { props: { resources: [], showClose: true }, global: { plugins: [ElementPlus] } })
+    const store = useResourcePlayerStore()
+    store.openResource(normalizeServerResource(videoResource)!, false, { runId: 9, deviceId: 1, presentationCommandId: 'screen-play', presentationRevision: 1 })
+    store.enterClassroomMode()
+    await flushPromises()
+    await wrapper.get('[aria-label="返回课堂"]').trigger('click')
+    await flushPromises()
+    expect(store.currentResource).toBeNull()
+    expect(wrapper.emitted('close-request')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('same resource repeated: detached A events never update B status/progress', async () => {
     mocks.fetchBlob.mockResolvedValue({ url: 'blob:same-resource', revoke: vi.fn() })
     const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
@@ -333,6 +347,7 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
   })
 
   it('renders a protected PDF through an authenticated blob URL', async () => {
+    mocks.fetchManifest.mockResolvedValue({ status: 'ready', mode: 'source', assets: [] })
     const pdf: ServerResource = {
       ...videoResource,
       id: 21,
@@ -391,6 +406,24 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     expect(mocks.fetchPreview).toHaveBeenLastCalledWith(22, 'page-2.png')
     expect(wrapper.get('img.stage-image').attributes('src')).toBe('blob:ppt-page-2')
     expect(revokeFirst).toHaveBeenCalled()
+  })
+
+  it('restores a formal PDF page while its image preview manifest is still loading', async () => {
+    let resolveManifest!: (value: unknown) => void
+    mocks.fetchManifest.mockImplementationOnce(() => new Promise(resolve => { resolveManifest = resolve }))
+    mocks.fetchPreview.mockImplementation(async (_id: number, name: string) => ({ url: `blob:${name}`, revoke: vi.fn() }))
+    const wrapper = mount(ResourcePlayer, { props: { resources: [] }, global: { plugins: [ElementPlus] } })
+    const store = useResourcePlayerStore()
+    store.openResource(normalizeServerResource({ ...videoResource, id: 24, resourceType: 'pdf', fileName: 'seed.pdf', mimeType: 'application/pdf' })!, false)
+    await flushPromises()
+    store.restorePlayerState({ pageIndex: 2 })
+    resolveManifest({ status: 'ready', mode: 'images', assets: [{ name: 'page-001.png' }, { name: 'page-002.png' }] })
+    await flushPromises()
+    expect(store.pageIndex).toBe(2)
+    expect(mocks.fetchPreview).toHaveBeenLastCalledWith(24, 'page-002.png')
+    expect(wrapper.get('img.stage-image').attributes('src')).toBe('blob:page-002.png')
+    expect(wrapper.find('iframe').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('never opens an unconverted PPT source in an iframe', async () => {

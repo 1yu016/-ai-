@@ -142,7 +142,8 @@ export type AdminDashboard = {
   classes: number
   students: number
   devices: { total: number; online: number; offline: number }
-  classrooms: { today: number; active: number; abnormal: number }
+  classrooms: { today: number; active: number; abnormal: number; completed: number }
+  classroomRecords: { completedRuns: number; formalSummaries: number }
   resources: { pending: number; disabled: number }
   ai: {
     total: number
@@ -151,6 +152,9 @@ export type AdminDashboard = {
     successRate: number
     errorRate: number
     averageLatencyMs: number
+    lessonPreparationCalls: number
+    resourceMatchingRequests: number
+    classroomSummaryCalls: number
   }
   storage: { indexedResourceBytes: number; physicalBytes: number }
 }

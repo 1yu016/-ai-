@@ -2,7 +2,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { pinia } from '@/stores'
-import { useUserStore } from '@/stores/user'
+import { USER_STORAGE_KEYS, useUserStore } from '@/stores/user'
 
 const PUBLIC_VISITOR_ENDPOINTS = new Set([
   '/ai/chat',
@@ -37,37 +37,94 @@ const refreshClient = axios.create({
 })
 
 // 单飞(single-flight)：并发多个 401 时共享同一次刷新请求。
-let refreshPromise: Promise<boolean> | null = null
+let refreshPromise: Promise<RefreshOutcome> | null = null
 let authRedirectPromise: Promise<unknown> | null = null
 let forbiddenRedirectPromise: Promise<unknown> | null = null
 
-function refreshAccessToken(): Promise<boolean> {
-  if (!refreshPromise) {
-    const userStore = useUserStore(pinia)
-    const refreshToken = userStore.refreshToken
-    if (!refreshToken) {
-      refreshPromise = Promise.resolve(false)
-    } else {
-      refreshPromise = refreshClient
-        .post('/auth/refresh', { refreshToken })
-        .then((response) => {
-          const data: {
-            access_token?: string
-            refresh_token?: string
-          } = response.data ?? {}
-          if (typeof data.access_token === 'string' && data.access_token) {
-            userStore.updateTokens(data.access_token, data.refresh_token ?? '')
-            return true
-          }
-          return false
-        })
-        .catch(() => false)
+// 续期结果必须区分「凭证真的失效」和「网络/上游临时异常」，
+// 后者不能把教师踢回登录页，否则合法菜单也会被误报为登录状态已失效。
+type RefreshOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'invalid' | 'network' }
+
+const REFRESH_LOCK_NAME = 'kindergarten-ai-auth-refresh'
+
+type LockManagerLike = {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>
+}
+
+function storedAccessToken(): string {
+  if (typeof localStorage === 'undefined') return ''
+  return localStorage.getItem(USER_STORAGE_KEYS.accessToken)?.trim() || ''
+}
+
+function storedRefreshToken(): string {
+  if (typeof localStorage === 'undefined') return ''
+  return localStorage.getItem(USER_STORAGE_KEYS.refreshToken)?.trim() || ''
+}
+
+// 多个标签页共享 localStorage；另一个标签页完成续期后，本页必须先接受它的新 token，
+// 否则会用已被轮换的旧 refreshToken 再次续期，被服务端判定为失效并整体登出。
+function syncTokensFromStorage(): void {
+  const accessToken = storedAccessToken()
+  if (!accessToken) return
+  const userStore = useUserStore(pinia)
+  if (accessToken === userStore.accessToken) return
+  userStore.updateTokens(accessToken, storedRefreshToken())
+}
+
+function bearerTokenOf(config?: InternalAxiosRequestConfig): string {
+  const header = config?.headers as
+    | ({ get?: (name: string) => unknown } & Record<string, unknown>)
+    | undefined
+  const value = typeof header?.get === 'function'
+    ? header.get('Authorization')
+    : header?.Authorization
+  return typeof value === 'string' ? value.replace(/^Bearer\s+/i, '').trim() : ''
+}
+
+async function performRefresh(refreshToken: string): Promise<RefreshOutcome> {
+  const userStore = useUserStore(pinia)
+  if (!refreshToken) return { ok: false, reason: 'invalid' }
+  try {
+    const response = await refreshClient.post('/auth/refresh', { refreshToken })
+    const data: {
+      access_token?: string
+      refresh_token?: string
+    } = response.data ?? {}
+    if (typeof data.access_token === 'string' && data.access_token) {
+      userStore.updateTokens(data.access_token, data.refresh_token ?? '')
+      return { ok: true }
     }
-    // 无论成功失败都释放单飞锁，避免无 refreshToken 时锁被永久占住。
-    refreshPromise = refreshPromise.finally(() => {
-      refreshPromise = null
-    })
+    return { ok: false, reason: 'invalid' }
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response) {
+      // 服务端已明确拒绝该 refresh token：这是真正的会话失效。
+      // 但如果期间其他标签页已经写入新的 token，则按成功处理，直接重放请求。
+      const latestRefresh = storedRefreshToken()
+      if (latestRefresh && latestRefresh !== refreshToken && storedAccessToken()) {
+        syncTokensFromStorage()
+        return { ok: true }
+      }
+      return { ok: false, reason: 'invalid' }
+    }
+    // 无响应：断网、超时或后端暂时不可达，保留登录态，提示用户稍后重试。
+    return { ok: false, reason: 'network' }
   }
+}
+
+function refreshAccessToken(refreshToken: string): Promise<RefreshOutcome> {
+  if (refreshPromise) return refreshPromise
+
+  const run = () => performRefresh(refreshToken)
+  const locks = typeof navigator !== 'undefined'
+    ? (navigator as Navigator & { locks?: LockManagerLike }).locks
+    : undefined
+  const request = locks ? locks.request(REFRESH_LOCK_NAME, run) : run()
+
+  refreshPromise = request.finally(() => {
+    refreshPromise = null
+  })
   return refreshPromise
 }
 
@@ -141,10 +198,22 @@ http.interceptors.response.use(
 
     if (shouldRefresh) {
       config._retried = true
-      const ok = await refreshAccessToken()
-      if (ok) {
+      const usedToken = bearerTokenOf(config)
+      // 另一个标签页可能已经完成续期：直接接受它的新 token 并重放，避免用旧凭证再续期。
+      syncTokensFromStorage()
+      const latestToken = storedAccessToken()
+      if (latestToken && usedToken && latestToken !== usedToken) {
+        return http.request(config)
+      }
+      const outcome = await refreshAccessToken(storedRefreshToken() || useUserStore(pinia).refreshToken)
+      if (outcome.ok) {
         // 重放原请求；请求拦截器会用新 token 覆盖 Authorization。
         return http.request(config)
+      }
+      if (!outcome.reason || outcome.reason === 'network') {
+        // 网络或后端暂时不可达：保留登录态，不假装会话失效。
+        ElMessage.error('网络异常，暂时无法续期登录，请检查网络后重试')
+        return Promise.reject(error)
       }
     }
 

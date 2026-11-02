@@ -7,6 +7,10 @@ export enum ClassroomCommandSource {
 }
 
 export enum ClassroomCommandOperation {
+  ChildQaStart = 'child_qa_start',
+  ChildQaStop = 'child_qa_stop',
+  ChildQaApprove = 'child_qa_approve',
+  ChildQaReject = 'child_qa_reject',
   PreviousStep = 'previous_step',
   NextStep = 'next_step',
   SwitchStep = 'switch_step',
@@ -48,6 +52,9 @@ export enum ClassroomCommandStatus {
 }
 
 export const MEDIA_CLASSROOM_COMMANDS = new Set<ClassroomCommandOperation>([
+  ClassroomCommandOperation.ChildQaStart,
+  ClassroomCommandOperation.ChildQaStop,
+  ClassroomCommandOperation.ChildQaApprove,
   ClassroomCommandOperation.OpenResource,
   ClassroomCommandOperation.PlayResource,
   ClassroomCommandOperation.PauseMedia,

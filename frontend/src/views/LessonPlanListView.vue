@@ -1,25 +1,28 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ElButton, ElCard, ElMessage, ElMessageBox, ElOption, ElSelect, ElInput, ElTag } from 'element-plus'
+import { ElButton, ElCard, ElMessage, ElMessageBox, ElOption, ElSelect, ElInput, ElTag, ElPagination } from 'element-plus'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { platformApi } from '@/api/platform'
-import { useLessonPlanStore } from '@/stores/lessonPlan'
+import { LESSON_AGE_GROUPS, LESSON_STATUSES, useLessonPlanStore, type LessonAgeGroup, type LessonPlanStatus } from '@/stores/lessonPlan'
 import { withNavigationSource } from '@/router/navigation'
 
 const router = useRouter(); const route = useRoute(); const store = useLessonPlanStore()
-const { items, keyword, ageGroup, status, loading, error } = storeToRefs(store)
+const { items, keyword, ageGroup, status, loading, error, page, pageSize, total } = storeToRefs(store)
 const statusText = { draft: '草稿', ready: '可上课', archived: '已归档' }
 // 从「我的班级 → 开始上课」进入时携带 classId，用于引导选择教案后继续开始上课，并提供返回该班入口。
 const contextClassId = computed(() => (route.query.classId ? Number(route.query.classId) : null))
 const className = ref('')
+let classRead = 0
 async function loadClassName() {
+  const generation = ++classRead
+  className.value = ''
   if (!contextClassId.value) return
   try {
     const result = await platformApi.classDetail(contextClassId.value)
-    className.value = result.data.name
+    if (generation === classRead) className.value = result.data.name
   } catch {
     // 班级名加载失败不阻断备课中心；返回按钮回退到「返回班级」。
   }
@@ -47,7 +50,24 @@ function openEditor(id?: number) {
     query: contextClassId.value ? { classId: String(contextClassId.value) } : {},
   }, route))
 }
-onMounted(() => { void store.fetchList(); void loadClassName() })
+const queryText = (value: unknown) => typeof value === 'string' ? value : ''
+function restoreFilters() {
+  keyword.value = queryText(route.query.keyword)
+  const age = queryText(route.query.ageGroup)
+  ageGroup.value = LESSON_AGE_GROUPS.includes(age as LessonAgeGroup) ? age as LessonAgeGroup : ''
+  const state = queryText(route.query.status)
+  status.value = LESSON_STATUSES.includes(state as LessonPlanStatus) ? state as LessonPlanStatus : ''
+  const value = Number(route.query.page)
+  page.value = Number.isSafeInteger(value) && value > 0 ? value : 1
+  return store.fetchList()
+}
+function queryList(nextPage = 1) {
+  const query = { ...route.query, keyword: keyword.value || undefined, ageGroup: ageGroup.value || undefined, status: status.value || undefined, page: String(nextPage) }
+  if (router.resolve({ query }).fullPath === route.fullPath) return store.fetchList()
+  return router.replace({ query })
+}
+watch(() => route.query, () => { void restoreFilters() }, { immediate: true })
+watch(contextClassId, () => { void loadClassName() }, { immediate: true })
 </script>
 
 <template>
@@ -64,10 +84,11 @@ onMounted(() => { void store.fetchList(); void loadClassName() })
       </template>
     </PageHeader>
 
-    <section class="filters"><ElInput v-model="keyword" clearable placeholder="搜索标题或主题" @keyup.enter="store.fetchList" /><ElSelect v-model="ageGroup" clearable placeholder="年龄段"><ElOption label="3-4岁" value="3-4"/><ElOption label="4-5岁" value="4-5"/><ElOption label="5-6岁" value="5-6"/></ElSelect><ElSelect v-model="status" clearable placeholder="状态"><ElOption label="草稿" value="draft"/><ElOption label="可上课" value="ready"/><ElOption label="已归档" value="archived"/></ElSelect><ElButton :loading="loading" @click="store.fetchList">查询</ElButton></section>
+    <section class="filters"><ElInput v-model="keyword" clearable placeholder="搜索标题或主题" @keyup.enter="queryList()" /><ElSelect v-model="ageGroup" clearable placeholder="年龄段"><ElOption label="3-4岁" value="3-4"/><ElOption label="4-5岁" value="4-5"/><ElOption label="5-6岁" value="5-6"/></ElSelect><ElSelect v-model="status" clearable placeholder="状态"><ElOption label="草稿" value="draft"/><ElOption label="可上课" value="ready"/><ElOption label="已归档" value="archived"/></ElSelect><ElButton :loading="loading" @click="queryList()">查询</ElButton></section>
     <div v-if="error" class="state error">{{ error }} <ElButton @click="store.fetchList">重试</ElButton></div>
     <div v-else-if="!loading && !items.length" class="state"><span>🪴</span><h2>还没有教案</h2><p>从一个熟悉的主题开始，AI 也可以先帮你生成草稿。</p><ElButton type="primary" @click="openEditor()">创建第一份教案</ElButton></div>
-    <section v-else class="grid"><ElCard v-for="plan in items" :key="plan.id" shadow="hover"><template #header><div class="card-head"><h2>{{ plan.title }}</h2><ElTag v-if="plan.stepCount === 0" type="warning">缺少步骤</ElTag><ElTag v-else :type="plan.status === 'ready' ? 'success' : plan.status === 'archived' ? 'info' : 'warning'">{{ statusText[plan.status] }}</ElTag></div></template><p class="theme">{{ plan.theme }}</p><p v-if="plan.stepCount === 0" class="plan-warning">还没有课堂步骤，请先编辑教案。</p><dl><div><dt>年龄段</dt><dd>{{ plan.ageGroup }}岁</dd></div><div><dt>预计时长</dt><dd>{{ plan.estimatedMinutes }}分钟</dd></div><div><dt>更新时间</dt><dd>{{ new Date(plan.updatedAt).toLocaleString() }}</dd></div></dl><div class="actions"><ElButton @click="openEditor(plan.id)">编辑</ElButton><ElButton @click="copy(plan.id)">复制</ElButton><ElButton type="danger" plain @click="remove(plan.id)">删除</ElButton><ElButton type="primary" :disabled="plan.status === 'archived' || plan.stepCount === 0" @click="start(plan.id)">开始上课</ElButton></div></ElCard></section>
+    <section v-else class="grid"><ElCard v-for="plan in items" :key="plan.id" shadow="hover"><template #header><div class="card-head"><h2>{{ plan.title }}</h2><ElTag v-if="plan.stepCount === 0" type="warning">缺少步骤</ElTag><ElTag v-else :type="plan.status === 'ready' ? 'success' : plan.status === 'archived' ? 'info' : 'warning'">{{ statusText[plan.status] }}</ElTag></div></template><p class="theme">{{ plan.theme }}</p><p v-if="plan.stepCount === 0" class="plan-warning">还没有课堂步骤，请先编辑教案。</p><dl><div><dt>年龄段</dt><dd>{{ plan.ageGroup }}岁</dd></div><div><dt>预计时长</dt><dd>{{ plan.estimatedMinutes }}分钟</dd></div><div><dt>更新时间</dt><dd>{{ new Date(plan.updatedAt).toLocaleString() }}</dd></div></dl><div class="actions"><ElButton @click="openEditor(plan.id)">编辑</ElButton><ElButton @click="copy(plan.id)">复制</ElButton><ElButton type="danger" plain @click="remove(plan.id)">删除</ElButton><ElButton type="primary" :disabled="plan.status === 'archived' || plan.stepCount === 0" @click="start(plan.id)">准备上课</ElButton></div></ElCard></section>
+    <ElPagination v-if="total > pageSize" class="lesson-pagination" :current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next, total" @current-change="queryList" />
   </ManagementLayout>
 </template>
 
@@ -83,6 +104,7 @@ dl div{display:flex;justify-content:space-between}
 dt{color:#967f70}
 dd{margin:0}
 .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.lesson-pagination{max-width:1280px;margin:24px auto;flex-wrap:wrap}
 .state{max-width:700px;margin:12vh auto;text-align:center;padding:40px;border-radius:20px;background:#fff}
 .state>span{font-size:48px}
 .state.error{color:#bb4848}

@@ -26,6 +26,8 @@ const cards = computed(() => data.value ? [
   { label: '今日课堂', value: data.value.classrooms.today, hint: '按服务端时间统计' },
   { label: '进行中课堂', value: data.value.classrooms.active, hint: '准备、运行或暂停' },
   { label: '异常课堂', value: data.value.classrooms.abnormal, hint: '需要管理员排查' },
+  { label: '已完成课堂', value: data.value.classrooms.completed ?? '—', hint: '全部历史课堂运行' },
+  { label: '教师确认总结', value: data.value.classroomRecords?.formalSummaries ?? '—', hint: '已保存的正式课后总结' },
   { label: '待审核资源', value: data.value.resources.pending, hint: `已停用 ${data.value.resources.disabled} 项` },
 ] : [])
 
@@ -80,7 +82,18 @@ onMounted(load)
               <div><dt>成功率</dt><dd class="good">{{ data.ai.successRate }}%</dd></div>
               <div><dt>错误率</dt><dd :class="{ danger: data.ai.errorRate > 10 }">{{ data.ai.errorRate }}%</dd></div>
               <div><dt>平均耗时</dt><dd>{{ data.ai.averageLatencyMs }} ms</dd></div>
+              <div><dt>AI备课调用</dt><dd>{{ data.ai.lessonPreparationCalls ?? '—' }}</dd></div>
+              <div><dt>资源匹配请求</dt><dd>{{ data.ai.resourceMatchingRequests ?? '—' }}</dd></div>
+              <div><dt>课后总结生成</dt><dd>{{ data.ai.classroomSummaryCalls ?? '—' }}</dd></div>
             </dl>
+          </article>
+          <article class="panel">
+            <h2>教学分析使用量</h2>
+            <dl>
+              <div><dt>完成课堂运行</dt><dd>{{ data.classroomRecords?.completedRuns ?? '—' }}</dd></div>
+              <div><dt>正式总结</dt><dd>{{ data.classroomRecords?.formalSummaries ?? '—' }}</dd></div>
+            </dl>
+            <p class="note">AI计数来自既有 AI 调用日志；资源匹配仅从本次开始记录，不回填历史推测值。范围为当前管理员可见园所的累计记录。</p>
           </article>
           <article class="panel">
             <h2>存储使用</h2>

@@ -63,15 +63,19 @@ try {
   const backendRoot = resolve(projectRoot, '..', 'backend')
   const backendPort = process.env.E2E_BACKEND_PORT || String(await freePort())
   const frontendPort = process.env.E2E_FRONTEND_PORT || String(await freePort())
+  const qrOrigin = process.env.E2E_LAN_HOST ? 'http://' + process.env.E2E_LAN_HOST + ':' + frontendPort : ''
   const testEnv = {
     ...process.env,
     E2E_BACKEND_PORT: backendPort,
     E2E_FRONTEND_PORT: frontendPort,
     E2E_EXTERNAL_SERVERS: '1',
+    E2E_QR_ORIGIN: qrOrigin,
   }
   const backendEnv = {
     ...testEnv,
     PORT: backendPort,
+    DB_SYNCHRONIZE: 'false',
+    DB_MIGRATIONS_RUN: 'false',
     DATABASE_PATH: resolve(target, 'e2e.sqlite'),
     RESOURCE_UPLOAD_ROOT_PATH: resolve(target, 'uploads'),
     RESOURCE_UPLOAD_PATH: resolve(target, 'uploads', 'resources'),
@@ -87,8 +91,13 @@ try {
     ARK_ENDPOINT_ID: 'e2e-placeholder-model',
     // Browser regression verifies the safe summary fallback, not a paid model.
     CLASSROOM_SUMMARY_AI_ENABLED: 'false',
+    QUESTION_MAP_AI_ENABLED: 'false',
     AI_REQUEST_TIMEOUT_MS: '1000',
   }
+  const migration = spawnSync(process.execPath, ['-r', 'ts-node/register/transpile-only', 'scripts/migrate-database.ts'], {
+    cwd: backendRoot, env: backendEnv, stdio: 'inherit',
+  })
+  if (migration.status !== 0) throw new Error('Isolated database migration failed; browser services were not started')
   backendProcess = spawn(process.execPath, [resolve(backendRoot, 'dist', 'main.js')], {
     cwd: backendRoot,
     env: backendEnv,
@@ -99,7 +108,7 @@ try {
     [
       resolve(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js'),
       '--host',
-      '127.0.0.1',
+      qrOrigin ? '0.0.0.0' : '127.0.0.1',
       '--port',
       frontendPort,
     ],
@@ -107,6 +116,7 @@ try {
       cwd: projectRoot,
       env: {
         ...testEnv,
+        ...(qrOrigin ? { VITE_LAN_APP_URL: qrOrigin } : {}),
         VITE_BACKEND_PROXY_TARGET: `http://127.0.0.1:${backendPort}`,
       },
       stdio: 'inherit',

@@ -81,7 +81,7 @@ describe('统一返回规则', () => {
     const router = { resolve: resolver.resolve.bind(resolver), push, back } as unknown as typeof resolver
     const route = resolver.currentRoute.value
     await navigateBack(router, route, { isLogin: true, teacherInfo: teacher })
-    expect(push).toHaveBeenCalledWith({ name: 'my-classes' })
+    expect(push).toHaveBeenCalledWith({ name: 'teacher-home' })
     expect(back).not.toHaveBeenCalled()
   })
 

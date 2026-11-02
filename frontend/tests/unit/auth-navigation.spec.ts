@@ -56,7 +56,7 @@ describe('登录生命周期路由决策', () => {
       isAdmin: true,
       teacherInfo: administrator,
     })).toEqual({ name: 'admin-dashboard' })
-    expect(workspaceHome(teacher)).toEqual({ name: 'my-classes' })
-    expect(safeInternalRedirect('//example.com', workspaceHome(teacher))).toEqual({ name: 'my-classes' })
+    expect(workspaceHome(teacher)).toEqual({ name: 'teacher-home' })
+    expect(safeInternalRedirect('//example.com', workspaceHome(teacher))).toEqual({ name: 'teacher-home' })
   })
 })

@@ -11,6 +11,37 @@ export type ClassroomTimelineItem = {
   details?: Record<string, unknown>
 }
 
+export type ClassroomAnalysis = {
+  actualRunSeconds: number
+  plannedRunSeconds: number
+  stepTimings: Array<{
+    stepIndex: number
+    title: string
+    durationSeconds: number
+    actualSeconds: number | null
+    deviationSeconds: number | null
+    variance: 'short' | 'within_plan' | 'over' | 'unknown'
+    coverage: 'measured' | 'incomplete'
+  }>
+  stepIndexJumps: Array<{ from: number; to: number; at: string }>
+  completedResources: Array<{ resourceId: number; title: string; completedCount: number }>
+  metrics: {
+    attendanceRecords: number
+    attendanceChanges: number
+    rollCalls: number
+    activeRewards: number
+    childQuestions: number
+    answeredQuestions: number
+    aiDirectorSuggestions: number
+    acceptedAiSuggestions: number
+    rejectedAiSuggestions: number
+    heuristicAssistantDrafts: number
+    avatarUsageRecords: number
+  }
+  improvementNotes: string[]
+  thresholds: { shortStepRatio: number; overrunStepRatio: number; resourceCountBasis: string }
+}
+
 export type ClassroomSummaryContent = {
   classroomSummary: string
   participation: string
@@ -40,6 +71,7 @@ export async function getClassroomTimeline(runId: number) {
   const { data } = await http.get<{
     run: { id: number; teacherId?: number; title: string; status: string; startedAt: string | null; endedAt: string | null }
     items: ClassroomTimelineItem[]
+    analysis: ClassroomAnalysis
   }>(`/classroom-runs/${runId}/timeline`)
   return data
 }

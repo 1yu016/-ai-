@@ -125,6 +125,10 @@ export const useUserStore = defineStore('user', () => {
   }
 
   function logout() {
+    for (let index=sessionStorage.length-1; index>=0; index--) {
+      const key=sessionStorage.key(index)
+      if(key?.startsWith('classroom-instruction:') || key?.startsWith('classroom-suggestions'))sessionStorage.removeItem(key)
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('classroom-mobile-logout'))
     }

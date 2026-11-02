@@ -73,7 +73,7 @@ describe('LessonClassroomView · 互动全屏 UI state', () => {
     store.adoptRun({ ...runPayload, status: 'running', version: 3, allowedActions: ['query', 'complete_opening', 'skip_opening', 'pause', 'complete', 'cancel', 'attendance_correction', 'reward_revoke'] } as never)
     await settle()
     expect(wrapper.get('[data-test="open-interaction"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.findAll('button').find(b => b.text().includes('进入下一环节'))!.attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').find(b => b.text().includes('下一环节'))!.attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-test="classroom-capabilities"]').text()).toContain('服务端仍会重新校验')
     wrapper.unmount()
   })

@@ -6,6 +6,7 @@ import { platformApi, type Student } from '@/api/platform'
 import { apiErrorMessage } from '@/api/http'
 import {
   getQuestionMap,
+  questionReviewLabel,
   listClassQuestions,
   type ClassroomQuestion,
   type QuestionMap,
@@ -85,7 +86,12 @@ function onSearch() {
   applyFilter()
 }
 
-onMounted(load)
+onMounted(() => {
+  // 学生资料页会带 studentId 进入，保留幼儿筛选上下文。
+  const fromQuery = Number(route.query.studentId)
+  if (Number.isInteger(fromQuery) && fromQuery > 0) studentId.value = fromQuery
+  void load()
+})
 </script>
 
 <template>
@@ -136,7 +142,7 @@ onMounted(load)
               </strong>
               <span class="question-date">{{ formatDate(question.createdAt) }}</span>
             </div>
-            <p class="question-text">{{ question.questionText }}</p>
+            <p class="question-text">{{ question.questionText }}</p><p v-if="question.answerText">回答：{{question.answerText}} · 审核：{{questionReviewLabel(question.answerStatus)}} · 来源：{{question.answerSource}}</p>
             <div class="question-meta">
               <small v-if="question.lessonStepIndex != null">环节 {{ question.lessonStepIndex + 1 }}</small>
               <small v-if="question.teacherName">教师：{{ question.teacherName }}</small>
@@ -188,7 +194,7 @@ onMounted(load)
           <section class="insight-card">
             <h3>领域分布</h3>
             <div class="cluster-list">
-              <span v-for="item in questionMap.domains" :key="item.name">{{ item.name }} · {{ item.count }}</span>
+              <span v-for="item in questionMap.canonicalDomains" :key="item.name">{{ item.name }} · {{ item.count }}</span>
             </div>
           </section>
           <section class="insight-card">

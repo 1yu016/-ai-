@@ -41,6 +41,11 @@ import { StudentAttendanceChange } from './entities/student-attendance-change.en
 import { StudentAttendanceRecord } from './entities/student-attendance-record.entity';
 import { StudentQuestionRecord } from './entities/student-question-record.entity';
 import { StudentRewardRecord } from './entities/student-reward-record.entity';
+import { AvatarUsageLog } from '../avatars/entities/avatar-usage-log.entity';
+import { HeuristicAssistantDraft } from '../ai/entities/heuristic-assistant-draft.entity';
+import { ClassroomRunStepSnapshot } from './entities/classroom-run-step-snapshot.entity';
+import { analyzeStepTimings, completedResourceIds } from './classroom-analysis';
+import { ResourceService } from '../resources/resource.service';
 
 export type ClassroomTimelineItem = {
   key: string;
@@ -58,6 +63,8 @@ export class ClassroomRecordService {
   constructor(
     @InjectRepository(ClassroomRun)
     private readonly runs: Repository<ClassroomRun>,
+    @InjectRepository(ClassroomRunStepSnapshot)
+    private readonly runSteps: Repository<ClassroomRunStepSnapshot>,
     @InjectRepository(ClassroomEvent)
     private readonly events: Repository<ClassroomEvent>,
     @InjectRepository(ClassroomCommandRecord)
@@ -70,6 +77,10 @@ export class ClassroomRecordService {
     private readonly rollCalls: Repository<ClassroomRollCallRecord>,
     @InjectRepository(StudentRewardRecord)
     private readonly rewards: Repository<StudentRewardRecord>,
+    @InjectRepository(AvatarUsageLog)
+    private readonly avatarUsage: Repository<AvatarUsageLog>,
+    @InjectRepository(HeuristicAssistantDraft)
+    private readonly assistantDrafts: Repository<HeuristicAssistantDraft>,
     @InjectRepository(StudentQuestionRecord)
     private readonly questions: Repository<StudentQuestionRecord>,
     @InjectRepository(ClassroomDirectorV2Suggestion)
@@ -85,20 +96,61 @@ export class ClassroomRecordService {
     private readonly access: PlatformAccessService,
     private readonly audit: AuditService,
     private readonly summaryAi: ClassroomSummaryAiService,
+    private readonly resources: ResourceService,
   ) {}
 
   async timeline(actor: JwtTeacherPayload, runId: number) {
     const run = await this.requireRun(actor, runId);
-    const [events, commands, attendance, rollCalls, rewards, questions, suggestions] =
+    const [events, commands, attendance, attendanceRecords, rollCalls, rewards, questions, suggestions, steps, avatarUsage, assistantDrafts] =
       await Promise.all([
         this.events.find({ where: { classroomRunId: runId } }),
         this.commands.find({ where: { classroomRunId: runId } }),
         this.attendanceChanges.find({ where: { classroomRunId: runId } }),
+        this.attendanceRecords.find({ where: { classroomRunId: runId } }),
         this.rollCalls.find({ where: { classroomRunId: runId } }),
         this.rewards.find({ where: { classroomRunId: runId } }),
         this.questions.find({ where: { classroomRunId: runId } }),
         this.directorSuggestions.find({ where: { classroomRunId: runId } }),
+        this.runSteps.find({ where: { classroomRunId: runId }, order: { stepIndex: 'ASC' } }),
+        this.avatarUsage.find({ where: { classroomRunId: runId } }),
+        this.assistantDrafts.find({ where: { classroomRunId: runId } }),
       ]);
+    const measuredSteps = analyzeStepTimings(
+      run,
+      steps.map((step) => ({ stepIndex: step.stepIndex, title: step.title, durationSeconds: step.durationSeconds })),
+      events,
+    );
+    const resourceCounts = this.count(completedResourceIds(events).map(String))
+      .map((item) => ({ resourceId: Number(item.name), completedCount: item.count }));
+    const completedResources = await Promise.all(resourceCounts.map(async (item) => {
+      const resource = await this.resources.getOne(actor, item.resourceId).catch(() => null);
+      return { ...item, title: resource?.title ?? '资源当前不可访问' };
+    }));
+    const actualRunSeconds = run.status === ClassroomRunStatus.Running && run.resumedAt
+      ? run.elapsedSeconds + Math.max(0, Math.floor((Date.now() - run.resumedAt.getTime()) / 1000))
+      : run.elapsedSeconds;
+    const analysis = {
+      actualRunSeconds,
+      plannedRunSeconds: steps.reduce((sum, step) => sum + step.durationSeconds, 0),
+      stepTimings: measuredSteps.timings,
+      stepIndexJumps: measuredSteps.indexJumps,
+      completedResources,
+      metrics: {
+        attendanceRecords: attendanceRecords.length,
+        attendanceChanges: attendance.length,
+        rollCalls: rollCalls.length,
+        activeRewards: rewards.filter((item) => !item.revokedAt).length,
+        childQuestions: questions.length,
+        answeredQuestions: questions.filter((item) => Boolean(item.answerText?.trim())).length,
+        aiDirectorSuggestions: suggestions.length,
+        acceptedAiSuggestions: suggestions.filter((item) => item.status === 'confirmed').length,
+        rejectedAiSuggestions: suggestions.filter((item) => item.status === 'rejected').length,
+        heuristicAssistantDrafts: assistantDrafts.length,
+        avatarUsageRecords: avatarUsage.length,
+      },
+      improvementNotes: this.analysisNotes(measuredSteps.timings, measuredSteps.indexJumps, completedResources, questions.length),
+      thresholds: { shortStepRatio: 0.75, overrunStepRatio: 1.25, resourceCountBasis: 'resource_completed checkpoint only' },
+    };
     const studentIds = new Set<number>();
     attendance.forEach((item) => studentIds.add(item.studentId));
     rollCalls.forEach((item) => studentIds.add(item.studentId));
@@ -231,11 +283,11 @@ export class ClassroomRecordService {
         new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime() ||
         a.key.localeCompare(b.key),
     );
-    return { run: this.runView(run), items: deduplicated };
+    return { run: this.runView(run), items: deduplicated, analysis };
   }
 
   async ensureDraft(actor: JwtTeacherPayload, runId: number) {
-    const run = await this.requireRun(actor, runId);
+    const run = await this.requireOwnedTeacherRun(actor, runId);
     if (run.status !== ClassroomRunStatus.Completed)
       throw new ConflictException('课堂完成后才能生成总结草稿');
     const existing = await this.drafts.findOne({ where: { classroomRunId: runId } });
@@ -274,7 +326,7 @@ export class ClassroomRecordService {
   }
 
   async getSummary(actor: JwtTeacherPayload, runId: number) {
-    await this.requireRun(actor, runId);
+    await this.requireOwnedTeacherRun(actor, runId);
     const [draft, summary] = await Promise.all([
       this.drafts.findOne({ where: { classroomRunId: runId } }),
       this.summaries.findOne({ where: { classroomRunId: runId } }),
@@ -290,10 +342,7 @@ export class ClassroomRecordService {
     runId: number,
     dto: ConfirmClassroomSummaryDto,
   ) {
-    this.requireTeacher(actor);
-    const run = await this.requireRun(actor, runId);
-    if (run.teacherId !== actor.sub)
-      throw new ForbiddenException('只有本次课堂教师可以确认总结');
+    await this.requireOwnedTeacherRun(actor, runId);
     const draft = await this.drafts.findOne({ where: { classroomRunId: runId } });
     if (!draft) throw new NotFoundException('课堂总结草稿不存在');
     if (draft.status === ClassroomSummaryDraftStatus.Discarded)
@@ -331,10 +380,7 @@ export class ClassroomRecordService {
   }
 
   async discard(actor: JwtTeacherPayload, runId: number, reason?: string) {
-    this.requireTeacher(actor);
-    const run = await this.requireRun(actor, runId);
-    if (run.teacherId !== actor.sub)
-      throw new ForbiddenException('只有本次课堂教师可以放弃总结草稿');
+    await this.requireOwnedTeacherRun(actor, runId);
     const draft = await this.drafts.findOne({ where: { classroomRunId: runId } });
     if (!draft) throw new NotFoundException('课堂总结草稿不存在');
     if (await this.summaries.exists({ where: { classroomRunId: runId } }))
@@ -351,7 +397,7 @@ export class ClassroomRecordService {
   }
 
   async report(actor: JwtTeacherPayload, runId: number) {
-    const run = await this.requireRun(actor, runId);
+    const run = await this.requireOwnedTeacherRun(actor, runId);
     const summary = await this.summaries.findOne({ where: { classroomRunId: runId } });
     if (!summary) throw new ConflictException('教师确认总结后才能导出正式课堂报告');
     const timeline = await this.timeline(actor, runId);
@@ -549,6 +595,14 @@ export class ClassroomRecordService {
     return run;
   }
 
+  private async requireOwnedTeacherRun(actor: JwtTeacherPayload, runId: number) {
+    this.requireTeacher(actor);
+    const run = await this.requireRun(actor, runId);
+    if (run.teacherId !== actor.sub)
+      throw new ForbiddenException('只有本次课堂教师可以操作课堂总结');
+    return run;
+  }
+
   private requireTeacher(actor: JwtTeacherPayload) {
     if (actor.userType !== AuthUserType.Teacher)
       throw new ForbiddenException('管理员不能代替教师确认课堂总结');
@@ -626,6 +680,25 @@ export class ClassroomRecordService {
     return [...counts.entries()]
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'));
+  }
+
+  private analysisNotes(
+    steps: ReturnType<typeof analyzeStepTimings>['timings'],
+    indexJumps: Array<{ from: number; to: number }>,
+    resourceCounts: Array<{ resourceId: number; completedCount: number }>,
+    questionCount: number,
+  ): string[] {
+    const notes = steps.flatMap((step) => step.variance === 'over'
+      ? [`“${step.title}”记录用时高于计划约25%以上，可复核环节内容或预留时间。`]
+      : step.variance === 'short'
+        ? [`“${step.title}”记录用时低于计划约25%以上，可复核是否需要增加观察或表达时间。`]
+        : []);
+    if (indexJumps.length) notes.push('记录到步骤索引跳跃；系统不能判断这是教师有意调整还是跳过，请结合课堂记录核对。');
+    const repeated = resourceCounts.filter((resource) => resource.completedCount > 1);
+    if (repeated.length) notes.push(`有${repeated.length}项资源出现多次“播放完成”记录，可复核是否适合再次使用。`);
+    if (questionCount > 0) notes.push(`本节记录了${questionCount}条幼儿问题，可将高频主题纳入下一节复习；问题数量不能代表个体能力。`);
+    if (!notes.length) notes.push('现有记录没有显示明显的环节时长偏差；这不代表课堂质量评价。');
+    return notes;
   }
 
   private redactQuestion(value: string) {

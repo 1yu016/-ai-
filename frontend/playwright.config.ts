@@ -49,6 +49,7 @@ const webServer = [
 
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR || 'test-results',
   fullyParallel: false,
   workers: 1,
   retries: 0,

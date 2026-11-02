@@ -50,7 +50,7 @@ export class ArtworkController {
   }
 
   @Get('artworks/:artworkId/file')
-  @Header('Cache-Control', 'private, max-age=300')
+  @Header('Cache-Control', 'private, no-store')
   async file(@Req() req: AuthenticatedRequest, @Res({ passthrough: true }) response: Response, @Param('artworkId', ParseIntPipe) artworkId: number) {
     const result = await this.artworks.file(req.user, artworkId);
     response.setHeader('Content-Type', result.artwork.mimeType);

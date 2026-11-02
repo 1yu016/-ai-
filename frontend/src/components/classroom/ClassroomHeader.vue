@@ -20,7 +20,7 @@ function formatTime(value: number): string {
 
 <template>
   <header class="classroom-header">
-    <slot name="navigation" />
+    <div class="header-navigation"><slot name="navigation" /></div>
     <div class="header-left">
       <span class="status-pill" :class="{ paused }">{{ paused ? '已暂停' : '正在上课' }}</span>
       <h1 class="lesson-title">{{ lessonTitle }}</h1>
@@ -33,7 +33,7 @@ function formatTime(value: number): string {
       <div class="metric"><small>已上课</small><strong>{{ formatTime(elapsedSeconds) }}</strong></div>
       <div class="metric"><small>本环节</small><strong>约 {{ stepMinutes }} 分钟</strong></div>
     </div>
-    <slot name="actions" />
+    <div class="header-actions"><slot name="actions" /></div>
     <ElProgress class="lesson-progress" :percentage="progress" :show-text="false" :stroke-width="8" :color="'#D88A4D'" />
   </header>
 </template>
@@ -95,4 +95,5 @@ function formatTime(value: number): string {
 .lesson-progress { flex-basis: 100%; }
 .lesson-progress :deep(.el-progress-bar__inner) { border-radius: 99px; }
 .classroom-header{gap:8px 16px}.header-left{flex:1;min-width:200px}.lesson-title{font-size:22px}.header-center{flex:0 1 210px;text-align:left}.header-right{gap:12px}.metric:nth-child(2){display:none}.lesson-progress{margin-top:2px}
+.classroom-header{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px 18px;padding:14px 18px;border:1px solid var(--app-border);border-radius:16px;background:var(--app-surface)}.header-left{min-width:0}.lesson-title{white-space:normal;overflow:visible;font-size:20px;line-height:1.4}.header-center{grid-column:2;grid-row:2;text-align:left}.header-center strong{white-space:normal;overflow:visible;line-height:1.5}.header-right{grid-column:3;grid-row:2;justify-content:flex-end}.header-actions{grid-column:3;grid-row:1;display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.header-actions :deep(.el-button){margin:0}.lesson-progress{grid-column:1/-1}.metric strong{font-variant-numeric:tabular-nums}@media(max-width:850px){.classroom-header{grid-template-columns:1fr 1fr}.header-left{grid-column:1/-1}.header-center{grid-column:1;grid-row:auto}.header-actions{grid-column:2}.header-right{grid-row:auto;grid-column:2}}
 </style>

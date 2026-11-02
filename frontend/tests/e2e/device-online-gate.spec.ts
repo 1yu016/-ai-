@@ -122,7 +122,7 @@ test.describe.serial('P0 Device Online Final Gate', () => {
     await pageA.getByLabel('账号').fill('e2e_teacher')
     await pageA.getByLabel('密码').fill('E2eTeacher123!')
     await pageA.getByRole('button', { name: '登录', exact: true }).click()
-    await expect(pageA).toHaveURL(/\/my-classes$/)
+    await expect(pageA).toHaveURL(/\/teacher\/home$/)
     // pageB 同样准备好教师会话（直接刷新建立 SPA 状态）。
     await pageB.goto('/chat')
     await expect(pageB.getByText('备课中心')).toBeVisible()

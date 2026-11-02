@@ -6,6 +6,7 @@ import { apiErrorMessage, http } from '@/api/http'
 import { useConversationStore } from '@/stores/conversation'
 import { useUserStore, type TeacherInfo } from '@/stores/user'
 import { safeInternalRedirect, workspaceHome } from '@/router/authNavigation'
+import { canAccessLocation } from '@/router/routeMeta'
 
 type LoginResponse = {
   access_token: string
@@ -72,10 +73,16 @@ async function submitLogin() {
       ElMessage.warning('登录成功，但历史会话迁移失败，可稍后重新登录再试。')
     }
 
-    const redirect = safeInternalRedirect(
-      route.query.redirect,
-      workspaceHome(profile.data),
+    // 只接受当前身份有权访问的目标，避免教师被 redirect（如 /admin/audit）送进无权限页面后再次被踢出。
+    const fallback = workspaceHome(profile.data)
+    const requested = safeInternalRedirect(route.query.redirect, fallback)
+    const redirect = canAccessLocation(
+      router,
+      requested,
+      { isLogin: true, teacherInfo: profile.data },
     )
+      ? requested
+      : fallback
     await router.replace(redirect)
   } catch (error) {
     userStore.logout()

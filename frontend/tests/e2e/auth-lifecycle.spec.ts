@@ -55,7 +55,7 @@ test.describe('登录生命周期与角色隔离', () => {
 
   test('教师不能进入管理员路由且菜单不展示管理员功能', async ({ page }) => {
     await loginAs(page, 'teacher')
-    await expect(page).toHaveURL(/\/my-classes$/)
+    await expect(page).toHaveURL(/\/teacher\/home$/)
     await expect(page.locator('aside[aria-label="工作台导航"]')).not.toContainText('教师管理')
     await page.goto('/admin/teachers')
     await expect(page).toHaveURL((url) => url.pathname === '/forbidden' && url.searchParams.get('from') === '/admin/teachers')
@@ -66,7 +66,7 @@ test.describe('登录生命周期与角色隔离', () => {
     await loginAs(page, 'administrator')
     await expect(page).toHaveURL(/\/admin$/)
     await expect(page.getByRole('heading', { name: '数据看板' })).toBeVisible()
-    await expect(page.locator('.card').filter({ hasText: '教师' })).toBeVisible()
+    await expect(page.locator('.card').filter({ has: page.locator('span', { hasText: /^教师$/ }) })).toBeVisible()
     await expect(page.locator('.card').filter({ has: page.locator('span', { hasText: /^设备$/ }) })).toBeVisible()
     await expect(page.locator('.card').filter({ hasText: '待审核资源' })).toBeVisible()
 

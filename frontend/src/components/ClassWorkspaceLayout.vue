@@ -23,11 +23,13 @@ const tabs = computed(() => [
   { key: 'classroom-students', label: '学生', route: 'students' },
   { key: 'classroom-rewards', label: '🌟 成长奖励', route: 'class-rewards' },
   { key: 'classroom-questions', label: '💡 儿童问题', route: 'class-questions' },
+  { key: 'classroom-artworks', label: '🎨 儿童作品', route: 'class-artworks' },
 ])
 
 const activeKey = computed(() => {
   if (route.name === 'class-rewards') return 'classroom-rewards'
   if (route.name === 'class-questions') return 'classroom-questions'
+  if (route.name === 'class-artworks') return 'classroom-artworks'
   return 'classroom-students'
 })
 
