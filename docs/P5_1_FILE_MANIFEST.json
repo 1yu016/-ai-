@@ -1,7 +1,7 @@
 [
   {
     "path": ".gitignore",
-    "sha256": "14d24d633dfe8d1cd598a7ca71835d099802dfc60ec9822739760c08f45065f6"
+    "sha256": "6e7bda0e50a59dff2dae798cd6c73d331211fe52938cb20463a5145e9a29f1da"
   },
   {
     "path": "backend/.env.example",
@@ -553,7 +553,7 @@
   },
   {
     "path": "frontend/tests/e2e/p5-unified-qa.spec.ts",
-    "sha256": "1319e55c1bd365a23df1a2c13efc34ec228d1f7a4f5682038461a06c416e0505"
+    "sha256": "6368cb3c37404bad058d2d18395269fc5f8e79e748d22902a57cf045a7f0d31e"
   },
   {
     "path": "frontend/tests/e2e/run.mjs",

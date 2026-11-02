@@ -164,4 +164,3 @@ test('integrated seed lesson: review gate, actual screen captions, media exit an
   await expect(page.locator('.question-text').filter({ hasText: '种子不浇水会怎样' })).toBeVisible()
   await page.screenshot({ path: info.outputPath('saved-class-questions.png'), fullPage: true })
 })
-
