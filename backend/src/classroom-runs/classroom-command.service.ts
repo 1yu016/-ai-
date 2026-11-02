@@ -1,3 +1,4 @@
+import { ChildQaService } from './child-qa.service';
 import {
   BadRequestException,
   ConflictException,
@@ -91,6 +92,7 @@ export class ClassroomCommandService {
     private readonly rollCallService: ClassroomRollCallService,
     private readonly audit: AuditService,
     private readonly access: PlatformAccessService,
+    private readonly childQa: ChildQaService,
   ) {}
 
   async execute(actor: JwtTeacherPayload, dto: ExecuteClassroomCommandDto) {
@@ -339,12 +341,51 @@ export class ClassroomCommandService {
     const operation = commandPolicyOperation(dto.operation);
     if (operation) await this.runs.assertOperation(actor, run.id, operation);
     const parameters = dto.parameters ?? {};
+    const defersChildQaCloseUntilResourceValidation = [
+      ClassroomCommandOperation.OpenResource,
+      ClassroomCommandOperation.PlayResource,
+    ].includes(dto.operation) || (dto.operation === ClassroomCommandOperation.SetPresentation && parameters.childQuestionId != null);
+    if (![ClassroomCommandOperation.ChildQaStart, ClassroomCommandOperation.ChildQaStop, ClassroomCommandOperation.ChildQaApprove, ClassroomCommandOperation.ChildQaReject].includes(dto.operation) &&
+      !defersChildQaCloseUntilResourceValidation)
+      await this.childQa.onTeacherControl(actor, run.id);
     const legacy = {
       requestId: dto.requestId,
       version: dto.expectedVersion,
       deviceId: run.deviceId,
     };
     switch (dto.operation) {
+      case ClassroomCommandOperation.ChildQaStart: {
+        if (![ClassroomCommandSource.TeacherPanel, ClassroomCommandSource.Mobile].includes(dto.source))
+          throw new ForbiddenException('请教师从课堂面板或已授权手机开启儿童问答');
+        const result = await this.childQa.start(actor, run.id, dto.requestId);
+        await this.runs.assertOperation(actor, run.id, 'resource_start');
+        this.childQa.beginPresentation(run.id, result.session.id, dto.expectedVersion + 1);
+        try {
+          await this.setPresentation(actor, run, { ...dto, operation: ClassroomCommandOperation.SetPresentation }, { mode: 'avatar', childQaMode: true });
+          await this.childQa.acknowledgePresentation(actor, run.id, result.session.id);
+        } finally { this.childQa.cancelPresentation(run.id, result.session.id); }
+        return result;
+      }
+      case ClassroomCommandOperation.ChildQaStop: {
+        const closed = await this.childQa.stop(actor, run.id, this.optionalString(parameters, 'sessionId', 100));
+        if (!closed.stopped) return closed;
+        return this.mediaCommand(actor, run, { ...dto, targetDeviceId: run.deviceId, operation: ClassroomCommandOperation.StopMedia }, {});
+      }
+      case ClassroomCommandOperation.ChildQaApprove:
+      case ClassroomCommandOperation.ChildQaReject: {
+        if (![ClassroomCommandSource.TeacherPanel, ClassroomCommandSource.Mobile].includes(dto.source))
+          throw new ForbiddenException('回答必须由教师面板或已授权手机审核');
+        const sessionId = this.string(parameters, 'sessionId');
+        const review = await this.childQa.review(actor, run.id, sessionId, this.int(parameters, 'questionId', 1), dto.operation === ClassroomCommandOperation.ChildQaApprove);
+        if (dto.operation === ClassroomCommandOperation.ChildQaApprove) {
+          this.childQa.beginPresentation(run.id, sessionId, dto.expectedVersion + 1);
+          try {
+            await this.mediaCommand(actor, run, { ...dto, targetDeviceId: run.deviceId, operation: ClassroomCommandOperation.SpeakText }, { text: review.answerText, childQuestionId: review.questionId, childQuestionText: review.questionText, childQaSessionId: sessionId });
+            await this.childQa.acknowledgePresentation(actor, run.id, sessionId);
+          } finally { this.childQa.cancelPresentation(run.id, sessionId); }
+        }
+        return review;
+      }
       case ClassroomCommandOperation.PreviousStep:
         return this.runs.changeStep(actor, run.id, {
           ...legacy,
@@ -406,6 +447,18 @@ export class ClassroomCommandService {
       case ClassroomCommandOperation.UpdatePresentationQueue:
         return this.updatePresentationQueue(actor, run, dto, parameters);
       case ClassroomCommandOperation.SetPresentation:
+        if (parameters.childQuestionId != null) {
+          if (![ClassroomCommandSource.TeacherPanel, ClassroomCommandSource.Mobile].includes(dto.source))
+            throw new ForbiddenException('儿童问题只能由教师课堂面板或已授权手机提交到大屏');
+          const sessionId = this.string(parameters, 'childQaSessionId');
+          const question = await this.childQa.questionPresentation(actor, run.id, sessionId, this.int(parameters, 'childQuestionId', 1));
+          this.childQa.beginPresentation(run.id, sessionId, dto.expectedVersion + 1);
+          try {
+            const result = await this.setPresentation(actor, run, dto, { mode: 'avatar', childQuestionId: this.int(parameters, 'childQuestionId', 1), childQaSessionId: sessionId, ...question });
+            await this.childQa.acknowledgePresentation(actor, run.id, sessionId);
+            return result;
+          } finally { this.childQa.cancelPresentation(run.id, sessionId); }
+        }
         return this.setPresentation(actor, run, dto, parameters);
       default:
         if (MEDIA_CLASSROOM_COMMANDS.has(dto.operation))
@@ -466,9 +519,20 @@ export class ClassroomCommandService {
     if (mode !== 'avatar')
       throw new BadRequestException('不支持的课堂展示模式');
     const latest = await this.snapshots.loadLatestValid(run.id);
-    const playerState = { ...latest?.playerState, presentationMode: mode,
+    const playerState: JsonMap = { ...latest?.playerState, presentationMode: mode,
       status: 'stopped', operation: dto.operation, presentationCommandId: dto.requestId,
       presentationItemId: this.optionalString(parameters, 'presentationItemId', 100) ?? null, updatedAt: new Date().toISOString() };
+    if (parameters.childQuestionId != null) {
+      playerState.childQaQuestionId = this.int(parameters, 'childQuestionId', 1);
+      playerState.childQaSessionId = this.string(parameters, 'childQaSessionId');
+      playerState.childQaQuestionText = this.string(parameters, 'questionText');
+      playerState.childQaAnswerStatus = this.string(parameters, 'answerStatus');
+      playerState.childQaStepIndex = run.currentStepIndex;
+      playerState.childQaRunVersion = dto.expectedVersion + 1;
+      for (const key of ['ttsText', 'artworkId', 'artworkFileUrl', 'artworkComment']) delete playerState[key];
+    } else if (parameters.childQaMode === true) {
+      for (const key of ['ttsText', 'artworkId', 'artworkFileUrl', 'artworkComment', 'childQaQuestionId', 'childQaQuestionText', 'childQaAnswerStatus', 'childQaSessionId', 'childQaStepIndex', 'childQaRunVersion']) delete playerState[key];
+    }
     // Keep the last resource and page as a return point; mode selects what is shown.
     await this.runs.checkpointControl(actor, run.id, {
       requestId: dto.requestId, version: dto.expectedVersion, deviceId: run.deviceId,
@@ -599,6 +663,10 @@ export class ClassroomCommandService {
       const resource = await this.resources.getOne(actor, resourceId);
       if (resource.reviewStatus !== ResourceReviewStatus.Approved)
         throw new ConflictException('资源未审核通过，不能在正式课堂播放');
+      // An explicit, authorized resource request takes over child QA only after
+      // the requested resource is known to be valid and approved. Failed media
+      // requests must leave the active question/teacher review untouched.
+      await this.childQa.onTeacherControl(actor, run.id);
       playerState.resourceId = resourceId;
       playerState.resourceTitle = resource.title;
       if (resourceOperation) {
@@ -629,14 +697,33 @@ export class ClassroomCommandService {
     if (dto.operation === ClassroomCommandOperation.Unmute) playerState.muted = false;
     if (dto.operation === ClassroomCommandOperation.SpeakText) {
       const text = this.string(parameters, 'text');
+      if (parameters.childQuestionId != null) {
+        const questionId = this.int(parameters, 'childQuestionId', 1);
+        const sessionId = this.string(parameters, 'childQaSessionId');
+        const approvedQuestion = await this.childQa.approvedPresentation(actor, run.id, sessionId, questionId, text);
+        playerState.childQaQuestionId = questionId; playerState.childQaSessionId = sessionId;
+        playerState.childQaQuestionText = approvedQuestion.questionText;
+        playerState.childQaAnswerStatus = 'approved';
+        playerState.childQaStepIndex = run.currentStepIndex; playerState.childQaRunVersion = dto.expectedVersion + 1;
+      }
       if (text.length > 500) throw new BadRequestException('播报文本不能超过500字');
       playerState.ttsText = text;
     }
     if (dto.operation === ClassroomCommandOperation.StopMedia) {
+      delete playerState.childQaQuestionId;
+      delete playerState.childQaSessionId;
+      delete playerState.childQaQuestionText;
+      delete playerState.childQaAnswerStatus;
+      delete playerState.childQaStepIndex;
+      delete playerState.childQaRunVersion;
       delete playerState.artworkId;
       delete playerState.artworkFileUrl;
       delete playerState.artworkComment;
       delete playerState.ttsText;
+      // Stopping classroom media returns the shared screen to its classroom
+      // avatar surface. Keep resource/page/progress fields as a return point,
+      // but make the authoritative presentation mode agree with that surface.
+      playerState.presentationMode = 'avatar';
       playerState.status = 'stopped';
     }
     if (dto.operation === ClassroomCommandOperation.PauseMedia) playerState.status = 'paused';

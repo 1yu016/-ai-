@@ -13,6 +13,7 @@ import { AudioService } from './audio.service';
 import { ClassroomDirectorService } from './classroom-director.service';
 import { HeuristicAssistantService } from './heuristic-assistant.service';
 import { ClassroomCommandService } from './classroom-command.service';
+import { AuditService } from '../platform/audit.service';
 
 describe('POST /ai/chat', () => {
   let app: INestApplication;
@@ -22,6 +23,7 @@ describe('POST /ai/chat', () => {
   const saveExchange = jest.fn().mockResolvedValue(99);
   const search = jest.fn();
   const getOne = jest.fn();
+  const writeAi = jest.fn().mockResolvedValue(undefined);
 
   beforeAll(async () => {
     const builder = Test.createTestingModule({
@@ -37,6 +39,7 @@ describe('POST /ai/chat', () => {
         },
         { provide: ChatPersistenceService, useValue: { saveExchange } },
         { provide: ResourceService, useValue: { search, getOne } },
+        { provide: AuditService, useValue: { writeAi } },
         {
           provide: ClassroomDirectorService,
           useValue: { suggest: jest.fn(), decide: jest.fn() },
@@ -93,6 +96,7 @@ describe('POST /ai/chat', () => {
     classroomAssistant.mockReset();
     search.mockReset();
     getOne.mockReset();
+    writeAi.mockClear();
   });
 
   afterAll(async () => app.close());
@@ -247,6 +251,9 @@ describe('POST /ai/chat', () => {
       });
 
     expect(search).toHaveBeenCalledWith(expect.objectContaining({ sub: 7 }), '一闪一闪亮晶晶', 'audio');
+    expect(writeAi).toHaveBeenCalledWith(expect.objectContaining({
+      feature: 'resource_matching', status: 'success', metadata: { candidateCount: 1 },
+    }));
   });
 
   it('does not execute a low-confidence control command', async () => {

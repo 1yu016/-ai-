@@ -1026,13 +1026,18 @@ describe('Member A stage one platform (e2e)', () => {
         today: expect.any(Number),
         active: expect.any(Number),
         abnormal: expect.any(Number),
+        completed: expect.any(Number),
       },
       resources: { pending: 0, disabled: 0 },
       ai: {
         total: expect.any(Number),
         successRate: expect.any(Number),
         errorRate: expect.any(Number),
+        lessonPreparationCalls: expect.any(Number),
+        resourceMatchingRequests: expect.any(Number),
+        classroomSummaryCalls: expect.any(Number),
       },
+      classroomRecords: { completedRuns: expect.any(Number), formalSummaries: expect.any(Number) },
       storage: {
         indexedResourceBytes: 0,
         physicalBytes: expect.any(Number),

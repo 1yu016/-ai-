@@ -5,9 +5,13 @@ export const CLASSROOM_OPERATIONS = [
   'media_control', 'safe_stop', 'tts', 'roll_call', 'reward', 'attendance_new',
   'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'checkpoint', 'queue_edit',
   'avatar_binding', 'takeover', 'recover', 'start_break', 'end_break', 'close_summary',
+  'child_qa_start', 'child_qa_stop',
 ] as const;
 export type ClassroomOperation = typeof CLASSROOM_OPERATIONS[number];
 export function commandPolicyOperation(operation: string): ClassroomOperation | null {
+  if (operation === 'child_qa_start') return 'child_qa_start';
+  if (operation === 'child_qa_stop' || operation === 'child_qa_reject') return 'child_qa_stop';
+  if (operation === 'child_qa_approve') return 'tts';
   if (['reward_student', 'revoke_reward', 'attendance_update', 'random_roll_call', 'specified_roll_call', 'group_roll_call'].includes(operation))
     return null; // Canonical service decides first fact versus correction inside its transaction.
   if (['previous_step', 'next_step', 'switch_step'].includes(operation)) return 'change_step';
@@ -48,6 +52,8 @@ const matrix: Record<OperationPhase, readonly ClassroomOperation[]> = {
 };
 export function decideOperation(input: OperationContext, operation: ClassroomOperation) {
   const phase = operationPhase(input);
+  if (operation === 'child_qa_start') return { allowed: phase === 'teaching' && !input.breakActive, phase, reason: 'child_qa_teacher_gate' } as const;
+  if (operation === 'child_qa_stop') return { allowed: ['opening', 'teaching', 'paused', 'recovery'].includes(phase), phase, reason: 'child_qa_teacher_stop' } as const;
   // Only a caller that already authenticated and verified a durable digest may set replay.
   if (input.execution === 'committed_replay') return { allowed: true, phase, reason: 'committed_replay' } as const;
   if (['attendance_correction', 'reward_revoke', 'collective_reward_revoke'].includes(operation)) {

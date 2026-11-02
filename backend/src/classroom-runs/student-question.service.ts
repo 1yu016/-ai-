@@ -25,8 +25,13 @@ import {
 import { ClassroomRun } from './entities/classroom-run.entity';
 import { StudentQuestionRecord } from './entities/student-question-record.entity';
 import { QuestionMapAiService } from './question-map-ai.service';
+import { countQuestionDomains } from './question-domain';
 
 type QuestionView = {
+  answerText: string | null;
+  answerStatus: string | null;
+  answerSource: string | null;
+  qaSessionId: string | null;
   id: number;
   studentId: number | null;
   studentName: string | null;
@@ -107,6 +112,7 @@ export class StudentQuestionService {
     const record = await this.records.findOne({ where: { id: questionId, classroomRunId: runId } });
     if (!record) throw new NotFoundException('问题记录不存在');
     if (dto.teacherCorrectedText !== undefined) {
+      if (record.qaSessionId && dto.teacherCorrectedText.trim() !== record.questionText) record.answerStatus = 'cancelled';
       record.teacherCorrectedText = dto.teacherCorrectedText.trim();
       record.questionText = record.teacherCorrectedText;
     }
@@ -147,6 +153,7 @@ export class StudentQuestionService {
     const records = await this.filteredQuery(classId, query).orderBy('q.created_at', 'DESC').getMany();
     const topics = this.count(records.map((item) => item.topic || '未分类'));
     const domains = this.count(records.map((item) => item.domain || '未分类'));
+    const canonicalDomains = countQuestionDomains(records.map((item) => item.domain));
     const frequentQuestions = this.count(records.map((item) => this.normalizeQuestion(item.questionText)))
       .slice(0, 10)
       .map((item) => ({ question: item.name, count: item.count }));
@@ -184,6 +191,7 @@ export class StudentQuestionService {
       },
       topics,
       domains,
+      canonicalDomains,
       frequentQuestions,
       interestHotspots: hotspotNames,
       studentClusters,
@@ -311,6 +319,10 @@ export class StudentQuestionService {
       asrRawText: record.asrRawText,
       teacherCorrectedText: record.teacherCorrectedText,
       questionText: record.questionText,
+      answerText: record.answerText,
+      answerStatus: record.answerStatus,
+      answerSource: record.answerSource,
+      qaSessionId: record.qaSessionId,
       topic: record.topic,
       domain: record.domain,
       isAnonymous: record.isAnonymous,

@@ -468,6 +468,7 @@ describe('Task four classroom run state machine (e2e)', () => {
   async function createPlan(
     withSteps = true,
     resourceId?: number,
+    extraActions: Array<Record<string, unknown>> = [],
   ): Promise<PlanFixture> {
     const created = await request(app.getHttpServer())
       .post('/lesson-plans')
@@ -494,7 +495,7 @@ describe('Task four classroom run state machine (e2e)', () => {
             content: '观察第一张图片',
             durationSeconds: 60,
             ...(resourceId ? { resourceId } : {}),
-            actions: [{ actionType: 'avatar_action', actionName: 'wave' }],
+            actions: [{ actionType: 'avatar_action', actionName: 'wave' }, ...extraActions],
           },
           {
             title: '互动提问',
@@ -2423,6 +2424,90 @@ describe('Task four classroom run state machine (e2e)', () => {
     });
   });
 
+  it('keeps child QA and media presentation mutually exclusive through authorized mobile control', async () => {
+    const plan = await createPlan(true, approvedResourceId, [
+      { actionType: 'child_qa', actionName: 'configure', content: JSON.stringify({ seconds: 120, policy: 'teacher_review', topic: '种子发芽' }) },
+    ]);
+    const started = await request(app.getHttpServer()).post('/classroom-runs/start').set(auth()).send(startBody(plan.id))
+      .expect(201).then(async response => { await enterTeachingFixture(app, response.body.id); return response; });
+    const devices = app.get<Repository<Device>>(getRepositoryToken(Device));
+    await devices.update(deviceId, { status: DeviceStatus.Online, lastOnlineAt: new Date() });
+    const ticket = await request(app.getHttpServer()).post('/classroom-tickets').set(auth())
+      .send({ deviceId, classroomId, classId, expiresInSeconds: 120 }).expect(201);
+    const joined = await request(app.getHttpServer()).post('/classroom-mobile/join').set(auth())
+      .send({ ticket: ticket.body.ticket, deviceCode: ticket.body.deviceCode }).expect(201);
+    const rawToken = joined.body.controlSession.token as string;
+    const base = { targetDeviceId: deviceId, expectedVersion: started.body.version, issuedAt: new Date().toISOString(), ttlMs: 30_000 };
+    const mobileCommand = (operation: string, suffix: string, expectedVersion: number, parameters?: Record<string, unknown>) =>
+      request(app.getHttpServer()).post('/classroom-mobile/commands').set(auth()).set('X-Classroom-Control-Session', rawToken)
+        .send({ ...base, requestId: requestId(`qa-${suffix}`), expectedVersion, operation, ...(parameters ? { parameters } : {}) });
+
+    const beforeQa = await mobileCommand('play_resource', 'pre-qa-play', started.body.version, { resourceId: approvedResourceId }).expect(201);
+    const paged = await mobileCommand('next_page', 'pre-qa-page', beforeQa.body.result.classroomState.version).expect(201);
+    expect(paged.body.result.classroomState.playerRecoverySuggestion).toMatchObject({ pageIndex: 2, presentationMode: 'resource' });
+    const opened = await mobileCommand('child_qa_start', 'start', paged.body.result.classroomState.version).expect(201);
+    const qaSessionId = opened.body.result.result.session.id as string;
+    expect(opened.body.result.classroomState).toMatchObject({ status: 'running', currentStepIndex: 0,
+      playerRecoverySuggestion: { operation: 'set_presentation', presentationMode: 'avatar', status: 'stopped', pageIndex: 2 } });
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/child-qa`).set(auth()).expect(200)).body)
+      .toMatchObject({ mode: 'child', session: { id: qaSessionId, stepIndex: 0 } });
+    await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/child-qa`)
+      .set('Authorization', `Bearer ${otherToken}`).expect(403);
+    await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/questions`)
+      .set('Authorization', `Bearer ${otherToken}`).expect(403);
+
+    const askBody = { sessionId: qaSessionId, requestId: requestId('qa-question'), question: '种子需要什么？' };
+    const asked = await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/child-qa/questions`).set(auth()).send(askBody).expect(201);
+    await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/child-qa/questions`)
+      .set('Authorization', `Bearer ${otherToken}`).send({ ...askBody, requestId: requestId('qa-question-other') }).expect(403);
+    const storedQuestions = await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/questions`).set(auth()).expect(200);
+    const stored = storedQuestions.body.find((row: { questionText: string; qaSessionId: string }) => row.questionText === askBody.question && row.qaSessionId === qaSessionId);
+    expect(stored).toMatchObject({ classroomRunId: started.body.id, lessonStepIndex: 0, isAnonymous: true,
+      questionText: askBody.question, answerStatus: 'pending', qaSessionId });
+
+    const questionShown = await mobileCommand('set_presentation', 'show-question', opened.body.result.classroomState.version,
+      { mode: 'avatar', childQuestionId: stored.id, childQaSessionId: qaSessionId }).expect(201);
+    expect(questionShown.body.result.classroomState).toMatchObject({ status: 'running', currentStepIndex: 0,
+      playerRecoverySuggestion: { operation: 'set_presentation', presentationMode: 'avatar', childQaQuestionId: stored.id,
+        childQaQuestionText: askBody.question, childQaAnswerStatus: 'pending', childQaSessionId: qaSessionId } });
+    expect(asked.body.question).toMatchObject({ questionText: askBody.question, answerStatus: 'pending' });
+
+    const approved = await mobileCommand('child_qa_approve', 'approve', questionShown.body.result.classroomState.version,
+      { sessionId: qaSessionId, questionId: stored.id }).expect(201);
+    expect(approved.body.result.result).toMatchObject({ questionId: stored.id, answerStatus: 'approved' });
+    expect(approved.body.result.classroomState.playerRecoverySuggestion).toMatchObject({ operation: 'speak_text',
+      presentationMode: 'avatar', childQaQuestionId: stored.id, childQaQuestionText: askBody.question, childQaSessionId: qaSessionId });
+    const stopped = await mobileCommand('child_qa_stop', 'stop', approved.body.result.classroomState.version,
+      { sessionId: qaSessionId }).expect(201);
+    expect(stopped.body.result.classroomState).toMatchObject({ status: 'running', currentStepIndex: 0,
+      playerRecoverySuggestion: { operation: 'stop_media', presentationMode: 'avatar', status: 'stopped', pageIndex: 2 } });
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/child-qa`).set(auth()).expect(200)).body)
+      .toMatchObject({ mode: 'teacher', session: null });
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/questions`).set(auth()).expect(200)).body
+      .find((row: { id: number }) => row.id === stored.id)).toMatchObject({ answerStatus: 'approved', qaSessionId });
+    const stoppedAgain = await mobileCommand('child_qa_stop', 'stop-again', stopped.body.result.classroomState.version,
+      { sessionId: qaSessionId }).expect(201);
+    expect(stoppedAgain.body.result.classroomState).toMatchObject({ status: 'running', currentStepIndex: 0,
+      playerRecoverySuggestion: { operation: 'stop_media', presentationMode: 'avatar', status: 'stopped', pageIndex: 2 } });
+
+    const reopened = await mobileCommand('child_qa_start', 'reopen', stoppedAgain.body.result.classroomState.version).expect(201);
+    const reopenedSession = reopened.body.result.result.session.id as string;
+    await mobileCommand('play_resource', 'invalid-play', reopened.body.result.classroomState.version,
+      { resourceId: 999999 }).expect(404);
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/child-qa`).set(auth()).expect(200)).body)
+      .toMatchObject({ mode: 'child', session: { id: reopenedSession } });
+    const playing = await mobileCommand('play_resource', 'play-valid', reopened.body.result.classroomState.version,
+      { resourceId: approvedResourceId }).expect(201);
+    expect(playing.body.result.classroomState.playerRecoverySuggestion).toMatchObject({ presentationMode: 'resource', status: 'playing' });
+    expect((await request(app.getHttpServer()).get(`/classroom-runs/${started.body.id}/child-qa`).set(auth()).expect(200)).body)
+      .toMatchObject({ mode: 'teacher', session: null });
+    const mediaStopped = await mobileCommand('stop_media', 'stop-after-qa', playing.body.result.classroomState.version).expect(201);
+    expect(mediaStopped.body.result.classroomState).toMatchObject({ status: 'running', currentStepIndex: 0,
+      playerRecoverySuggestion: { presentationMode: 'avatar', status: 'stopped' } });
+    await request(app.getHttpServer()).post(`/classroom-runs/${started.body.id}/complete`).set(auth())
+      .send({ version: mediaStopped.body.result.classroomState.version, deviceId, requestId: requestId('qa-flow-complete') }).expect(201);
+  });
+
   it('joins a live classroom by one-time QR and delivers idempotent mobile commands', async () => {
     const plan = await createPlan(true, approvedResourceId);
     const started = await request(app.getHttpServer())
@@ -2509,6 +2594,45 @@ describe('Task four classroom run state machine (e2e)', () => {
       .expect(201);
     expect(replay.body.result).toEqual(moved.body.result);
 
+    const openedMedia = await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send({ ...requestBody, requestId: requestId('mobile-play-resource'),
+        expectedVersion: moved.body.result.classroomState.version, operation: 'play_resource',
+        parameters: { resourceId: approvedResourceId } })
+      .expect(201);
+    expect(openedMedia.body.result.classroomState.playerRecoverySuggestion).toMatchObject({
+      resourceId: approvedResourceId, presentationMode: 'resource', status: 'playing',
+    });
+    const stoppedMedia = await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send({ ...requestBody, requestId: requestId('mobile-stop-resource'),
+        expectedVersion: openedMedia.body.result.classroomState.version, operation: 'stop_media' })
+      .expect(201);
+    expect(stoppedMedia.body.result.classroomState).toMatchObject({
+      status: 'running', currentStepIndex: moved.body.result.classroomState.currentStepIndex,
+      playerRecoverySuggestion: { operation: 'stop_media', presentationMode: 'avatar', status: 'stopped', resourceId: approvedResourceId },
+    });
+    const stoppedSnapshot = await request(app.getHttpServer())
+      .get(`/classroom-runs/${started.body.id}/restore`).query({ deviceId }).set(auth()).expect(200);
+    expect(stoppedSnapshot.body.playerRecoverySuggestion).toMatchObject({
+      operation: 'stop_media', presentationMode: 'avatar', status: 'stopped', resourceId: approvedResourceId,
+    });
+    const stoppedAgain = await request(app.getHttpServer())
+      .post('/classroom-mobile/commands')
+      .set(auth())
+      .set('X-Classroom-Control-Session', rawToken)
+      .send({ ...requestBody, requestId: requestId('mobile-stop-again'),
+        expectedVersion: stoppedMedia.body.result.classroomState.version, operation: 'stop_media' })
+      .expect(201);
+    expect(stoppedAgain.body.result.classroomState).toMatchObject({
+      status: 'running', currentStepIndex: moved.body.result.classroomState.currentStepIndex,
+      playerRecoverySuggestion: { operation: 'stop_media', presentationMode: 'avatar', status: 'stopped' },
+    });
+
     await request(app.getHttpServer())
       .post('/classroom-mobile/commands')
       .set(auth())
@@ -2516,7 +2640,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .send({
         ...requestBody,
         requestId: requestId('mobile-expired'),
-        expectedVersion: moved.body.result.classroomState.version,
+        expectedVersion: stoppedAgain.body.result.classroomState.version,
         issuedAt: new Date(Date.now() - 60_000).toISOString(),
         ttlMs: 1000,
       })
@@ -2533,7 +2657,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .send({
         ...requestBody,
         requestId: requestId('mobile-offline'),
-        expectedVersion: moved.body.result.classroomState.version,
+        expectedVersion: stoppedAgain.body.result.classroomState.version,
         operation: 'pause_media',
         issuedAt: new Date().toISOString(),
       })
@@ -2550,7 +2674,7 @@ describe('Task four classroom run state machine (e2e)', () => {
       .send({
         ...requestBody,
         requestId: requestId('mobile-complete'),
-        expectedVersion: moved.body.result.classroomState.version,
+        expectedVersion: stoppedAgain.body.result.classroomState.version,
         operation: 'complete_class',
         issuedAt: new Date().toISOString(),
       })

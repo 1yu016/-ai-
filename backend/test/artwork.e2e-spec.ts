@@ -38,6 +38,7 @@ describe('student artwork review (e2e)', () => {
   let app: INestApplication;
   let token: string;
   let otherToken: string;
+  let classPeerToken: string;
   let teacherId: number;
   let classId: number;
   let runId: number;
@@ -64,12 +65,15 @@ describe('student artwork review (e2e)', () => {
     const teacher = await teachers.findOneByOrFail({ account: 'artwork_teacher' });
     teacher.schoolId = 'garden-art'; await teachers.save(teacher); teacherId = teacher.id;
     const other = await teachers.save(teachers.create({ account: 'artwork_other', passwordHash: await bcrypt.hash('Teacher123!', 4), name: '其他老师', role: TeacherRole.Teacher, schoolId: 'garden-art' }));
+    const classPeer = await teachers.save(teachers.create({ account: 'artwork_peer', passwordHash: await bcrypt.hash('Teacher123!', 4), name: '同班老师', role: TeacherRole.Teacher, schoolId: 'garden-art' }));
     token = (await request(app.getHttpServer()).post('/auth/login').send({ account: teacher.account, password: 'Teacher123!' }).expect(200)).body.access_token as string;
     otherToken = (await request(app.getHttpServer()).post('/auth/login').send({ account: other.account, password: 'Teacher123!' }).expect(200)).body.access_token as string;
+    classPeerToken = (await request(app.getHttpServer()).post('/auth/login').send({ account: classPeer.account, password: 'Teacher123!' }).expect(200)).body.access_token as string;
 
     const classes = app.get<Repository<SchoolClass>>(getRepositoryToken(SchoolClass));
     classId = (await classes.save(classes.create({ schoolId: 'garden-art', name: '彩虹班', grade: '中班', ageRange: '4-5', schoolYear: '2026', status: RecordStatus.Active }))).id;
     await app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass)).save({ teacherId, classId, role: TeacherClassRole.Lead });
+    await app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass)).save({ teacherId: classPeer.id, classId, role: TeacherClassRole.Teacher });
     const students = app.get<Repository<Student>>(getRepositoryToken(Student));
     studentId = (await students.save(students.create({ classId, studentNo: 'ART-1', name: '朵朵', nickname: null, gender: null, birthday: null, status: RecordStatus.Active }))).id;
     const classroom = await app.get<Repository<Classroom>>(getRepositoryToken(Classroom)).save({ schoolId: 'garden-art', name: '美术教室', roomCode: 'ART', location: null, status: RecordStatus.Active });
@@ -122,9 +126,49 @@ describe('student artwork review (e2e)', () => {
   it('isolates other teachers and exposes authenticated lists/files', async () => {
     const repo = app.get<Repository<StudentArtworkRecord>>(getRepositoryToken(StudentArtworkRecord));
     const artwork = await repo.findOneByOrFail({ originalName: 'tree.png' });
-    await request(app.getHttpServer()).get(`/artworks/${artwork.id}/file`).set(auth()).expect(200).expect('Content-Type', /image\/png/);
+    await request(app.getHttpServer()).get(`/artworks/${artwork.id}/file`).set(auth()).expect(200).expect('Content-Type', /image\/png/).expect('Cache-Control', 'private, no-store');
     await request(app.getHttpServer()).get(`/classroom-runs/${runId}/artworks`).set(auth()).expect(200).expect((response) => { expect(response.body.total).toBe(2); });
+    // Stage 8 班级作品回顾：studentId 只做过滤，不改变班级权限；非法值由 DTO 拒绝。
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set(auth()).expect(200).expect((response) => { expect(response.body.total).toBe(2); });
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set(auth()).query({ studentId }).expect(200).expect((response) => {
+      expect(response.body.total).toBe(2);
+      expect(response.body.items.every((item: { studentId: number }) => item.studentId === studentId)).toBe(true);
+    });
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set(auth()).query({ studentId: 999999 }).expect(200).expect((response) => {
+      expect(response.body.total).toBe(0);
+      expect(response.body.items).toEqual([]);
+    });
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set(auth()).query({ studentId: 0 }).expect(400);
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set(auth()).query({ studentId: 'abc' }).expect(400);
     await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set('Authorization', `Bearer ${otherToken}`).expect(403);
     await request(app.getHttpServer()).post(`/artworks/${artwork.id}/confirm`).set('Authorization', `Bearer ${otherToken}`).send({ teacherComment: '不能修改' }).expect(403);
+  });
+
+  it('rechecks consent when serving a file and keeps class history behind class access', async () => {
+    const repo = app.get<Repository<StudentArtworkRecord>>(getRepositoryToken(StudentArtworkRecord));
+    const consentRepo = app.get<Repository<GuardianConsent>>(getRepositoryToken(GuardianConsent));
+    const artwork = await repo.findOneByOrFail({ originalName: 'tree.png' });
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set('Authorization', `Bearer ${classPeerToken}`).expect(200);
+    await request(app.getHttpServer()).get(`/artworks/${artwork.id}/file`).set('Authorization', `Bearer ${classPeerToken}`).expect(200);
+
+    await consentRepo.update({ studentId, consentType: ConsentType.Photo }, { status: ConsentStatus.Revoked, revokedAt: new Date() });
+    await request(app.getHttpServer()).get(`/artworks/${artwork.id}/file`).set(auth()).expect(403);
+    // 班级回顾元数据仍可访问；敏感图片文件必须重新授权。
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set(auth()).expect(200);
+    await consentRepo.update({ studentId, consentType: ConsentType.Photo }, { status: ConsentStatus.Granted, revokedAt: null });
+
+    await request(app.getHttpServer()).get(`/artworks/${artwork.id}/file`).expect(401);
+    await request(app.getHttpServer()).get(`/artworks/${artwork.id + 10000}/file`).set('Authorization', `Bearer ${otherToken}`).expect(404);
+  });
+
+  it('rejects cross-class ID substitution for artwork read and mutation endpoints', async () => {
+    const repo = app.get<Repository<StudentArtworkRecord>>(getRepositoryToken(StudentArtworkRecord));
+    const artwork = await repo.findOneByOrFail({ originalName: 'tree.png' });
+    await request(app.getHttpServer()).get(`/artworks/${artwork.id}/file`).set('Authorization', `Bearer ${otherToken}`).expect(403);
+    await request(app.getHttpServer()).get(`/classes/${classId}/artworks`).set('Authorization', `Bearer ${otherToken}`).expect(403);
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/artworks`).set('Authorization', `Bearer ${otherToken}`).expect(403);
+    await request(app.getHttpServer()).post('/ai/artwork-review').set('Authorization', `Bearer ${otherToken}`).send({ artworkId: artwork.id }).expect(403);
+    await request(app.getHttpServer()).post(`/artworks/${artwork.id}/confirm`).set('Authorization', `Bearer ${otherToken}`).send({ teacherComment: '越权修改尝试' }).expect(403);
+    await request(app.getHttpServer()).post(`/artworks/${artwork.id}/deliver`).set('Authorization', `Bearer ${otherToken}`).send({ requestId: 'unauthorized-artwork-delivery', deviceId, targetDeviceId: deviceId, expectedVersion: 1, source: 'teacher_panel' }).expect(403);
   });
 });

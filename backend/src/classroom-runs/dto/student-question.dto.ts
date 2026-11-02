@@ -13,6 +13,12 @@ import {
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
+export class ChildQaQuestionDto {
+  @Transform(trim) @IsString() @Length(1, 100) requestId: string;
+  @Transform(trim) @IsString() @Length(1, 100) sessionId: string;
+  @Transform(trim) @IsString() @Length(1, 300) question: string;
+}
+
 export class CreateStudentQuestionDto {
   @Transform(trim) @IsString() @Length(1, 100) requestId: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) studentId?: number | null;

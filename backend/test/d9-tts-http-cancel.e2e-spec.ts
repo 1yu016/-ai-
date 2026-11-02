@@ -10,6 +10,7 @@ import { HeuristicAssistantService } from '../src/ai/heuristic-assistant.service
 import { ClassroomCommandService } from '../src/ai/classroom-command.service';
 import { AuthGuard } from '../src/auth/auth.guard';
 import { OptionalAuthGuard } from '../src/auth/optional-auth.guard';
+import { AuditService } from '../src/platform/audit.service';
 
 describe('D9 actual HTTP disconnect propagation (no database or remote services)', () => {
   it('client abort reaches the active provider AbortSignal; no success is fabricated', async () => {
@@ -22,7 +23,7 @@ describe('D9 actual HTTP disconnect propagation (no database or remote services)
       throw Error('Unexpected success');
     } };
     const fixture = await Test.createTestingModule({ controllers: [AiController], providers: [
-      ...[AiService, ChatPersistenceService, ResourceService, ClassroomDirectorService, HeuristicAssistantService, ClassroomCommandService].map(provide => ({ provide, useValue: {} })),
+      ...[AiService, ChatPersistenceService, ResourceService, ClassroomDirectorService, HeuristicAssistantService, ClassroomCommandService, AuditService].map(provide => ({ provide, useValue: { writeAi: async () => undefined } })),
       { provide: AudioService, useValue: audio },
     ] }).overrideGuard(ThrottlerGuard).useValue({ canActivate: () => true })
       .overrideGuard(AuthGuard).useValue({ canActivate: () => false })
