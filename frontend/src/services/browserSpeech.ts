@@ -109,6 +109,7 @@ export type BrowserSpeechOptions = {
   onCancel?: () => void
   onStart?: () => void
   lang?: string
+  voice?: SpeechSynthesisVoice
   rate?: number
   volume?: number
   pitch?: number
@@ -142,6 +143,7 @@ export function speakBrowserText(text: string, options: BrowserSpeechOptions = {
       if (current() && !started) { started = true; options.onStart?.() }
     }
     if (!useDefaults) {
+      if (options.voice) utterance.voice = options.voice
       if (options.lang) utterance.lang = options.lang
       if (options.rate != null) utterance.rate = options.rate
       if (options.volume != null) utterance.volume = options.volume
@@ -152,7 +154,7 @@ export function speakBrowserText(text: string, options: BrowserSpeechOptions = {
     }
     utterance.onerror = () => {
       if (!current()) return
-      if (!started && !fallbackAttempted && !useDefaults) {
+      if (!started && !fallbackAttempted && !useDefaults && !options.voice) {
         fallbackAttempted = true
         attempt++ // cancel may synchronously emit events for the failed attempt
         options.onFallback?.()

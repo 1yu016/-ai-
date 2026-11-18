@@ -77,7 +77,7 @@ describe('备课资源绑定 · Stage 6.6', () => {
     })
     await flushPromises()
     expect(http.get).toHaveBeenCalledWith('/resources', {
-      params: expect.objectContaining({ reviewStatus: 'approved' }),
+      params: expect.objectContaining({ pageSize: 20 }),
     })
     const choose = wrapper
       .findAll('button')
@@ -197,4 +197,18 @@ describe('备课资源绑定 · Stage 6.6', () => {
     expect(resourceMocks.fetchBlob).toHaveBeenCalledWith(12)
     expect(image.attributes('src')).toBe('blob:protected-image')
   })
+})
+it('keeps custom resource categories and blocks unreviewed resource selection', async () => {
+  expect(normalizeServerResource({ ...imageResource, category: '园本自定义分类' })?.category).toBe('园本自定义分类')
+  vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [{ ...imageResource, reviewStatus: 'pending_review' }], total: 1 } })
+  const wrapper = mount(LessonResourceSelector, {
+    props: { open: true },
+    global: { plugins: [ElementPlus, createPinia()], stubs: { teleport: true, ElSelect: true, ElOption: true } },
+  })
+  await flushPromises()
+  const button = wrapper.findAll('button').find(item => item.text() === '选择')
+  expect(button?.attributes('disabled')).toBeDefined()
+  expect(wrapper.text()).toContain('待审核')
+  expect(wrapper.emitted('selected')).toBeUndefined()
+  wrapper.unmount()
 })

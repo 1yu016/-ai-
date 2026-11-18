@@ -75,23 +75,23 @@ export default defineConfig({
             : undefined,
       },
       '/badge-definitions': {
-        target: 'http://localhost:3001',
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       '/reward-rules': {
-        target: 'http://localhost:3001',
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       '/break-runs': {
-        target: 'http://localhost:3001',
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       '/audit-logs': {
-        target: 'http://localhost:3001',
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       '/ai-call-logs': {
-        target: 'http://localhost:3001',
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       '/uploads': {

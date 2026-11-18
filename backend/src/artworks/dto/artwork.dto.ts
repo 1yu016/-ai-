@@ -18,6 +18,8 @@ export class ConfirmArtworkDto {
 export class ArtworkListQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 20;
+  /** 可选：只看某个幼儿的作品。仅做过滤，不改变班级/课堂权限校验。 */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) studentId?: number;
 }
 
 export class DeliverArtworkDto {

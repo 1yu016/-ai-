@@ -9,6 +9,10 @@ export type ClassroomCommandSource =
   | 'teacher_panel'
 
 export type ClassroomCommandOperation =
+  | 'child_qa_start'
+  | 'child_qa_stop'
+  | 'child_qa_approve'
+  | 'child_qa_reject'
   | 'previous_step'
   | 'next_step'
   | 'switch_step'

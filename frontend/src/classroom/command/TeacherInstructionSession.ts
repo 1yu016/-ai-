@@ -3,6 +3,7 @@ import { classroomRequestId } from '@/services/classroomCommandBus'
 import { routeTeacherVoiceCommand, type TeacherVoiceCommandMatch } from './TeacherVoiceCommandRouter'
 import { isQuestion, normalize, NEGATION_GUARDS } from './ClassroomIntentPatterns'
 import { resolveIntent } from './ClassroomIntentRouter'
+import { understandTeaching, teachingText } from './TeachingLanguage'
 
 export type TeacherInstructionContext = CommandRun & { classId: number; currentStepIndex: number; status: string; breakActive?: boolean }
 type Pending = { origin: TeacherInstructionContext; match: TeacherVoiceCommandMatch; requestId: string }
@@ -10,6 +11,9 @@ export interface TeacherInstructionDeps {
   context(): TeacherInstructionContext | null
   check?(match: TeacherVoiceCommandMatch): void
   currentResource?(): { id: number | string; title: string } | null
+  rollCallState?(): { lastStudentId?: number; lastStudentDisplayName?: string; updatedAt?: string; counts?: Record<string, number>; recentResults?: Array<{studentId:number}> }
+  referentAmbiguous?(): boolean
+  journal?: { read(): string | null; write(value: string | null): void }
   students(classId: number): Promise<Array<{ id: number; classId: number; name: string; nickname: string | null; status: string }>>
   execute(match: TeacherVoiceCommandMatch, requestId: string): Promise<ClassroomCommandResult | null>
   query(requestId: string): Promise<{
@@ -32,15 +36,43 @@ export class TeacherInstructionSession {
   private busy = false
   private missing: { origin: TeacherInstructionContext; match: TeacherVoiceCommandMatch } | null = null
   private pending: Pending | null = null
+  private candidate: { match: TeacherVoiceCommandMatch; origin: TeacherInstructionContext; until: number } | null = null
   constructor(private readonly deps: TeacherInstructionDeps) {}
-  get unresolvedRequestId() { return this.pending?.requestId ?? null }
-  invalidate() { this.epoch++; this.missing = null }
+  get unresolvedRequestId() { this.restorePending(); return this.pending?.requestId ?? null }
+  invalidate() {
+    this.epoch++; this.missing = null; this.candidate = null
+    const current=this.deps.context()
+    if(this.pending && (!current || current.id!==this.pending.origin.id || current.classId!==this.pending.origin.classId || current.deviceId!==this.pending.origin.deviceId))this.pending=null
+  }
+  clearIdentity() {this.invalidate();this.pending=null}
+  private restorePending() {
+    if (this.pending || !this.deps.journal) return
+    const raw = this.deps.journal.read()
+    if (!raw) return
+    try {
+      const value = JSON.parse(raw) as Pending
+      const current = this.deps.context()
+      if (!value || !current || value.origin?.id !== current.id || value.origin.deviceId !== current.deviceId || value.origin.classId !== current.classId || typeof value.requestId !== 'string' || !value.match?.operation) throw Error('invalid journal')
+      this.pending = value
+    } catch { this.deps.journal.write(null) }
+  }
+  private savePending(value: Pending | null) {
+    const minimal=value ? {...value,match:{operation:value.match.operation,normalized:'',label:'',requiresConfirmation:false,source:'builtin'}} : null
+    this.deps.journal?.write(minimal ? JSON.stringify(minimal) : null); this.pending = value
+  }
+  registerConfirmation(match:TeacherVoiceCommandMatch):TeacherVoiceCommandMatch {
+    const origin=this.deps.context()
+    const candidate={...match,confirmationId:classroomRequestId('teacher-confirmation')}
+    if(origin)this.candidate={match:candidate,origin:{...origin},until:Date.now()+120000}
+    return candidate
+  }
 
   async submit(raw: string, requireTeacherConfirmation = false): Promise<InstructionFeedback> {
-    const text = normalize(raw)
+    const text = normalize(teachingText(raw))
     const origin = this.deps.context()
     if (!origin) return { handled: true, message: '课堂状态未就绪，请重新查询。' }
     if (text === '取消') { this.missing = null; return { handled: true, message: '已取消待补充指令。' } }
+    this.restorePending()
     if (this.pending) return this.query()
     if (this.busy) return { handled: true, message: '正在处理上一条指令，请稍候。' }
     if (!text || isQuestion(text) || NEGATION_GUARDS.some(word => text.includes(word))) {
@@ -48,12 +80,32 @@ export class TeacherInstructionSession {
       return { handled: true, message: '未执行课堂操作。提问请使用儿童对话或教学助教入口。' }
     }
     let match: TeacherVoiceCommandMatch | undefined
+    const understood = understandTeaching(raw)
+    if (understood?.kind === 'unclear') return { handled: true, message: '我不确定你要执行哪项操作，请只说一项明确指令。未执行。' }
+    if (understood?.kind === 'unknownSpeech') return { handled: true, message: '我目前只能根据本节课的点名记录挑选，还无法确认谁没有发过言。你可以说“找一个还没被点到的孩子”。' }
+    if (understood?.kind === 'roll') {
+      match = this.simple('random_roll_call', text)
+      if (understood.selection !== 'random') {
+        const state = this.deps.rollCallState?.()
+        if (!state || !state.counts) return { handled: true, message: '尚无完整的本节课点名依据，请刷新课堂后重试。' }
+        if (understood.selection === 'another' && (!state.lastStudentId || !state.updatedAt || Date.now() - Date.parse(state.updatedAt) > 120000)) return { handled:true, message:'“再来一个”缺少近期明确点名依据，请说“随机点名”。' }
+        const captured = { ...origin }, epoch = this.epoch
+        this.busy = true
+        let students: Awaited<ReturnType<TeacherInstructionDeps['students']>>
+        try { students = await this.deps.students(origin.classId) } finally { this.busy = false }
+        if (epoch !== this.epoch || !same(this.deps.context(), captured)) return {handled:true,message:'课堂已变化，请重新输入。'}
+        const ids = students.filter(s=>s.classId === origin.classId && s.status === 'active' && (understood.selection === 'uncalled' ? !(state.counts?.[s.id] ?? 0) : s.id !== state.lastStudentId)).map(s=>s.id)
+        if (!ids.length) return {handled:true,message:'符合条件的孩子都已点过或没有其他有效候选。是否允许重复？如允许，请明确说“随机点名”。'}
+        match.parameters = {studentIds:ids}
+      }
+    }
+    if (understood?.kind === 'reward') match = {...this.simple('reward_student',text),parameters:{studentName:understood.name,stars:understood.stars,rewardCategory:'answer',rewardForms:['flower']}}
     const flower = text.match(/^给(.+?)([一二两三四五1-5])朵(?:小红花|红花)$/)
-    if (flower) {
+    if (!match && flower) {
       const stars = flower[2] === '两' ? 2 : Number(flower[2]) || '一二三四五'.indexOf(flower[2]!) + 1
       match = { operation: 'reward_student', normalized: text, label: '奖励小红花', requiresConfirmation: false, source: 'builtin',
         parameters: { studentName: flower[1]!.trim(), stars, rewardCategory: 'answer', rewardForms: ['flower'] } }
-    } else {
+    } else if (!match) {
       const route = routeTeacherVoiceCommand(text)
       if (route?.kind === 'command') match = route.match
       if (route?.kind === 'resource_search') {
@@ -82,15 +134,27 @@ export class TeacherInstructionSession {
     if (!match) { this.missing = null; return { handled: false, message: '' } }
     if (match.operation === 'group_roll_call') return { handled: true, message: '请在正式点名面板选择已有分组；不能以临时姓名列表代替分组身份。' }
     if (['reward_student', 'specified_roll_call'].includes(match.operation)) {
-      const name = String(match.parameters?.studentName ?? '').trim()
-      if (!name || ['他', '她', '这个孩子', '这位小朋友'].includes(name)) {
+      let name = String(match.parameters?.studentName ?? '').trim()
+      if (['他', '她', '这个孩子', '这位小朋友', '刚才那个孩子', '刚才的小朋友', '刚才那个小朋友'].includes(name)) {
+        const state = this.deps.rollCallState?.()
+        const age = Date.now() - Date.parse(state?.updatedAt ?? '')
+        const ambiguousPronoun=['他','她'].includes(name) && new Set(state?.recentResults?.map(r=>r.studentId) ?? []).size>1
+        if (!ambiguousPronoun && !this.deps.referentAmbiguous?.() && state?.lastStudentId && state.lastStudentDisplayName && age >= 0 && age <= 120000) {
+          name = state.lastStudentDisplayName
+          match = {...match,parameters:{...match.parameters,studentName:name,referentStudentId:state.lastStudentId}}
+        } else name = ''
+      }
+      if (!name) {
         this.missing = { origin: { ...origin }, match }
         return { handled: true, message: '请补充当前班级的学生姓名；重名时请到点名或奖励面板选择。' }
       }
       // Typed teacher instructions with complete parameters need no repeated confirmation.
-      match = { ...match, requiresConfirmation: false }
+      match = { ...match, requiresConfirmation: match.operation === 'reward_student' }
     }
-    if (match.requiresConfirmation || requireTeacherConfirmation) return { handled: true, message: '请教师确认识别结果或课堂生命周期操作。', confirmation: match }
+    if (match.requiresConfirmation || requireTeacherConfirmation) {
+      match = this.registerConfirmation(match)
+      return { handled: true, message: `请教师确认：${match.label}${match.parameters?.studentName ? `（${match.parameters.studentName}，${match.parameters.stars ?? ''}）` : ''}。`, confirmation: match }
+    }
     return this.execute(match)
   }
 
@@ -99,6 +163,10 @@ export class TeacherInstructionSession {
     if (this.busy) return { handled: true, message: '正在处理上一条指令，请稍候。' }
     const origin = this.deps.context()
     if (!origin) return { handled: true, message: '课堂状态未就绪。' }
+    if (this.candidate && this.candidate.match.confirmationId === match.confirmationId) {
+      const candidate = this.candidate; this.candidate = null
+      if (!same(origin,candidate.origin) || Date.now() > candidate.until) return {handled:true,message:'确认已过期或课堂已变化，请重新输入完整指令。'}
+    } else if (match.requiresConfirmation) return {handled:true,message:'没有仍有效的确认候选，请重新输入指令。'}
     if (match.operation === 'group_roll_call') return { handled: true, message: '请在正式分组点名面板选择分组。' }
     const captured = { ...origin }, epoch = this.epoch
     this.busy = true
@@ -108,10 +176,11 @@ export class TeacherInstructionSession {
       if (['reward_student', 'specified_roll_call'].includes(match.operation)) {
         const name = String(parameters.studentName ?? '').trim()
         const students = await this.deps.students(captured.classId)
-        const matches = students.filter(s => s.classId === captured.classId && s.status === 'active' && (s.name === name || s.nickname === name))
+        const matches = students.filter(s => s.classId === captured.classId && s.status === 'active' && (parameters.referentStudentId ? s.id === parameters.referentStudentId : (s.name === name || s.nickname === name)))
         if (matches.length !== 1) return { handled: true, message: matches.length ? '该姓名对应多名学生，请到正式面板选择。' : '当前班级没有找到有效学生，请补充准确姓名。' }
         parameters.studentId = matches[0]!.id
         delete parameters.studentName
+        delete parameters.referentStudentId
       }
       if (epoch !== this.epoch || !same(this.deps.context(), captured)) return { handled: true, message: '课堂上下文已变化，旧指令未执行。' }
       this.missing = null
@@ -119,19 +188,19 @@ export class TeacherInstructionSession {
       this.deps.check?.(resolved)
       const requestId = classroomRequestId('teacher-instruction')
       // Preserve identity before handing off to the existing Store/CommandBus.
-      this.pending = { origin: captured, match: resolved, requestId }
+      this.savePending({ origin: captured, match: resolved, requestId })
       sent = true
       const result = await this.deps.execute(resolved, requestId)
       if (!result || result.status !== 'success' || result.requestId !== requestId ||
           result.runId !== captured.id || result.operation !== resolved.operation) throw new Error('未获得匹配的成功回执')
-      this.pending = null
+      this.savePending(null)
       return { handled: true, message: this.message(result), result: result.result, committedRunId: result.runId }
     } catch (error) {
       const status = (error as { response?: { status?: number } }).response?.status
       // Even an HTTP failure may follow a committed canonical transaction.
       // Only explicit admission failures are final here; all ambiguous results stay queryable.
       if (!sent || [400, 401, 403, 404, 422].includes(status ?? 0)) {
-        this.pending = null
+        this.savePending(null)
         return { handled: true, message: error instanceof Error ? error.message : '权限或参数检查未通过，未确认执行成功。' }
       }
       return { handled: true, message: '执行结果暂时未知，已保留原请求。请查询结果，不要重复提交。' }
@@ -139,6 +208,7 @@ export class TeacherInstructionSession {
   }
 
   async query(): Promise<InstructionFeedback> {
+    this.restorePending()
     const pending = this.pending
     if (!pending) return { handled: true, message: '没有待查询的指令。' }
     try {
@@ -150,7 +220,7 @@ export class TeacherInstructionSession {
           result.requestId !== pending.requestId || result.runId !== pending.origin.id || result.operation !== pending.match.operation) {
         return { handled: true, message: '尚无可靠成功回执，请保留请求标识并继续查询；不会自动重发。' }
       }
-      this.pending = null
+      this.savePending(null)
       // Preserve committed result even when current-state refresh fails.
       try { await this.deps.adopt(result, pending.origin) } catch { /* success remains success */ }
       return { handled: true, message: `原请求（课堂 ${result.runId}）：${this.message(result)}`, result: result.result, committedRunId: result.runId }

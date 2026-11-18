@@ -42,6 +42,26 @@ describe('管理员后台', () => {
     expect(wrapper.text()).not.toContain('幼儿姓名')
   })
 
+  it('显示新增教学分析聚合指标并保留旧版看板', async () => {
+    vi.spyOn(platformApi, 'adminDashboard').mockResolvedValue({ data: {
+      generatedAt: '2026-11-02T04:00:00.000Z', teachers: 8, classes: 3, students: 62,
+      devices: { total: 4, online: 3, offline: 1 },
+      classrooms: { today: 2, active: 1, abnormal: 0, completed: 12 },
+      classroomRecords: { completedRuns: 12, formalSummaries: 7 },
+      resources: { pending: 5, disabled: 1 },
+      ai: { total: 10, successRate: 95, errorRate: 5, averageLatencyMs: 50, lessonPreparationCalls: 3, resourceMatchingRequests: 4, classroomSummaryCalls: 2 },
+      storage: { indexedResourceBytes: 2048, physicalBytes: 4096 },
+    } } as never);
+    const wrapper = mount(AdminDashboardView, { global: { stubs: { ManagementLayout: managementStub } } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('在线设备');
+    expect(wrapper.text()).toContain('教师确认总结');
+    expect(wrapper.text()).toContain('7');
+    expect(wrapper.text()).toContain('AI备课调用');
+    expect(wrapper.text()).toContain('教学分析使用量');
+    wrapper.unmount();
+  });
+
   it('统计接口尚未部署时明确显示暂无统计接口且不伪造数字', async () => {
     vi.spyOn(platformApi, 'adminDashboard').mockRejectedValue({
       isAxiosError: true,

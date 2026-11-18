@@ -1,3 +1,4 @@
+import { readChildQaConfig } from '../classroom-runs/child-qa.core';
 import {
   BadRequestException,
   ConflictException,
@@ -50,6 +51,7 @@ import {
 const ALLOWED_ACTION_NAMES: Readonly<
   Record<LessonStepActionType, Set<string>>
 > = {
+  [LessonStepActionType.ChildQa]: new Set(['configure']),
   [LessonStepActionType.AvatarAction]: new Set([
     'wave',
     'nod',
@@ -842,6 +844,8 @@ export class LessonPlanService {
       if (step.stepType === LessonStepType.Resource && !step.resourceId)
         throw new BadRequestException('资源步骤必须选择有效资源');
       for (const action of step.actions ?? []) {
+        if (action.actionType === LessonStepActionType.ChildQa && !readChildQaConfig([action]))
+          throw new BadRequestException('儿童问答配置需要30至300秒、审核策略和教学主题');
         if (!ALLOWED_ACTION_NAMES[action.actionType].has(action.actionName))
           throw new BadRequestException('步骤动作名称不在允许列表中');
         if (action.content && UNSAFE_ACTION_CONTENT.test(action.content))

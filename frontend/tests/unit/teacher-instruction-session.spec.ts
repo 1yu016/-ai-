@@ -13,8 +13,10 @@ function fixture() {
   const adopt = vi.fn()
   const check = vi.fn()
   const currentResource = vi.fn<NonNullable<TeacherInstructionDeps['currentResource']>>(() => ({ id: 8, title: '合成课件' }))
-  const session = new TeacherInstructionSession({ context: () => context, students, execute, query, adopt, check, currentResource })
-  return { session, students, execute, query, adopt, check, currentResource, change: () => { context = { ...context, id: 9 }; session.invalidate() } }
+  const rollCallState = vi.fn<NonNullable<TeacherInstructionDeps['rollCallState']>>(()=>({lastStudentId:5,lastStudentDisplayName:'小明',updatedAt:new Date().toISOString(),counts:{5:1}}))
+  const deps = { context: () => context, students, execute, query, adopt, check, currentResource, rollCallState }
+  const session = new TeacherInstructionSession(deps)
+  return { session, deps, rollCallState, students, execute, query, adopt, check, currentResource, change: () => { context = { ...context, id: 9 }; session.invalidate() } }
 }
 describe('authenticated teacher instruction session', () => {
   it('random call reports only returned canonical student', async () => {
@@ -50,7 +52,8 @@ describe('authenticated teacher instruction session', () => {
     const f = fixture()
     let resolve!: (items: Awaited<ReturnType<typeof f.students>>) => void
     f.students.mockImplementation(() => new Promise(done => { resolve = done }))
-    const first = f.session.submit('奖励小明')
+    const candidate = await f.session.submit('奖励小明')
+    const first = f.session.execute(candidate.confirmation!)
     expect((await f.session.submit('奖励小明')).message).toContain('稍候')
     resolve([{ id: 5, classId: 3, name: '小明', nickname: null, status: 'active' }])
     await first
@@ -58,9 +61,11 @@ describe('authenticated teacher instruction session', () => {
   })
   it('asks only for missing object, retaining flower amount', async () => {
     const f = fixture()
+    f.rollCallState.mockReturnValue({})
     expect((await f.session.submit('给他两朵小红花')).message).toContain('补充')
     expect(f.execute).not.toHaveBeenCalled()
-    await f.session.submit('小明')
+    const candidate = await f.session.submit('小明')
+    await f.session.execute(candidate.confirmation!)
     expect(f.execute.mock.calls[0]![0].parameters).toMatchObject({ studentId: 5, stars: 2, rewardForms: ['flower'] })
   })
   it.each(['不要奖励小明', '为什么要奖励小明？', '结束课堂是什么意思？'])('questions and negation never execute: %s', async text => {
@@ -70,7 +75,8 @@ describe('authenticated teacher instruction session', () => {
     const f = fixture()
     const one = (await f.students())[0]!
     f.students.mockResolvedValue([one, { ...one, id: 6 }])
-    expect((await f.session.submit('奖励小明')).message).toContain('多名')
+    const candidate = await f.session.submit('奖励小明')
+    expect((await f.session.execute(candidate.confirmation!)).message).toContain('多名')
     expect(f.execute).not.toHaveBeenCalled()
   })
   it('inactive/foreign students never resolved', async () => {
@@ -88,18 +94,60 @@ describe('authenticated teacher instruction session', () => {
   it('context change while roster loads invalidates old task', async () => {
     const f = fixture()
     f.students.mockImplementation(async () => { f.change(); return [{ id: 5, classId: 3, name: '小明', nickname: null, status: 'active' }] })
-    await f.session.submit('奖励小明')
+    const candidate=await f.session.submit('奖励小明')
+    await f.session.execute(candidate.confirmation!)
     expect(f.execute).not.toHaveBeenCalled()
+  })
+  it('current authoritative referent is revalidated and reward waits for confirmation',async()=>{
+    const f=fixture();const result=await f.session.submit('给刚才那个孩子两颗星星')
+    expect(f.execute).not.toHaveBeenCalled()
+    await f.session.execute(result.confirmation!)
+    expect(f.execute.mock.calls[0]![0].parameters).toMatchObject({studentId:5,stars:2})
+  })
+  it('expired or ambiguous referents ask instead of guessing',async()=>{
+    const f=fixture();f.rollCallState.mockReturnValue({lastStudentId:5,lastStudentDisplayName:'小明',updatedAt:'2000-01-01'})
+    expect((await f.session.submit('给她一颗星星')).message).toContain('补充')
+    expect(f.execute).not.toHaveBeenCalled()
+    const other=new TeacherInstructionSession({...f.deps,referentAmbiguous:()=>true})
+    expect((await other.submit('给她一颗星星')).message).toContain('补充')
+  })
+  it('bare pronoun with multiple recent students asks, explicit latest referent still resolves',async()=>{
+    const f=fixture();f.rollCallState.mockReturnValue({lastStudentId:5,lastStudentDisplayName:'小明',updatedAt:new Date().toISOString(),recentResults:[{studentId:5},{studentId:6}]})
+    expect((await f.session.submit('也给她一颗星星')).message).toContain('补充')
+    expect((await f.session.submit('给刚才那个孩子一颗星星')).confirmation).toBeTruthy()
+    expect(f.execute).not.toHaveBeenCalled()
+  })
+  it('confirmation cannot be reused after changing run',async()=>{
+    const f=fixture();const result=await f.session.submit('给小明一颗星星');f.change()
+    await f.session.execute(result.confirmation!)
+    expect(f.execute).not.toHaveBeenCalled()
+  })
+  it('uncalled exhaustion asks permission, never silently repeats',async()=>{
+    const f=fixture();expect((await f.session.submit('找一个还没被点到的孩子')).message).toContain('是否允许重复')
+    expect(f.execute).not.toHaveBeenCalled()
+  })
+  it('refresh recovers unknown request only by query',async()=>{
+    const f=fixture();let saved:string|null=null
+    const journal={read:()=>saved,write:(v:string|null)=>{saved=v}}
+    const first=new TeacherInstructionSession({...f.deps,journal})
+    f.execute.mockRejectedValue(Error('network'));await first.submit('随机点名')
+    const requestId=first.unresolvedRequestId!
+    const refreshed=new TeacherInstructionSession({...f.deps,journal})
+    f.query.mockResolvedValue({requestId,classroomRunId:1,deviceId:2,operation:'random_roll_call',status:'processing',responsePayload:null})
+    await refreshed.submit('随机点名')
+    expect(f.execute).toHaveBeenCalledOnce();expect(f.query).toHaveBeenCalledWith(requestId)
   })
   it('policy admission failure is not a pending submitted command', async () => {
     const f = fixture(); f.check.mockImplementation(() => { throw Error('当前课堂已暂停') })
-    expect((await f.session.submit('奖励小明')).message).toContain('暂停')
+    const candidate = await f.session.submit('奖励小明')
+    expect((await f.session.execute(candidate.confirmation!)).message).toContain('暂停')
     expect(f.execute).not.toHaveBeenCalled(); expect(f.session.unresolvedRequestId).toBeNull()
   })
   it('lost response recovers by GET, preserves first result even when refresh fails, never reposts', async () => {
     const f = fixture()
     f.execute.mockRejectedValue(Error('network'))
-    await f.session.submit('奖励小明')
+    const candidate = await f.session.submit('奖励小明')
+    await f.session.execute(candidate.confirmation!)
     const requestId = f.session.unresolvedRequestId!
     f.query.mockResolvedValue({ requestId, classroomRunId: 1, deviceId: 2, operation: 'reward_student', status: 'success',
       responsePayload: { requestId, runId: 1, operation: 'reward_student', status: 'success', result: { id: 44 }, classroomState: null } as ClassroomCommandResult })

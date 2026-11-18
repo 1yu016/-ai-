@@ -28,7 +28,7 @@ describe('0.5-4A shared pure operation policy', () => {
     const context = Object.freeze({ runStatus: 'paused', opening: true });
     expect(operationPhase(context)).toBe('paused');
     expect(policyAllowedActions(context)).toEqual(['query', 'resume', 'complete', 'cancel', 'safe_stop',
-      'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'checkpoint']);
+      'attendance_correction', 'reward_revoke', 'collective_reward_revoke', 'checkpoint', 'child_qa_stop']);
   });
   it.each(contexts)('verified successful replay is independent of phase: %j', context => {
     expect(decideOperation({ ...context, execution: 'committed_replay' }, 'reward').allowed).toBe(true);

@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ElDialog, ElMessage } from 'element-plus'
+import { ElDialog, ElDrawer, ElMessage } from 'element-plus'
 import { http, apiErrorMessage } from '@/api/http'
 import { platformApi, type Student } from '@/api/platform'
 import { useLessonRunStore, type ClassroomRunPayload, type StartBreakOptions } from '@/stores/lessonRun'
@@ -11,6 +11,7 @@ import {
   QUICK_REWARD_REASONS,
   type Attendance,
 } from '@/services/classroomCheckpoint'
+import ClassroomGroupingPanel from '@/components/classroom/ClassroomGroupingPanel.vue'
 import AttendancePanel from '@/components/classroom/operations/AttendancePanel.vue'
 import type { VoiceAttendanceCandidate } from '@/components/classroom/operations/AttendancePanel.vue'
 import { isRecordingSupported, webmToWav, RECORDING_MIME_TYPE } from '@/services/recordingAudio'
@@ -30,6 +31,8 @@ type RollCallStudentPayload = {
   nickname?: unknown
 }
 
+const groupingOpen = ref(false)
+const groupingStudents = ref<number[]>([])
 const route = useRoute()
 const router = useRouter()
 const tab = computed<Tab>(() =>
@@ -60,6 +63,7 @@ let attendanceChunks: Blob[] = []
 // run 直接复用 store 的 run，保证与 LessonClassroomView/大屏通过 polling 多端同步。
 const store = useLessonRunStore()
 const { run, busy, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
+watch(() => run.value?.id, () => { groupingOpen.value = false; groupingStudents.value = [] })
 watch(() => run.value, () => { if (!store.capabilities || store.capabilities.version !== run.value?.version || Date.now() - store.capabilities.at > 4000) void store.refreshCapabilities() })
 const remoteFeedback = ref('')
 const pendingCommands = ref<string[]>([])
@@ -119,18 +123,36 @@ const tabItems: { key: Tab; label: string; icon: string; route: string }[] = [
   { key: 'remote', label: '教师遥控', icon: '📱', route: '/classroom/remote' },
 ]
 
+let loadGeneration = 0
+let disposed = false
 async function load() {
+  const generation = ++loadGeneration
+  store.clearRun()
   loading.value = true
   error.value = ''
   try {
     const classes = await platformApi.classes()
+    if (generation !== loadGeneration) return
     classOptions.value = classes.data.items
     const active = await http.get<ClassroomRunPayload | ClassroomRunPayload[]>('/classroom-runs/active')
-    let current = Array.isArray(active.data) ? (active.data[0] ?? null) : active.data
+    if (generation !== loadGeneration) return
+    const available = Array.isArray(active.data) ? active.data : active.data ? [active.data] : []
+    const requested = Number(route.query.runId)
+    if (route.query.runId && (!Number.isInteger(requested) || requested <= 0)) throw new Error('课堂上下文无效，请返回工作台重新进入。')
+    let current = requested ? available.find(item => item.id === requested) ?? null : available.length === 1 ? available[0] ?? null : null
+    if (requested && !current) {
+      store.clearRun()
+      throw new Error('原课堂已结束或您无权访问，请返回工作台检查。')
+    }
+    if (!requested && available.length > 1) {
+      store.clearRun()
+      throw new Error('有多节课堂正在进行，请从工作台选择课堂，再进入相应工具。')
+    }
     if (current) {
       if (!Array.isArray(current.steps) || current.attendanceState === undefined) {
         current = (await http.get<ClassroomRunPayload>(`/classroom-runs/${current.id}`)).data
       }
+      if (generation !== loadGeneration) return
       store.adoptRun(current)
       selectedClassId.value = current.classId ?? classOptions.value[0]?.id ?? null
     } else {
@@ -139,21 +161,26 @@ async function load() {
     }
     if (selectedClassId.value) {
       const result = await platformApi.students(selectedClassId.value)
+      if (generation !== loadGeneration) return
       students.value = result.data.items
     }
     if (run.value) {
       const restored = await restoreCheckpoint(run.value)
+      if (generation !== loadGeneration) return
       attendance.value = restored.attendance
       awards.value = restored.rewards
       const formal = await http.get<{ attendanceState: Record<number, Attendance> }>(`/classroom-runs/${run.value.id}/attendance`)
+      if (generation !== loadGeneration) return
       attendance.value = formal.data.attendanceState
     }
   } catch (e) {
+    if (generation !== loadGeneration) return
     error.value = apiErrorMessage(e, '互动数据加载失败，请稍后重试。')
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
+watch(() => route.query.runId, () => { void load().finally(() => { if (!disposed) store.startPolling() }) })
 
 async function chooseClass() {
   if (!selectedClassId.value) return
@@ -227,8 +254,11 @@ async function specifiedRoll(student: Student) {
   await executeRoll('specified_roll_call', { studentId: student.id })
 }
 
-async function groupRoll(studentIds: number[]) {
-  await executeRoll('group_roll_call', { studentIds, groupKey: `temporary-${studentIds.join('-')}` })
+function groupRoll(studentIds: number[]) {
+  if (!run.value || !store.can('roll_call')) return
+  if (studentIds.length < 2) return ElMessage.warning('请至少勾选两名幼儿。')
+  groupingStudents.value = [...studentIds]
+  groupingOpen.value = true
 }
 
 async function executeRoll(
@@ -445,7 +475,7 @@ async function replayPendingCommands() {
 }
 
 function go(item: (typeof tabItems)[number]) {
-  void router.push(item.route)
+  void router.push({ path: item.route, query: { ...route.query, ...(run.value ? { runId: String(run.value.id) } : {}) } })
 }
 
 function onlineChanged() {
@@ -457,10 +487,12 @@ onMounted(() => {
   pendingCommands.value = JSON.parse(localStorage.getItem('classroom-command-queue') || '[]')
   window.addEventListener('online', onlineChanged)
   window.addEventListener('offline', onlineChanged)
-  void load().finally(() => store.startPolling())
+  void load().finally(() => { if (!disposed) store.startPolling() })
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  loadGeneration++
   store.stopPolling()
   window.removeEventListener('online', onlineChanged)
   window.removeEventListener('offline', onlineChanged)
@@ -483,7 +515,7 @@ onBeforeUnmount(() => {
         <span class="connection" :class="{ offline: !online }">
           ● {{ online ? '在线' : '离线' }}
         </span>
-        <button class="ghost" @click="router.push('/chat')">返回助教</button>
+        <button v-if="run" class="ghost" @click="router.push({ name: 'lesson-classroom', params: { runId: run.id } })">返回当前课堂</button><button v-else class="ghost" @click="router.push({ name: 'teacher-home' })">返回工作台</button>
       </div>
     </header>
     <nav class="tabs" aria-label="课堂运营功能">
@@ -638,6 +670,9 @@ onBeforeUnmount(() => {
       </template>
     </ElDialog>
   </main>
+  <ElDrawer v-if="run" v-model="groupingOpen" title="随机分组" size="min(640px, 95vw)">
+    <ClassroomGroupingPanel :run-id="run.id" :active="groupingOpen" :allowed="!busy && store.can('roll_call')" :student-ids="groupingStudents" />
+  </ElDrawer>
 </template>
 
 <style scoped>

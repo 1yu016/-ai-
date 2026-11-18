@@ -4,6 +4,7 @@ import type { AssistantTool } from '@/stores/classroomAssistant'
 
 defineProps<{
   canSpeak?: boolean
+  localMode?: boolean
   enabled: boolean
   childVoiceStatus: string
   assistantLoading: boolean
@@ -46,15 +47,16 @@ const emit = defineEmits<{
       <ElButton size="small" type="success" plain @click="emit('toggleAssistant')">{{ enabled ? '收起助教' : '打开助教' }}</ElButton>
     </div>
     <template v-if="enabled">
-      <p class="card-tip">老师可以自由输入问题或要求；AI 先生成可编辑草稿，再由老师决定是否播放。</p>
+      <p v-if="localMode" class="card-tip">本地模式可按当前教案生成提问、提示、鼓励或总结草稿。</p>
+      <p v-else class="card-tip">老师可以自由输入问题或要求；AI 先生成可编辑草稿，再由老师决定是否播放。</p>
       <div class="assistant-free-input">
         <ElInput v-model="teacherPrompt" type="textarea" :rows="2" maxlength="1000" placeholder="输入老师想让助教回答的问题或课堂要求" />
-        <ElButton type="primary" :loading="assistantLoading" :disabled="!teacherPrompt.trim()" @click="emit('askAssistant', undefined, true)">生成AI草稿</ElButton>
+        <ElButton type="primary" :loading="assistantLoading" :disabled="!teacherPrompt.trim()" @click="emit('askAssistant', undefined, true)">{{ localMode ? '生成本地草稿' : '生成AI草稿' }}</ElButton>
       </div>
       <div class="assistant-child-voice">
         <ElInput v-model="childReply" type="textarea" :rows="2" maxlength="1000" placeholder="点击右侧“让孩子说话”，识别文字会显示在这里，老师也可修改" aria-label="孩子语音识别结果" />
         <ElButton :type="childRecording ? 'danger' : 'default'" :loading="childRequestingMicrophone || childRecognizing" :disabled="assistantLoading || childRequestingMicrophone || childRecognizing" @click="emit('toggleChildRecording')">
-          {{ childRecording ? '■ 说完了' : '🎤 让孩子说话' }}
+          {{ childRecording ? '■ 取消收听' : '🎤 让孩子说话' }}
         </ElButton>
       </div>
       <p v-if="childVoiceStatus" class="child-voice-status" role="status">{{ childVoiceStatus }}</p>
@@ -67,7 +69,7 @@ const emit = defineEmits<{
         <span v-if="attemptCount" class="attempt-level">提示层级 {{ attemptCount + 1 }}</span>
       </div>
       <div v-if="draftReply" class="ai-draft">
-        <small>AI 草稿（可由教师修改后再决定）</small>
+        <small>{{ localMode ? '本地教学草稿' : 'AI 草稿' }}（可由教师修改后再决定）</small>
         <ElInput v-model="draftReply" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" maxlength="500" aria-label="编辑AI草稿" />
         <em>{{ teacherTip }}</em>
         <div class="assistant-draft-actions">

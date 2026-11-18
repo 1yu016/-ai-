@@ -19,6 +19,7 @@ vi.mock('@/stores/lessonPlan', () => ({
 }))
 
 async function mountPreflight(deviceStatus: string) {
+  vi.spyOn(http, 'get').mockResolvedValue({ data: [] } as never)
   vi.spyOn(screenPreparationApi, 'get').mockResolvedValue({ data: { preparation: null, serverNow: new Date().toISOString() } } as never)
   let currentStatus = deviceStatus
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: true })
@@ -35,6 +36,7 @@ async function mountPreflight(deviceStatus: string) {
         path: '/preflight/:planId',
         component: ClassroomPreflightView,
       },
+      { path: '/classroom/screen/:deviceId', name: 'classroom-screen', component: { template: '<div>学生大屏</div>' } },
       { path: '/lesson-plans', component: { template: '<div>教案列表</div>' } },
     ],
   })
@@ -72,7 +74,7 @@ describe('ClassroomPreflight device error semantics', () => {
     expect(create).toHaveBeenCalledWith(55, expect.objectContaining({ lessonPlanId: 1, lessonPlanVersion: 1 }))
     expect(start).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('已准备到大屏')
-    expect(wrapper.findAll('button').some(b => b.text() === '开始课堂')).toBe(true)
+    expect(wrapper.findAll('button').some(b => b.text() === '开始上课')).toBe(true)
     await wrapper.findAll('button').find(b => b.text() === '取消准备')!.trigger('click'); await flushPromises()
     expect(cancel).toHaveBeenCalled()
     expect(wrapper.text()).not.toContain('已准备到大屏')
@@ -84,6 +86,36 @@ describe('ClassroomPreflight device error semantics', () => {
     expect(wrapper.text()).toContain('当前离线')
     expect(wrapper.text()).toContain('打开大屏页面')
     expect(enterButton(wrapper)?.disabled).toBe(true)
+  })
+
+  it('distinguishes a query failure from an offline device and blocks preparation', async () => {
+    const { wrapper } = await mountPreflight('online')
+    vi.mocked(platformApi.classDeviceBindings).mockRejectedValueOnce(new Error('network unavailable'))
+    await wrapper.findAll('button').find(b => b.text().includes('重新检查'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('学生大屏状态未知')
+    expect(enterButton(wrapper)?.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('offers an explicit continuation and blocks duplicate preparation', async () => {
+    const { wrapper } = await mountPreflight('online')
+    vi.mocked(http.get).mockResolvedValueOnce({ data: [{ id: 7, classId: 3, deviceId: 55, title: '进行中的课程', status: 'running' }] } as never)
+    await wrapper.findAll('button').find(b => b.text().includes('重新检查'))!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 220)); await flushPromises()
+    expect(wrapper.text()).toContain('继续课堂')
+    expect(enterButton(wrapper)?.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens the bound authorized screen only on a user click, without starting a classroom', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const post = vi.spyOn(http, 'post')
+    const { wrapper } = await mountPreflight('offline')
+    await wrapper.findAll('button').find(button => button.text() === '打开学生大屏')!.trigger('click')
+    expect(open).toHaveBeenCalledWith('/classroom/screen/55', '_blank', 'noopener')
+    expect(post).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('explains a disabled device instead of a generic message', async () => {
@@ -112,7 +144,7 @@ describe('ClassroomPreflight device error semantics', () => {
     await new Promise((resolve) => setTimeout(resolve, 220))
     await flushPromises()
 
-    expect(wrapper.text()).toContain('正式大屏（online）')
+    expect(wrapper.text()).toContain('正式大屏（已连接）')
     expect(wrapper.text()).toContain('已完成')
     expect(enterButton(wrapper)?.disabled).toBe(false)
   })
@@ -125,7 +157,7 @@ describe('ClassroomPreflight device error semantics', () => {
     await new Promise((resolve) => setTimeout(resolve, 220))
     await flushPromises()
 
-    expect(wrapper.text()).not.toContain('正式大屏（online）')
+    expect(wrapper.text()).not.toContain('正式大屏（已连接）')
     expect(wrapper.text()).toContain('暂无有效绑定')
     expect(enterButton(wrapper)?.disabled).toBe(true)
   })

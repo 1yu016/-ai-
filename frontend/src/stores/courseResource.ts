@@ -23,7 +23,7 @@ export const RESOURCE_TYPES = [
   'nursery_rhyme', 'question_bank', 'experiment', 'model_3d', 'document',
 ] as const
 
-export type CourseResourceCategory = (typeof COURSE_RESOURCE_CATEGORIES)[number]
+export type CourseResourceCategory = string
 export type ResourceAgeGroup = (typeof RESOURCE_AGE_GROUPS)[number]
 export type CourseResourceMediaType = (typeof RESOURCE_TYPES)[number]
 
@@ -145,7 +145,7 @@ function normalizeLegacyResource(value: unknown): CourseResource | null {
 export function normalizeServerResource(value: ServerResource): CourseResource | null {
   if (
     !value || !Number.isInteger(value.id) || typeof value.title !== 'string' ||
-    !isCourseResourceCategory(value.category) ||
+    typeof value.category !== 'string' || !value.category.trim() ||
     !RESOURCE_TYPES.includes(value.resourceType) || typeof value.fileUrl !== 'string'
   ) return null
 

@@ -17,7 +17,7 @@ const students = {
 }
 const run = { allowedActions: ['reward', 'roll_call', 'attendance_new', 'attendance_correction', 'start_break', 'end_break', 'pause', 'resume', 'change_step'], id: 9, version: 3, deviceId: 2, status: 'running', currentStepIndex: 0, steps: [{ title: '问候' }] }
 
-async function mountOps() {
+async function mountOps(location = '/classroom/engagement') {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -25,7 +25,7 @@ async function mountOps() {
       { path: '/chat', component: { template: '<div>聊天页</div>' } },
     ],
   })
-  router.push('/classroom/engagement')
+  router.push(location)
   await router.isReady()
   return mount(ClassroomOperationsView, { global: { plugins: [router, ElementPlus, createPinia()] } })
 }
@@ -64,6 +64,23 @@ describe('ClassroomOperationsView 考勤/奖励状态收口', () => {
     localStorage.clear()
     vi.restoreAllMocks()
     document.body.innerHTML = ''
+  })
+
+  it('does not choose the first of multiple active classrooms', async () => {
+    const get = mockGets()
+    get.mockResolvedValueOnce(classes as never).mockResolvedValueOnce({ data: [run, { ...run, id: 10 }] } as never)
+    const wrapper = await mountOps(); await flushPromises()
+    expect(wrapper.text()).toContain('有多节课堂正在进行')
+    expect(get).not.toHaveBeenCalledWith('/classroom-runs/9')
+    wrapper.unmount()
+  })
+
+  it('does not switch to another classroom when the requested classroom is unavailable', async () => {
+    mockGets()
+    const wrapper = await mountOps('/classroom/engagement?runId=999'); await flushPromises()
+    expect(wrapper.text()).toContain('原课堂已结束或您无权访问')
+    expect(wrapper.find('.student-row').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('保存 checkpoint：点击到课后写入后端 attendanceState（非嵌套）', async () => {

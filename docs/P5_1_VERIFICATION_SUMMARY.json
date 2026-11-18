@@ -1,0 +1,776 @@
+{
+  "backendUnit": {
+    "passed": 701
+  },
+  "backendE2E": {
+    "passed": 474,
+    "skipped": 17,
+    "suitesPassed": 45,
+    "suitesSkipped": 5
+  },
+  "frontend": {
+    "passed": 1025,
+    "files": 125
+  },
+  "browserCore": 4,
+  "browserAuthNavigation": 7,
+  "historicalMigrationsUnchanged": 30,
+  "registeredMigrations": 38,
+  "entityMissingTables": [],
+  "entityMissingColumns": [],
+  "authorityDatabase": "UNCONFIRMED",
+  "checks": [
+    {
+      "label": "A-backend-types",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 2,
+      "seconds": 17.17,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "A-frontend-types",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 2,
+      "seconds": 24.42,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "B-artwork",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "artwork.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 36.52,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "A-backend-types-fixed",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 3.61,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "B-summary",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "classroom-record.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 3.25,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "A-frontend-types-fixed",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 7.48,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "A-policy",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--runInBand",
+        "classroom-operation-policy.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 1.62,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "C-migrations",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "stage8-migrations.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 1.78,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "D-analysis",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--runInBand",
+        "classroom-analysis.spec.ts",
+        "question-domain.spec.ts",
+        "ai.controller.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 3.47,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "D-records-platform",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "classroom-record.e2e-spec.ts",
+        "platform-stage-one.e2e-spec.ts",
+        "student-question.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 7.78,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "E-F-policy-qa",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--runInBand",
+        "classroom-operation-policy.spec.ts",
+        "child-qa.core.spec.ts",
+        "child-qa.service.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 2.33,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "D-record-ui",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "tests/component/ClassroomRecordView.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 34.28,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "E-F-run",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "classroom-run.e2e-spec.ts",
+        "d9-tts-http-cancel.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 11.83,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "F-frontend-types",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 7.97,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "F-qa-screen-mobile",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "tests/component/child-qa-panel.spec.ts",
+        "tests/component/ClassroomScreenView.spec.ts",
+        "tests/unit/classroom-mobile.spec.ts",
+        "tests/unit/resource-player-media.spec.ts",
+        "tests/unit/local-wake-speech.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 16.66,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-backend-types",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 3.45,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-backend-build",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "build"
+      ],
+      "exitCode": 0,
+      "seconds": 11.28,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-frontend-build",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "build"
+      ],
+      "exitCode": 0,
+      "seconds": 9.98,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-backend-unit",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--runInBand"
+      ],
+      "exitCode": 0,
+      "seconds": 15.12,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-frontend-tests",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--maxWorkers=2"
+      ],
+      "exitCode": 4294967295,
+      "seconds": 165.59,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-backend-e2e",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand"
+      ],
+      "exitCode": 1,
+      "seconds": 169.64,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "C-integration-safety",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "integration-migration-safety.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.7,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-backend-e2e-prepared",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand"
+      ],
+      "exitCode": 0,
+      "seconds": 169.17,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "all-frontend-verbose",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "--reporter=verbose"
+      ],
+      "exitCode": 1,
+      "seconds": 312.42,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "C-complete-migrations",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "stage8-migrations.e2e-spec.ts",
+        "integration-migration-safety.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.48,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "C-backend-rebuild",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "build"
+      ],
+      "exitCode": 0,
+      "seconds": 6.03,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "D-dashboard-compatible",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "tests/component/admin-console.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.2,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-core",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "core-flow.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 33.42,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "final-frontend-types",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 13.69,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "final-frontend-build",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "build"
+      ],
+      "exitCode": 0,
+      "seconds": 8.22,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 9.2,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-valid-fixture",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 9.81,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "C-legacy-crud",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand",
+        "integration-migration-safety.e2e-spec.ts",
+        "stage8-migrations.e2e-spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 5.02,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "final-backend-types",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 3.78,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "final-frontend-tests",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "--reporter=verbose"
+      ],
+      "exitCode": 0,
+      "seconds": 330.48,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-visible-navigation",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 132.74,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-auth-navigation",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "auth-lifecycle.spec.ts",
+        "navigation-rules.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 27.64,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-media",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 127.2,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-auth-final",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "auth-lifecycle.spec.ts",
+        "navigation-rules.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 24.22,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "final-backend-e2e",
+      "component": "backend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "--runInBand"
+      ],
+      "exitCode": 0,
+      "seconds": 179.67,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-mobile-final",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 132.38,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-lan",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 45.42,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-lan-verified",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 47.41,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-synced",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 45.06,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "mobile-state-ordering",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "tests/unit/classroom-mobile.spec.ts",
+        "tests/component/child-qa-panel.spec.ts",
+        "tests/component/ClassroomScreenView.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 19.67,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "integrated-frontend-types",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "type-check"
+      ],
+      "exitCode": 0,
+      "seconds": 14.25,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "integrated-frontend-build",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "build"
+      ],
+      "exitCode": 0,
+      "seconds": 17.64,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-ordered",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 57.14,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-qa-settled",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 43.97,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "integrated-frontend-all",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "--reporter=verbose"
+      ],
+      "exitCode": 0,
+      "seconds": 341.0,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-integrated-flow",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 1,
+      "seconds": 132.53,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-question-history",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 42.56,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    },
+    {
+      "label": "browser-complete-offline",
+      "component": "frontend",
+      "command": [
+        "npm.cmd",
+        "run",
+        "test:e2e",
+        "--",
+        "p5-unified-qa.spec.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 41.88,
+      "isolation": "D:\\trae_project\\merge-worktrees\\integration-I1-unified-20261102\\evidence\\p5-1\\tmp"
+    }
+  ],
+  "browserIntegratedFlow": {
+    "passed": 1,
+    "label": "browser-complete-offline",
+    "records": 6,
+    "mobile": "independent viewport, not physical phone",
+    "questionHistoryUI": true
+  },
+  "codeCommits": [
+    "ee26b8f",
+    "849750b"
+  ],
+  "protectedBoundaries": {
+    "sourceFingerprintsUnchanged": true,
+    "originalFingerprintsUnchanged": true,
+    "originalBranch": "integration/i1-ab",
+    "originalHead": "81eea14",
+    "originalWorkingTreeClean": true,
+    "historicalMigrationsUnchanged": 30
+  }
+}

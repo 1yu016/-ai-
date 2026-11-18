@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
-defineProps<{ courseTitle: string; paused?: boolean }>()
+defineProps<{ courseTitle: string; paused?: boolean; script?: string }>()
 </script>
 
 <template>
@@ -9,7 +9,7 @@ defineProps<{ courseTitle: string; paused?: boolean }>()
     <div class="opening-copy">
       <span>欢迎来到课堂</span>
       <h1>{{ courseTitle }}</h1>
-      <p>小朋友们好，我们一起探索今天的新知识吧！</p>
+      <p data-test="opening-lesson-script">{{ script || '小朋友们好，我们一起探索今天的新知识吧！' }}</p>
       <strong>{{ paused ? '课堂暂停，等待老师继续' : '等待老师进入教学' }}</strong>
     </div>
   </section>

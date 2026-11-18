@@ -5,6 +5,7 @@ import {
   CLASSROOM_CONTROL_SESSION_HEADER,
   CLASSROOM_CONTROL_SESSION_KEY,
   classroomMobileApi,
+  mobileFreshness,
   type ClassroomControlSession,
   type MobileClassroomState,
 } from '@/api/classroomMobile'
@@ -57,12 +58,20 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   let stopped = true
   let serverClock: { epochMs: number; monotonicMs: number } | null = null
   let requireFullRefresh = true
+  let sessionGeneration = 0
 
   const connected = computed(() => connection.value === 'online')
   const canControl = computed(() => connected.value && !!state.value?.screen.online)
 
   function setSession(value: ClassroomControlSession) {
-    if (session.value?.token !== value.token) serverClock = null
+    // A new scan owns a new connection. Old state/streams must never expire it.
+    stop(true)
+    connection.value = 'idle'
+    lastError.value = ''
+    delivery.value = {}
+    commands.value = []
+    lastConfirmedAt.value = null
+    reconnectAttempt = 0
     session.value = value
     sessionStorage.setItem(CLASSROOM_CONTROL_SESSION_KEY, JSON.stringify(value))
   }
@@ -77,6 +86,14 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   }
 
   function updateAuthoritativeState(next: MobileClassroomState) {
+    if (!session.value || next.classroom.id !== session.value.classroomRunId ||
+      next.screen.deviceId !== session.value.targetDeviceId || next.session.id !== session.value.id) {
+      throw new Error('连接数据与本次扫码课堂不一致，正在重新获取。')
+    }
+    // A stream read can finish after a newer command response. Never roll this Run back.
+    // Revocation/terminal facts must still take effect even if their snapshot is older.
+    const terminal = !next.controlActive || ['completed', 'cancelled', 'failed'].includes(next.classroom.status)
+    if (!terminal && state.value && next.classroom.version < state.value.classroom.version) return
     const serverNow = Date.parse(next.serverNow)
     if (Number.isFinite(serverNow)) serverClock = { epochMs: serverNow, monotonicMs: performance.now() }
     state.value = next
@@ -89,11 +106,15 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
 
   async function refreshState() {
     if (!session.value) throw new Error('请先扫码连接课堂')
+    const current = session.value
+    const generation = sessionGeneration
     try {
-      const response = await classroomMobileApi.state(session.value.token)
+      const response = await classroomMobileApi.state(current.token)
+      if (generation !== sessionGeneration || session.value?.token !== current.token) return response.data
       updateAuthoritativeState(response.data)
       return response.data
     } catch (error) {
+      if (generation !== sessionGeneration || session.value?.token !== current.token) throw error
       const status = apiErrorStatus(error)
       if (status === 401 || status === 403 || status === 410) {
         lastError.value = apiErrorMessage(error, '手机课堂控制会话已失效，请重新扫码。')
@@ -123,6 +144,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
 
   async function connectStream() {
     const current = session.value
+    const generation = sessionGeneration
     const user = useUserStore()
     if (stopped || !current || !user.accessToken) return
     if (isSessionExpired()) {
@@ -132,11 +154,13 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       return
     }
     streamAbort?.abort()
-    streamAbort = new AbortController()
+    const controller = new AbortController()
+    streamAbort = controller
+    const ownsConnection = () => generation === sessionGeneration && session.value?.token === current.token && streamAbort === controller && !controller.signal.aborted
     try {
       if (requireFullRefresh) {
         await refreshState()
-        if (stopped || !session.value) return
+        if (stopped || !ownsConnection()) return
         if (isSessionExpired()) {
           connection.value = 'expired'
           stop(true)
@@ -144,15 +168,17 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
         }
         requireFullRefresh = false
       }
-      const response = await fetch(apiUrl('/classroom-mobile/events'), {
+      const response = await fetch(apiUrl(`/classroom-mobile/events?_fresh=${mobileFreshness()}`), {
         headers: {
           Authorization: `Bearer ${user.accessToken}`,
           [CLASSROOM_CONTROL_SESSION_HEADER]: current.token,
           Accept: 'text/event-stream',
+          'Cache-Control': 'no-cache, no-store',
         },
         cache: 'no-store',
-        signal: streamAbort.signal,
+        signal: controller.signal,
       })
+      if (!ownsConnection()) { await response.body?.cancel(); return }
       if (!response.ok || !response.body) {
         const error = new Error(`实时通道连接失败（${response.status}）`)
         ;(error as Error & { status?: number }).status = response.status
@@ -161,10 +187,10 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       connection.value = 'online'
       reconnectAttempt = 0
       lastError.value = ''
-      await readEventStream(response.body)
-      if (!stopped) scheduleReconnect('实时通道已断开')
+      await readEventStream(response.body, ownsConnection)
+      if (!stopped && ownsConnection()) scheduleReconnect('实时通道已断开')
     } catch (error) {
-      if (streamAbort?.signal.aborted || stopped) return
+      if (!ownsConnection() || stopped) return
       const status = apiErrorStatus(error) || (error as Error & { status?: number }).status
       if (status === 401 || status === 403 || status === 410) {
         lastError.value = error instanceof Error ? error.message : '手机课堂控制会话已失效'
@@ -176,13 +202,14 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     }
   }
 
-  async function readEventStream(stream: ReadableStream<Uint8Array>) {
+  async function readEventStream(stream: ReadableStream<Uint8Array>, ownsConnection: () => boolean) {
     const reader = stream.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     let eventType = 'message'
-    while (!stopped) {
+    while (!stopped && ownsConnection()) {
       const { done, value } = await reader.read()
+      if (!ownsConnection()) { await reader.cancel(); return }
       if (done) break
       buffer += decoder.decode(value, { stream: true })
       const blocks = buffer.split(/\r?\n\r?\n/)
@@ -226,7 +253,10 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
     if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer)
     heartbeatTimer = window.setInterval(() => {
       if (!session.value || stopped) return
-      void classroomMobileApi.heartbeat(session.value.token).catch((error) => {
+      const current = session.value
+      const generation = sessionGeneration
+      void classroomMobileApi.heartbeat(current.token).catch((error) => {
+        if (generation !== sessionGeneration || session.value?.token !== current.token) return
         const status = apiErrorStatus(error)
         if (status === 401 || status === 403 || status === 410) {
           lastError.value = apiErrorMessage(error, '手机课堂控制会话已失效，请重新扫码。')
@@ -288,7 +318,22 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       entry.executionStatus = 'sending'
       delivery.value[requestId] = 'sending'
       try {
-        const response = await classroomMobileApi.command(currentSession.token, payload)
+        let response
+        try {
+          response = await classroomMobileApi.command(currentSession.token, payload)
+        } catch (sendError) {
+          // A lost response is not proof of failure. Read the original command
+          // before considering an identical, idempotent retry.
+          if (apiErrorStatus(sendError) !== null) throw sendError
+          const stored = await classroomMobileApi.queryCommand(requestId).catch(() => null)
+          const record = stored?.data
+          const result = record?.responsePayload
+          if (!record || record.requestId !== requestId || record.classroomRunId !== currentSession.classroomRunId ||
+            record.targetDeviceId !== currentSession.targetDeviceId || record.source !== 'mobile' ||
+            record.operation !== operation || record.status !== 'success' || result?.status !== 'success' ||
+            result.requestId !== requestId || result.runId !== currentSession.classroomRunId || result.operation !== operation) throw sendError
+          response = { data: { deliveryStatus: 'confirmed' as const, confirmedAt: record.updatedAt, result } }
+        }
         const executionStatus = response.data.executionStatus
           ?? (response.data.deliveryStatus === 'confirmed' ? 'executed' : response.data.deliveryStatus === 'received' ? 'received' : 'failed')
         entry.executionStatus = executionStatus
@@ -297,6 +342,20 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
         if (executionStatus !== 'executed') {
           terminalStatus = executionStatus
           throw new Error(response.data.errorCode || '服务端尚未确认指令执行')
+        }
+        // The formal command response is authoritative too. Adopt it before a state
+        // read or an SSE frame can reintroduce the pre-command classroom version.
+        const confirmedClassroom = response.data.result?.classroomState
+        if (session.value?.token === currentSession.token && state.value && confirmedClassroom &&
+          confirmedClassroom.id === currentSession.classroomRunId &&
+          confirmedClassroom.deviceId === currentSession.targetDeviceId &&
+          confirmedClassroom.version >= state.value.classroom.version) {
+          updateAuthoritativeState({
+            ...state.value,
+            serverNow: response.data.confirmedAt ?? state.value.serverNow,
+            classroom: confirmedClassroom,
+            interaction: confirmedClassroom.interactionState ?? state.value.interaction,
+          })
         }
         entry.confirmedAt = response.data.confirmedAt
         lastConfirmedAt.value = response.data.confirmedAt ?? null
@@ -314,11 +373,13 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
       } catch (error) {
         firstError ??= error
         if (apiErrorStatus(error) === 409) {
+          const message = apiErrorMessage(error, '课堂操作被拒绝')
+          const versionConflict = /版本|VERSION_CONFLICT/i.test(message)
           entry.executionStatus = 'failed'
-          entry.errorCode = 'VERSION_CONFLICT'
+          entry.errorCode = versionConflict ? 'VERSION_CONFLICT' : 'COMMAND_REJECTED'
           delivery.value[requestId] = 'failed'
           for (const pending of commands.value) {
-            if (pending.commandId !== requestId && (pending.executionStatus === 'queued' || pending.executionStatus === 'sending')) {
+            if (versionConflict && pending.commandId !== requestId && (pending.executionStatus === 'queued' || pending.executionStatus === 'sending')) {
               pending.executionStatus = 'failed'
               pending.errorCode = 'VERSION_CONFLICT'
               delivery.value[pending.commandId] = 'failed'
@@ -353,6 +414,7 @@ export const useClassroomMobileStore = defineStore('classroom-mobile', () => {
   }
 
   function stop(clear = false) {
+    sessionGeneration++
     const preserveExpired = connection.value === 'expired'
     stopped = true
     streamAbort?.abort()

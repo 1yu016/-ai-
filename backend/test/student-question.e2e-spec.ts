@@ -176,6 +176,11 @@ describe('Student question records and question map (e2e)', () => {
     expect(history.body.total).toBe(2);
     const map = await request(app.getHttpServer()).get(`/classes/${classId}/question-map?domain=科学`).set(auth()).expect(200);
     expect(map.body.topics).toEqual(expect.arrayContaining([expect.objectContaining({ name: '科学探索' })]));
+    expect(map.body.canonicalDomains).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '科学', count: 2 }),
+      expect.objectContaining({ name: '动物', count: 0 }),
+      expect.objectContaining({ name: '未分类', count: 0 }),
+    ]));
     expect(map.body.suggestionSource).toBe('safe_rules');
     expect(map.body.recommendedResources).toEqual(expect.arrayContaining([expect.objectContaining({ title: '科学探索天空图片' })]));
     expect(map.body.safety).toMatchObject({ individualRankingGenerated: false, negativeLabelsGenerated: false });

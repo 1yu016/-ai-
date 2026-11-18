@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { ChildQaService } from './child-qa.service';
+import { CHILD_KNOWLEDGE_PROVIDER, LocalChildKnowledgeProvider } from './child-qa.core';
 import { ScreenPreparationService } from './screen-preparation.service';
 import { ScreenLifecycleService } from './screen-lifecycle.service';
 import { ScreenOpeningController } from './screen-opening.controller';
@@ -52,10 +54,14 @@ import { StudentArtworkRecord } from '../artworks/entities/student-artwork-recor
 import { StudentGroup } from '../classroom-participation/entities/student-group.entity';
 import { StudentGroupMember } from '../classroom-participation/entities/student-group-member.entity';
 import { ClassroomRollCallService } from './classroom-roll-call.service';
+import { AvatarUsageLog } from '../avatars/entities/avatar-usage-log.entity';
+import { HeuristicAssistantDraft } from '../ai/entities/heuristic-assistant-draft.entity';
 
 export const CLASSROOM_RUN_ENTITIES = [
   ClassroomRun,
   ClassroomRunStepSnapshot,
+  AvatarUsageLog,
+  HeuristicAssistantDraft,
   ClassroomEvent,
   ClassroomSnapshot,
   ClassroomDeviceTransfer,
@@ -102,6 +108,8 @@ export const CLASSROOM_RUN_ENTITIES = [
     ClassroomRecordController,
   ],
   providers: [
+    { provide: CHILD_KNOWLEDGE_PROVIDER, useClass: LocalChildKnowledgeProvider },
+    ChildQaService,
     ClassroomCockpitService,
     ScreenHandoffService,
     ScreenLifecycleService,

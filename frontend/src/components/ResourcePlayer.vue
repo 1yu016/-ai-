@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { apiErrorStatus } from '@/api/http'
 import { ElButton, ElMessage, ElSlider } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import {
@@ -24,6 +25,7 @@ const props = defineProps<{
   resources: CourseResource[]
   showClose?: boolean
 }>()
+const emit = defineEmits<{ (event: 'close-request'): void }>()
 
 const playerStore = useResourcePlayerStore()
 const {
@@ -67,7 +69,7 @@ let disposed = false
 let ownedSession = playbackSession.value
 function currentEvent(event: Event) {
   const element = event.currentTarget as HTMLElement
-  return !disposed && element?.dataset.playbackSession === String(playbackSession.value) &&
+  return !disposed && Boolean(mediaSource.value) && element?.dataset.playbackSession === String(playbackSession.value) &&
     element.dataset.playbackSource === mediaSource.value
 }
 function handlePlay(event: Event) { if (currentEvent(event)) playerStore.setStatus('playing') }
@@ -111,7 +113,7 @@ async function loadMediaSource(resource: CourseResource) {
       throw new Error('资源编号无效')
     }
     let loader = () => fetchAuthedBlob(resourceId)
-    if (isPresentationResource(resource) || resource.mediaType === 'picture_book') {
+    if (isPresentationResource(resource) || resource.mediaType === 'picture_book' || resource.mediaType === 'pdf') {
       const manifest = await getResourcePreviewManifest(resourceId)
       if (loadId !== mediaLoadSeq) return null
       previewManifest.value = manifest
@@ -122,8 +124,11 @@ async function loadMediaSource(resource: CourseResource) {
         return null
       }
       if (manifest.mode === 'images') {
-        playerStore.setPage(1, manifest.assets.length)
-        const first = manifest.assets[0]
+        // A formal remote command may restore page 2 while the manifest loads.
+        // Preserve that page instead of resetting every new presentation to 1.
+        const restoredPage = Math.min(Math.max(1, pageIndex.value), manifest.assets.length)
+        playerStore.setPage(restoredPage, manifest.assets.length)
+        const first = manifest.assets[restoredPage - 1]
         if (!first) throw new Error('预览页为空')
         loader = () => fetchAuthedPreviewAsset(resourceId, first.name)
       } else if (manifest.mode === 'pdf') {
@@ -144,11 +149,14 @@ async function loadMediaSource(resource: CourseResource) {
     activeBlobRevoke = revoke
     mediaSource.value = url
     return url
-  } catch {
+  } catch (cause) {
     // 迟到请求的失败也不该误伤当前资源的 blob / 状态。
     if (loadId === mediaLoadSeq) {
       releaseActiveBlob()
-      playerStore.setStatus('error', '资源暂时无法加载，请检查网络后重试。')
+      playerStore.setStatus('error', apiErrorStatus(cause) === 404
+        ? '服务器上的资源文件或预览文件不存在，请在资源库重新上传原文件。'
+        : apiErrorStatus(cause) === 403 ? '当前账号无权读取该资源。'
+        : '资源暂时无法加载，请检查连接或重新登录后重试。')
     }
     return null
   }
@@ -197,7 +205,7 @@ const isPresentation = computed(() => {
 const previewMode = computed(() => {
   const resource = currentResource.value
   if (!resource) return 'unsupported'
-  if (isPresentation.value || resource.mediaType === 'picture_book') {
+  if (isPresentation.value || resource.mediaType === 'picture_book' || resource.mediaType === 'pdf') {
     const mode = previewManifest.value?.mode
     if (mode === 'images') return 'images'
     if (mode === 'pdf') return 'pdf'
@@ -211,7 +219,7 @@ const previewMode = computed(() => {
   if (effectiveMediaType.value === 'image') return 'image'
   if (effectiveMediaType.value === 'audio') return 'audio'
   if (effectiveMediaType.value === 'video') return 'video'
-  if (resource.mediaType === 'pdf' || resource.mimeType === 'application/pdf') return 'pdf'
+  if (resource.mimeType === 'application/pdf') return 'pdf'
   return 'unsupported'
 })
 const hasPageZoomControls = computed(() =>
@@ -456,6 +464,10 @@ async function exitClassroomMode() {
 
 async function closePlayer() {
   const session = playbackSession.value
+  if (props.showClose !== false && currentResource.value && isClassroomMode.value && !playerStore.origin) {
+    emit('close-request')
+    return
+  }
   invalidateMediaLoad()
   stopMediaElements()
   await exitClassroomMode()
@@ -470,13 +482,13 @@ async function closePlayer() {
 
 function handleFullscreenChange() {
   if (!document.fullscreenElement && isClassroomMode.value) {
-    playerStore.exitClassroomMode()
+    void closePlayer()
   }
 }
 
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && isClassroomMode.value) {
-    void exitClassroomMode()
+    void closePlayer()
   }
 }
 
@@ -490,7 +502,8 @@ function formatTime(value: number): string {
 
 watch(
   () => [currentResource.value?.id, sourceUrl.value, playbackSession.value] as const,
-  async ([resourceId, resourceSource], [previousResourceId, previousSource]) => {
+  async ([resourceId, resourceSource], previous) => {
+    const [previousResourceId, previousSource] = previous ?? []
     if (!resourceId) return
     const resource = currentResource.value
     if (!resource) return
@@ -524,6 +537,7 @@ watch(
       void play()
     }
   },
+  { immediate: true },
 )
 
 watch(playbackSession, () => {
@@ -642,8 +656,8 @@ defineExpose({
         <ElButton v-if="!isClassroomMode" @click="enterClassroomMode">
           全屏课堂模式
         </ElButton>
-        <ElButton v-else @click="exitClassroomMode">返回</ElButton>
-        <ElButton v-if="showClose !== false" aria-label="关闭播放器" @click="closePlayer">关闭</ElButton>
+        <ElButton v-if="showClose !== false && isClassroomMode" aria-label="返回课堂" @click="closePlayer">返回课堂</ElButton>
+        <ElButton v-else-if="showClose !== false" aria-label="关闭播放器" @click="closePlayer">关闭</ElButton>
       </div>
     </header>
 
@@ -708,7 +722,7 @@ defineExpose({
       ></video>
 
       <iframe
-        :key="`${playbackSession}:${mediaSource}`"
+        :key="`${playbackSession}:${documentSource}`"
         :data-playback-session="playbackSession"
         :data-playback-source="mediaSource"
         v-else-if="previewMode === 'pdf'"

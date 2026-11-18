@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -16,13 +16,16 @@ const classes = ref<SchoolClass[]>([])
 const active = ref<ClassroomRunPayload[]>([])
 const loading = ref(true)
 const error = ref('')
+let readGeneration = 0
 async function load() {
+  const generation = ++readGeneration
   loading.value = true
   error.value = ''
   const results = await Promise.allSettled([
     platformApi.classes({ page: 1, pageSize: 6 }),
     http.get<ClassroomRunPayload | ClassroomRunPayload[] | null>('/classroom-runs/active'),
   ])
+  if (generation !== readGeneration) return
   if (results[0].status === 'fulfilled') classes.value = results[0].value.data.items
   else error.value = apiErrorMessage(results[0].reason, '班级信息暂时无法读取。')
   if (results[1].status === 'fulfilled') {
@@ -34,11 +37,13 @@ async function load() {
   }
   loading.value = false
 }
-onMounted(load)
+function refreshHome() { void load() }
+onMounted(() => { window.addEventListener('classroom-navigation-refresh', refreshHome); window.addEventListener('focus', refreshHome); void load() })
+onBeforeUnmount(() => { readGeneration++; window.removeEventListener('classroom-navigation-refresh', refreshHome); window.removeEventListener('focus', refreshHome) })
 </script>
 
 <template>
-  <ManagementLayout><PageShell variant="list"><template #header><PageHeader title="今天的教学" eyebrow="教师工作台" subtitle="选择班级、准备教案，或继续正在进行的课堂。" /></template>
+  <ManagementLayout><PageShell variant="list"><template #header><PageHeader title="教师工作台" eyebrow="今天的教学" subtitle="选择班级、准备教案，或继续正在进行的课堂。" /></template>
     <LoadingState v-if="loading" />
     <template v-else>
       <ErrorState v-if="error" :description="error" @retry="load" />

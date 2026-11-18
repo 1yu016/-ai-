@@ -66,7 +66,7 @@ describe('LessonClassroomView · 课堂右侧布局（数字人常驻 + 紧凑�
     })
   }
 
-  it('#1 右侧三段式：AI教学伙伴主卡在前，课堂互动/本节榜单紧凑入口在后', async () => {
+  it('#1 问答常驻，课堂互动与 AI 工具分组，入口完整保留', async () => {
     const wrapper = await mountView()
     await settle()
     // AI 教学伙伴主卡常驻，带状态标签。
@@ -80,8 +80,8 @@ describe('LessonClassroomView · 课堂右侧布局（数字人常驻 + 紧凑�
     expect(wrapper.find('[data-test="open-interaction"]').text()).toContain('随机点名')
     expect(wrapper.find('.quick-actions .l-stars').text()).toContain('本节 0')
     expect(wrapper.find('.quick-actions').text()).toContain('快速奖励')
-    expect(wrapper.find('.quick-actions').text()).toContain('教学资源')
-    expect(wrapper.find('.quick-actions').text()).toContain('AI教学伙伴')
+    expect(wrapper.find('.console-controls').text()).toContain('调整课堂内容')
+    expect(wrapper.find('[aria-label="AI 助教"]').text()).toContain('AI教学伙伴')
     expect(wrapper.find('.assist-col .i-select').exists()).toBe(false)
     expect(wrapper.find('.assist-col .i-add').exists()).toBe(false)
     // 榜单入口为紧凑 launcher。

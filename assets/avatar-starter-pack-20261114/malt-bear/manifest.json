@@ -1,0 +1,57 @@
+{
+  "name": "麦芽熊老师",
+  "category": "cartoon_animal",
+  "description": "原创简易3D卡通课堂助教，含9种命名动作及简单张嘴效果。",
+  "engineVersion": "avatar-engine-1",
+  "modelFormat": "glb",
+  "model": "model.glb",
+  "assets": [
+    {
+      "file": "texture.png",
+      "assetType": "texture"
+    },
+    {
+      "file": "idle.glb",
+      "assetType": "animation",
+      "actionName": "idle"
+    },
+    {
+      "file": "speak.glb",
+      "assetType": "animation",
+      "actionName": "speak"
+    },
+    {
+      "file": "lip-sync.json",
+      "assetType": "lip_sync"
+    },
+    {
+      "file": "preview.png",
+      "assetType": "preview"
+    },
+    {
+      "file": "fallback.png",
+      "assetType": "fallback_2d"
+    }
+  ],
+  "animations": [
+    "Idle",
+    "Talk",
+    "Listening",
+    "Thinking",
+    "Question",
+    "Happy",
+    "Encourage",
+    "Wave",
+    "Goodbye"
+  ],
+  "meshCount": 26,
+  "sha256": {
+    "model.glb": "04cceda6caf7debbf05232639b56296012a6a999d8219400965fe9c65c7412f1",
+    "texture.png": "984e1ddc0393b9874f398700dd9d95a3325a90f621248d39d17c4252f33c5210",
+    "idle.glb": "f47967e121d0417c3bb5fe46bc46e88a7de2e8f5720b02d4118c53beb2d4d99f",
+    "speak.glb": "b667ce178ee019c9689eb1a55b3a935757ae0251df6b5518422e92cbef9d5a3f",
+    "lip-sync.json": "996ec6fe69f1193b7cc9b1bf047b1d107f51e7802726a4cca5334f360f22afe9",
+    "preview.png": "fd57ddb161e4348de2f9f1ab50f72ff91323d96a10a09219be026232dca72551",
+    "fallback.png": "fd57ddb161e4348de2f9f1ab50f72ff91323d96a10a09219be026232dca72551"
+  }
+}

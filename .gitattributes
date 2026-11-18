@@ -1,0 +1,8 @@
+# Keep starter-pack checksums stable on Windows and Unix checkouts.
+assets/avatar-starter-pack-20261114/*.py text eol=lf
+assets/avatar-starter-pack-20261114/*.md text eol=lf
+assets/avatar-starter-pack-20261114/**/*.json text eol=lf
+assets/avatar-starter-pack-20261114/*.json text eol=lf
+assets/avatar-starter-pack-20261114/**/*.glb binary
+assets/avatar-starter-pack-20261114/**/*.png binary
+assets/avatar-starter-pack-20261114/*.png binary

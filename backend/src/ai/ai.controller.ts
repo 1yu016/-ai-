@@ -33,6 +33,7 @@ import {
   type ResourceSearchResult,
   ResourceService,
 } from '../resources/resource.service';
+import { AuditService } from '../platform/audit.service';
 import { AiService } from './ai.service';
 import { AudioService, type UploadedAudioFile } from './audio.service';
 import { ClassroomDirectorService } from './classroom-director.service';
@@ -113,6 +114,7 @@ export class AiController {
     private readonly classroomDirectorService: ClassroomDirectorService,
     private readonly heuristicAssistantService: HeuristicAssistantService,
     private readonly classroomCommandService: ClassroomCommandService,
+    private readonly audit: AuditService,
   ) {}
 
   @Post('classroom-command')
@@ -261,6 +263,7 @@ export class AiController {
     @Body() dto: ClassroomCommandDto,
     @Req() request: AuthenticatedRequest,
   ): Promise<CommandResponseDto> {
+    const startedAt = Date.now();
     const result = await this.aiService.classifyCommand(
       dto.text.trim(),
       dto.context,
@@ -287,6 +290,7 @@ export class AiController {
 
     const keyword = result.keyword?.trim();
     if (!keyword) {
+      await this.recordResourceMatching(request.user, startedAt, 'not_found', 0);
       return {
         ...result,
         requiresConfirmation: true,
@@ -303,6 +307,7 @@ export class AiController {
         result.resourceType,
       );
     } catch (error) {
+      await this.recordResourceMatching(request.user, startedAt, 'failed', 0);
       if (error instanceof HttpException) throw error;
       this.logger.error(
         `ai.command.search.failed teacher=${request.user.sub}`,
@@ -312,6 +317,7 @@ export class AiController {
     }
     const candidates = matches.slice(0, 5);
     if (candidates.length === 0) {
+      await this.recordResourceMatching(request.user, startedAt, 'not_found', 0);
       this.logger.log(
         `ai.command teacher=${request.user.sub} intent=${result.intent} match=not_found`,
       );
@@ -324,6 +330,7 @@ export class AiController {
     }
 
     if (result.intent === ClassroomCommandIntent.SearchResource) {
+      await this.recordResourceMatching(request.user, startedAt, 'success', candidates.length);
       this.logger.log(
         `ai.command teacher=${request.user.sub} intent=${result.intent} candidates=${candidates.length}`,
       );
@@ -342,6 +349,7 @@ export class AiController {
       !requiresConfirmation &&
       topMatch.score >= DIRECT_RESOURCE_SCORE;
     if (!canExecuteDirectly) {
+      await this.recordResourceMatching(request.user, startedAt, 'success', candidates.length);
       const lowConfidence =
         requiresConfirmation || topMatch.score < DIRECT_RESOURCE_SCORE;
       this.logger.log(
@@ -360,6 +368,7 @@ export class AiController {
     }
 
     const { score: _score, ...resource } = topMatch;
+    await this.recordResourceMatching(request.user, startedAt, 'success', 1);
     this.logger.log(
       `ai.command teacher=${request.user.sub} intent=${result.intent} resource=${resource.id}`,
     );
@@ -369,6 +378,26 @@ export class AiController {
       matchStatus: 'matched',
       resource,
     };
+  }
+
+  private async recordResourceMatching(
+    actor: AuthenticatedRequest['user'],
+    startedAt: number,
+    status: 'success' | 'not_found' | 'failed',
+    candidateCount: number,
+  ) {
+    try {
+      await this.audit.writeAi({
+        actor,
+        feature: 'resource_matching',
+        provider: 'classroom-command-hybrid',
+        status,
+        latencyMs: Math.max(0, Date.now() - startedAt),
+        metadata: { candidateCount },
+      });
+    } catch (error) {
+      this.logger.warn(`resource matching metric write failed: ${error instanceof Error ? error.name : 'unknown'}`);
+    }
   }
 
   @Post('classroom-assistant')

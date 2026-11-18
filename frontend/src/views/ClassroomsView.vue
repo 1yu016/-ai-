@@ -48,7 +48,7 @@ onMounted(load)
 </script>
 
 <template><ManagementLayout><PageShell variant="list">
-  <template #header><PageHeader title="教室管理" subtitle="查看教室与班级、大屏的实际绑定关系。" eyebrow="教室与设备"><template #actions><button class="button secondary" @click="load">刷新</button><RouterLink class="button secondary" :to="{ name: 'devices' }">设备管理</RouterLink><button v-if="user.isAdmin" class="button" @click="showForm = !showForm">添加教室</button></template></PageHeader></template>
+  <template #header><PageHeader :title="user.isAdmin ? '教室管理' : '我的教室'" subtitle="查看教室与班级、大屏的实际绑定关系。" eyebrow="教室与设备"><template #actions><button class="button secondary" @click="load">刷新</button><RouterLink class="button secondary" :to="{ name: 'devices' }">{{ user.isAdmin ? '设备管理' : '我的设备' }}</RouterLink><button v-if="user.isAdmin" class="button" @click="showForm = !showForm">添加教室</button></template></PageHeader></template>
   <section v-if="showForm" class="panel form"><label>教室名称<input v-model="form.name" placeholder="如：一号教室" /></label><label>位置<input v-model="form.location" placeholder="如：一楼东侧" /></label><button class="button" :disabled="saving || !form.name.trim()" @click="createRoom">保存教室</button></section>
   <LoadingState v-if="loading" title="正在加载教室" description="正在读取教室和设备绑定。" />
   <ErrorState v-else-if="error" :description="error" @retry="load" />

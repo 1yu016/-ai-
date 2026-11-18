@@ -36,7 +36,7 @@ async function mountView(path: string) {
   await router.isReady()
   const wrapper = mount(LessonPlanListView, { global: { plugins: [pinia, router, ElementPlus] } })
   await flushPromises()
-  return { wrapper, router }
+  return { wrapper, router, store }
 }
 
 describe('LessonPlanListView 备课中心（返回班级）', () => {
@@ -74,5 +74,34 @@ describe('LessonPlanListView 备课中心（返回班级）', () => {
     expect(text).not.toContain('返回班级')
     expect(text).not.toContain('返回助教')
     expect(text).not.toContain('返回主页面')
+  })
+
+  it('从深链接恢复查询与分页，修改查询保留班级上下文', async () => {
+    const { wrapper, router, store } = await mountView('/lesson-plans?classId=1&keyword=声音&ageGroup=4-5&status=ready&page=2')
+    expect(store.keyword).toBe('声音')
+    expect(store.ageGroup).toBe('4-5')
+    expect(store.status).toBe('ready')
+    expect(store.page).toBe(2)
+    store.total = 45
+    await flushPromises()
+    expect(wrapper.find('.lesson-pagination').exists()).toBe(true)
+    await wrapper.get('input[placeholder="搜索标题或主题"]').setValue('形状')
+    await wrapper.findAll('button').find(b => b.text() === '查询')!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({ classId: '1', keyword: '形状', page: '1' })
+    expect(store.page).toBe(1)
+    wrapper.unmount()
+  })
+
+  it('浏览器返回或同页面参数变化重新恢复合法筛选', async () => {
+    const { wrapper, router, store } = await mountView('/lesson-plans?keyword=旧条件&page=2')
+    await router.replace('/lesson-plans?keyword=新条件&page=3&ageGroup=invalid&status=invalid')
+    await flushPromises()
+    expect(store.keyword).toBe('新条件')
+    expect(store.page).toBe(3)
+    expect(store.ageGroup).toBe('')
+    expect(store.status).toBe('')
+    expect(store.fetchList).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
   })
 })

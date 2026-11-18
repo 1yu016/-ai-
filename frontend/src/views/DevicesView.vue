@@ -110,10 +110,10 @@ onMounted(load)
   <ManagementLayout>
     <PageShell variant="wide">
       <template #header>
-        <PageHeader title="设备管理" subtitle="在线状态来自设备会话心跳；打开本页面不会改变设备状态。" eyebrow="教室与设备">
+        <PageHeader :title="user.isAdmin ? '设备管理' : '我的设备'" subtitle="在线状态来自设备会话心跳；打开本页面不会改变设备状态。" eyebrow="教室与设备">
           <template #actions>
             <button class="button secondary" type="button" @click="load">刷新状态</button>
-            <RouterLink class="button secondary" :to="{ name: 'classrooms' }">教室管理</RouterLink>
+            <RouterLink class="button secondary" :to="{ name: 'classrooms' }">{{ user.isAdmin ? '教室管理' : '我的教室' }}</RouterLink>
             <template v-if="user.isAdmin">
               <button class="button" type="button" @click="formMode = formMode === 'device' ? null : 'device'">添加设备</button>
               <button class="button" type="button" @click="formMode = formMode === 'binding' ? null : 'binding'">绑定班级</button>

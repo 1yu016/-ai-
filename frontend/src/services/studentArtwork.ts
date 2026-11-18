@@ -155,3 +155,54 @@ export function artworkDeliveryMessage(status: ArtworkDeliveryStatus): string {
   const labels = { submitted: '命令已提交', reported_failure: '服务端返回失败', unknown: '提交结果未知' }
   return `作品展示：${labels[status.display]}；评价朗读：${labels[status.speech]}。实际展示和朗读未确认（无设备 ACK 或关联播放反馈）。请核对课堂状态，勿重复提交。`
 }
+
+/* ------------------------------------------------------------------ *
+ * Stage 8 班级作品回顾（只读）
+ *
+ * 课堂内负责「上传 → AI 草稿 → 教师确认 → 投递大屏」；
+ * 课后负责「回顾本班全部作品、审核状态与教师确认评价」。
+ * 两者共用同一张 student_artwork_record 与原授权/权限，不新建作品系统。
+ * ------------------------------------------------------------------ */
+
+export type ArtworkListQuery = {
+  page?: number
+  pageSize?: number
+  /** 只看某个幼儿的作品；服务端按班级/课堂权限校验后过滤。 */
+  studentId?: number
+}
+
+export type ArtworkPage = {
+  items: StudentArtwork[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+/** 班级作品回顾：`GET /classes/:classId/artworks`（班级权限）。 */
+export async function listClassArtworks(classId: number, query: ArtworkListQuery = {}): Promise<ArtworkPage> {
+  const { data } = await http.get<ArtworkPage>(`/classes/${classId}/artworks`, {
+    params: {
+      page: query.page ?? 1,
+      pageSize: query.pageSize ?? 12,
+      ...(query.studentId != null ? { studentId: query.studentId } : {}),
+    },
+  })
+  return data
+}
+
+/**
+ * 按作品 ID 读取受保护图片并转成可展示的 blob URL。
+ * 调用方必须在卸载时执行 revoke()，避免泄漏 object URL。
+ */
+export async function fetchArtworkImage(artworkId: number): Promise<{ url: string; revoke: () => void }> {
+  const { data } = await http.get<Blob>(`/artworks/${artworkId}/file`, { responseType: 'blob' })
+  const url = URL.createObjectURL(data)
+  return { url, revoke: () => URL.revokeObjectURL(url) }
+}
+
+export type ArtworkReviewState = 'confirmed' | 'pending'
+
+/** 正式评价只能来自教师确认；AI 草稿永不视为已确认。 */
+export function artworkReviewState(artwork: Pick<StudentArtwork, 'confirmedAt' | 'teacherComment'>): ArtworkReviewState {
+  return artwork.confirmedAt && artwork.teacherComment ? 'confirmed' : 'pending'
+}

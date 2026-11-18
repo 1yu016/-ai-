@@ -1377,10 +1377,10 @@ onBeforeUnmount(() => {
             v-if="isLogin"
             type="button"
             class="feature-nav-item"
-            @click="router.push('/my-classes')"
+            @click="router.push(isAdmin ? '/admin' : '/teacher/home')"
           >
             <span class="feature-nav-icon" aria-hidden="true">🏫</span>
-            <span>我的班级</span>
+            <span>{{ isAdmin ? '管理工作区' : '教师工作台' }}</span>
           </button>
           <button
             v-if="isLogin"

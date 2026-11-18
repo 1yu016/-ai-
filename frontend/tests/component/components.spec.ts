@@ -26,6 +26,7 @@ function routerFor(path: string, routes?: RouteRecordRaw[]) {
     { path: '/login', component: LoginView },
     { path: '/chat', component: { template: '<div>聊天页</div>' } },
     { path: '/my-classes', name: 'my-classes', component: { template: '<div>我的班级</div>' } },
+    { path: '/teacher/home', name: 'teacher-home', component: { template: '<div>教师工作台</div>' } },
     { path: '/admin', name: 'admin-dashboard', component: { template: '<div>管理看板</div>' } },
     { path: '/lesson-plans', component: { template: '<div>教案列表</div>' } },
     { path: '/lesson-plans/new', component: LessonPlanEditorView },
@@ -52,7 +53,7 @@ describe('login and role visibility', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(useUserStore().isLogin).toBe(true)
-    expect(router.currentRoute.value.path).toBe('/my-classes')
+    expect(router.currentRoute.value.path).toBe('/teacher/home')
   })
 
   it('登录失败后保留账号并显示后端错误', async () => {
@@ -266,15 +267,16 @@ describe('lesson components', () => {
     wrapper.unmount()
   })
 
-  it('starts a lesson from the list with one click', async () => {
+  it('opens lesson preparation from the list without starting a run', async () => {
     vi.spyOn(http, 'get').mockResolvedValue({ data: { items: [plan], total: 1 } })
     vi.spyOn(http, 'post').mockResolvedValue({ data: { runId: 9 } })
     const router = await routerFor('/lesson-plans', [{ path: '/lesson-plans', component: LessonPlanListView }, { path: '/classroom/preflight/:planId', name: 'lesson-classroom-preflight', component: { template: '<div>检查</div>' } }, { path: '/classroom/lesson/:runId', component: { template: '<div>课堂</div>' } }, { path: '/chat', component: { template: '<div />' } }])
     const wrapper = mount(LessonPlanListView, { global: { plugins: [router, ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text().includes('开始上课'))!.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('准备上课'))!.trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/classroom/preflight/3')
+    expect(http.post).not.toHaveBeenCalled()
   })
 
   it('offers the guided classroom assistant during a non-question step', async () => {
@@ -328,7 +330,7 @@ describe('lesson components', () => {
     await flushPromises()
     const expand = wrapper.find('button[aria-label="展开环节导航"]')
     if (expand.exists()) await expand.trigger('click')
-    const next = wrapper.findAll('button').find((button) => button.text().includes('进入下一环节'))!
+    const next = wrapper.findAll('button').find((button) => button.text().includes('下一环节'))!
     expect(next.attributes('disabled')).toBeDefined()
     await wrapper.findAll('button').find((button) => button.text().includes('结束课堂'))!.trigger('click')
     await flushPromises()

@@ -20,7 +20,7 @@ type AuthRouteTarget = {
 export function workspaceHome(info: TeacherInfo | null): RouteLocationRaw {
   return userRole(info) === 'administrator'
     ? { name: 'admin-dashboard' }
-    : { name: 'my-classes' }
+    : { name: 'teacher-home' }
 }
 
 export function safeInternalRedirect(

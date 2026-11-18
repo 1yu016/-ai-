@@ -5,6 +5,7 @@ import { apiErrorMessage } from '@/api/http'
 import type { Student } from '@/api/platform'
 import {
   createClassroomQuestion,
+  questionReviewLabel,
   listRunQuestions,
   updateClassroomQuestion,
   type ClassroomQuestion,
@@ -185,7 +186,7 @@ onMounted(load)
                 <button class="mini ghost" @click="editingId = null">取消</button>
               </div>
             </template>
-            <strong v-else>{{ question.questionText }}</strong>
+            <strong v-else>{{ question.questionText }}</strong><p v-if="question.answerText">回答：{{question.answerText}} · {{questionReviewLabel(question.answerStatus)}}（{{question.answerSource}}）</p>
             <small>
               {{
                 `${question.isAnonymous ? '匿名幼儿' : studentName(question.studentId) || '非指定幼儿'} · ${new Date(

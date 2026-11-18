@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import ManagementLayout from '@/components/ManagementLayout.vue'
 import DigitalHumanStage from '@/components/DigitalHumanStage.vue'
 import { apiErrorMessage } from '@/api/http'
@@ -12,6 +12,8 @@ import {
   getAvatarCharacter,
   listAvatarCharacters,
   publishAvatarVersion,
+  resolveAvatar,
+  type ResolveAvatarResponse,
   reviewAvatar,
   saveAvatarPersonality,
   saveAvatarVoice,
@@ -50,6 +52,15 @@ let previewGeneration = 0
 const classes = ref<SchoolClass[]>([])
 const plans = ref<LessonPlan[]>([])
 const previewUrls = reactive<Record<number, string>>({})
+const previewErrors = reactive<Record<number, boolean>>({})
+
+const creating = ref(false)
+const newCharacterForm = reactive({ name: '', category: 'teacher_assistant', description: '' })
+const classRuntime = ref<ResolveAvatarResponse | null>(null)
+const classRuntimeLoading = ref(false)
+const classRuntimeError = ref('')
+let classRuntimeGeneration = 0
+const scopeLabels: Record<string, string> = { class: '班级配置', system: '系统默认', lesson_plan: '教案配置', classroom_run: '当前课堂配置' }
 
 const characterForm = reactive({ name: '', category: 'teacher_assistant', description: '' })
 const voiceForm = reactive({ provider: 'system', voiceId: 'default-child-safe', language: 'zh-CN', speed: 1, volume: 1, pitch: 0, status: 'active' as 'active' | 'disabled' | 'unavailable' })
@@ -65,7 +76,31 @@ const categoryLabels: Record<string, string> = {
 }
 const statusLabels: Record<string, string> = { draft: '草稿', pending: '待审核', approved: '已发布', rejected: '已驳回', disabled: '已停用' }
 const assetLabels: Record<string, string> = { model: '主模型', texture: '贴图', animation: '动作', expression: '表情', lip_sync: '口型', preview: '预览图', fallback_2d: '2D备用图' }
-const selectedReadyVersion = computed(() => selected.value?.versions.find((item) => item.status === 'ready') ?? null)
+function publishedVersion(detail: AvatarCharacterDetail): AvatarVersion | null {
+  const ready = detail.versions.filter(item => item.status === 'ready')
+  return ready.find(item => item.id === detail.currentVersionId) ?? [...ready].sort((a, b) => b.version - a.version)[0] ?? null
+}
+const selectedReadyVersion = computed(() => selected.value ? publishedVersion(selected.value) : null)
+
+async function loadClassRuntime() {
+  const generation = ++classRuntimeGeneration
+  const classId = bindingForm.classId
+  classRuntime.value = null; classRuntimeError.value = ''
+  classRuntimeLoading.value = Boolean(classId)
+  if (!classId) return
+  try {
+    const result = await resolveAvatar({ classId })
+    if (generation === classRuntimeGeneration) classRuntime.value = result
+  } catch (cause) {
+    if (generation === classRuntimeGeneration) classRuntimeError.value = apiErrorMessage(cause, '无法读取班级角色，请重试。')
+  } finally { if (generation === classRuntimeGeneration) classRuntimeLoading.value = false }
+}
+watch(() => bindingForm.classId, loadClassRuntime)
+function startCreate() {
+  clearNotice()
+  Object.assign(newCharacterForm, { name: '', category: 'teacher_assistant', description: '' })
+  creating.value = true
+}
 const selectedCanUse = computed(() => selected.value?.status === 'approved' && Boolean(selectedReadyVersion.value))
 const currentRun = computed(() => runStore.run)
 
@@ -78,6 +113,7 @@ function report(cause: unknown, fallback: string) { console.error(fallback, caus
 
 function revokePreviews() {
   previewGeneration++
+  Object.keys(previewErrors).forEach(key => delete previewErrors[Number(key)])
   Object.values(previewUrls).forEach((url) => URL.revokeObjectURL(url))
   Object.keys(previewUrls).forEach((key) => delete previewUrls[Number(key)])
 }
@@ -92,7 +128,7 @@ async function loadProtectedPreviews(detail: AvatarCharacterDetail) {
       if (generation !== previewGeneration) return
       previewUrls[asset.id] = URL.createObjectURL(data)
     }
-    catch (cause) { console.error('数字人预览图加载失败：', cause) }
+    catch (cause) { if (generation === previewGeneration) previewErrors[asset.id] = true; console.error('数字人预览图加载失败：', cause) }
   }))
 }
 
@@ -116,7 +152,7 @@ async function selectCharacter(id: number) {
     const detail = await getAvatarCharacter(id)
     if (generation !== selectionGeneration) return
     applyDetail(detail)
-    const ready = detail.versions.find((item) => item.status === 'ready')
+    const ready = publishedVersion(detail)
     if (ready) {
       const model = ready.assets.find((item) => item.assetType === 'model')
       digitalHuman.previewRuntime({
@@ -153,11 +189,13 @@ async function refreshSelected(text = '') {
 
 async function createCharacter() {
   clearNotice()
-  if (!characterForm.name.trim()) { error.value = '请输入角色名称。'; return }
+  if (!isAdmin.value) return
+  if (!newCharacterForm.name.trim()) { error.value = '请输入新角色名称。'; return }
   saving.value = true
   try {
-    const created = await createAvatarCharacter({ name: characterForm.name.trim(), category: characterForm.category, description: characterForm.description.trim() })
-    await loadCharacters(); await selectCharacter(created.id); message.value = '角色草稿已创建。'
+    const created = await createAvatarCharacter({ name: newCharacterForm.name.trim(), category: newCharacterForm.category, description: newCharacterForm.description.trim() })
+    creating.value = false
+    await loadCharacters(); await selectCharacter(created.id); message.value = '角色草稿已创建。请上传模型版本及附属资源，再完成发布与审核。'
   } catch (cause) { report(cause, '角色创建失败。') }
   finally { saving.value = false }
 }
@@ -205,12 +243,14 @@ function playAction(action: DigitalHumanAction) { digitalHuman.playAction(action
 async function bind(scope: 'class' | 'lesson' | 'run') {
   if (scope === 'class' && !isAdmin.value) { error.value = '班级数字人由管理员配置，教师直接使用班级形象。'; return }
   if (!selected.value || !selectedReadyVersion.value || !selectedCanUse.value) { error.value = '只有已发布且存在可用版本的角色可以绑定。'; return }
+  if (scope === 'run' && !window.confirm('确认切换当前课堂数字人？这会更新本节课堂的大屏形象，教学进度保持不变。')) return
   clearNotice(); saving.value = true
-  const input = { characterId: selected.value.id, versionId: selectedReadyVersion.value.id, reason: '教师在角色管理页面配置' }
+  const input = { characterId: selected.value.id, versionId: selectedReadyVersion.value.id, reason: isAdmin.value ? '管理员在角色库分配数字人' : '教师在角色库配置教案或当前课堂' }
   try {
     if (scope === 'class') {
       if (!bindingForm.classId) throw new Error('请选择班级')
       await setClassAvatar(bindingForm.classId, input)
+      await loadClassRuntime()
     } else if (scope === 'lesson') {
       if (!bindingForm.lessonPlanId) throw new Error('请选择教案')
       await setLessonAvatar(bindingForm.lessonPlanId, input)
@@ -265,7 +305,8 @@ function fileChanged(event: Event, target: 'version' | 'asset') {
 }
 
 function firstImageAsset(type: 'preview' | 'fallback_2d'): AvatarAsset | null {
-  return selected.value?.versions.flatMap((item) => item.assets).find((item) => item.assetType === type) ?? null
+  const version = selectedReadyVersion.value ?? selected.value?.versions[0]
+  return version?.assets.find(item => item.assetType === type) ?? null
 }
 
 onMounted(async () => {
@@ -275,16 +316,29 @@ onMounted(async () => {
     lessonPlans.fetchList().then(() => { plans.value = [...lessonPlans.items] }),
   ])
 })
-onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpeech(); digitalHuman.setAction('idle') })
+onBeforeUnmount(() => { classRuntimeGeneration++; selectionGeneration++; revokePreviews(); stopBrowserSpeech(); digitalHuman.setAction('idle') })
 </script>
 
 <template>
   <ManagementLayout>
     <div class="page-head">
       <div><h1>数字人角色库</h1><p class="muted">管理课堂角色、声音、性格和使用范围。课堂故障时会自动安全降级。</p></div>
-      <button v-if="isAdmin" class="button" :disabled="saving" @click="createCharacter">新建角色草稿</button>
+      <button v-if="isAdmin" class="button" :disabled="saving" @click="startCreate">新建角色草稿</button>
     </div>
 
+    <section class="panel setup-guide">
+      <h2>如何配置和分配形象</h2>
+      <p v-if="isAdmin">① 新建角色草稿 → ② 上传模型和预览/备用资源 → ③ 配置名称、声音与性格 → ④ 发布模型版本并审核角色 → ⑤ 选择班级分配。</p>
+      <p v-else>班级默认形象由管理员分配。教师可以查看已发布角色，为自己的教案选择形象；正在上课时切换需要再次确认。</p>
+      <p class="muted">班级配置用于后续课堂；教案指定角色优先于班级默认。正在进行的课堂保留原角色，不会因修改班级配置自动切换。</p>
+    </section>
+    <section v-if="creating && isAdmin" class="panel form-grid create-form" aria-label="新建数字人角色">
+      <h2>新建角色草稿</h2>
+      <label>新角色名称<input v-model="newCharacterForm.name" aria-label="新角色名称" maxlength="100"></label>
+      <label>角色分类<select v-model="newCharacterForm.category"><option v-for="(label, key) in categoryLabels" :key="key" :value="key">{{ label }}</option></select></label>
+      <label class="wide">角色简介<textarea v-model="newCharacterForm.description"></textarea></label>
+      <div class="button-row"><button class="button" :disabled="saving || !newCharacterForm.name.trim()" @click="createCharacter">创建草稿</button><button :disabled="saving" @click="creating = false">取消新建</button></div>
+    </section>
     <div class="toolbar">
       <select v-model="category" @change="loadCharacters"><option value="">全部分类</option><option v-for="(label, key) in categoryLabels" :key="key" :value="key">{{ label }}</option></select>
       <select v-if="isAdmin" v-model="status" @change="loadCharacters"><option value="">全部状态</option><option v-for="(label, key) in statusLabels" :key="key" :value="key">{{ label }}</option></select>
@@ -296,7 +350,7 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
 
     <div class="workspace">
       <aside class="role-list panel">
-        <button v-for="item in characters" :key="item.id" class="role-card" :class="{active: selected?.id === item.id}" @click="selectCharacter(item.id)">
+        <button v-for="item in characters" :key="item.id" class="role-card" :class="{active: selected?.id === item.id}"  :disabled="saving" @click="selectCharacter(item.id)">
           <span class="role-icon">{{ item.category === 'cartoon_animal' ? '🐻' : item.category === 'kindergarten_custom' ? '🏫' : '👩‍🏫' }}</span>
           <span><strong>{{ item.name }}</strong><small>{{ categoryLabels[item.category || ''] || item.category }} · {{ statusLabels[item.status || ''] || item.status }}</small></span>
         </button>
@@ -304,13 +358,26 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
       </aside>
 
       <section v-if="selected" class="detail">
+        <div class="panel bindings">
+          <h2>分配形象与课堂使用范围</h2><p>当前选中：<strong>{{ selected.name }}</strong> · {{ selectedReadyVersion ? `可用版本 v${selectedReadyVersion.version}` : '尚无已发布版本' }}</p><p v-if="!selectedCanUse" class="notice warning">该角色尚未发布或缺少可用版本，不能绑定课堂。</p>
+            <p v-if="!isAdmin" class="notice">班级数字人由管理员配置，教师直接使用班级形象。</p>
+            <div class="binding-row"><select v-model.number="bindingForm.classId" aria-label="分配形象的班级" :disabled="saving"><option :value="0">选择班级</option><option v-for="item in classes" :key="item.id" :value="item.id">{{ item.name }}</option></select><button class="button" :disabled="!isAdmin || !selectedCanUse || !bindingForm.classId || saving" @click="bind('class')">设为班级默认角色</button></div>
+          <div v-if="bindingForm.classId" class="class-avatar-status" aria-live="polite">
+            <p v-if="classRuntimeLoading">正在读取班级有效形象…</p>
+            <p v-else-if="classRuntimeError" role="alert">{{ classRuntimeError }} <button @click="loadClassRuntime">重试读取</button></p>
+            <template v-else-if="classRuntime"><strong>该班当前有效形象：{{ classRuntime.character?.name || '内置安全占位形象' }}</strong><p>来源：{{ scopeLabels[classRuntime.sourceScope || ''] || '安全降级' }} · {{ classRuntime.version ? `版本 v${classRuntime.version.version}` : '未配置模型版本' }}</p><p v-if="classRuntime.reason" class="muted">{{ classRuntime.reason }}</p></template>
+          </div>
+          <div class="binding-row"><select v-model.number="bindingForm.lessonPlanId" :disabled="saving"><option :value="0">选择教案</option><option v-for="item in plans" :key="item.id" :value="item.id">{{ item.title }}</option></select><button class="button" :disabled="!selectedCanUse || saving" @click="bind('lesson')">设为教案角色</button></div>
+          <div class="binding-row"><span>{{ currentRun ? `当前课堂：${currentRun.lessonTitle}` : '当前没有进行中的课堂' }}</span><button class="button" :disabled="!selectedCanUse || !currentRun || saving" @click="bind('run')">临时用于当前课堂</button></div>
+        </div>
+
         <div class="preview-grid">
-          <div class="panel stage"><DigitalHumanStage /><div class="action-row"><button v-for="action in DIGITAL_HUMAN_ACTIONS" :key="action" @click="playAction(action)">{{ action }}</button></div></div>
+          <div class="panel stage"><DigitalHumanStage :controls="false" /><p class="preview-role-name">{{ selected.name }}</p><div class="action-row"><button v-for="action in DIGITAL_HUMAN_ACTIONS" :key="action" @click="playAction(action)">{{ action }}</button></div></div>
           <div class="panel images">
             <h2>安全预览</h2>
             <div class="image-pair">
-              <figure><img v-if="firstImageAsset('preview') && previewUrls[firstImageAsset('preview')!.id]" :src="previewUrls[firstImageAsset('preview')!.id]" alt="角色预览图"><div v-else class="placeholder">暂无预览图</div><figcaption>角色预览</figcaption></figure>
-              <figure><img v-if="firstImageAsset('fallback_2d') && previewUrls[firstImageAsset('fallback_2d')!.id]" :src="previewUrls[firstImageAsset('fallback_2d')!.id]" alt="2D备用角色"><div v-else class="placeholder">程序化角色兜底</div><figcaption>2D备用图</figcaption></figure>
+              <figure><img v-if="firstImageAsset('preview') && !previewErrors[firstImageAsset('preview')!.id] && previewUrls[firstImageAsset('preview')!.id]" :src="previewUrls[firstImageAsset('preview')!.id]" alt="角色预览图" @error="previewErrors[firstImageAsset('preview')!.id] = true"><div v-else class="placeholder" role="status">{{ firstImageAsset('preview') ? (previewErrors[firstImageAsset('preview')!.id] ? '图片加载失败，请刷新重试' : '图片加载中…') : '暂无预览图' }}</div><figcaption>角色预览</figcaption></figure>
+              <figure><img v-if="firstImageAsset('fallback_2d') && !previewErrors[firstImageAsset('fallback_2d')!.id] && previewUrls[firstImageAsset('fallback_2d')!.id]" :src="previewUrls[firstImageAsset('fallback_2d')!.id]" alt="2D备用角色" @error="previewErrors[firstImageAsset('fallback_2d')!.id] = true"><div v-else class="placeholder" role="status">{{ firstImageAsset('fallback_2d') ? (previewErrors[firstImageAsset('fallback_2d')!.id] ? '图片加载失败，请刷新重试' : '图片加载中…') : '程序化角色兜底' }}</div><figcaption>2D备用图</figcaption></figure>
             </div>
             <p class="muted">加载顺序：VRM → GLB → 2D备用图 / 程序化角色。</p>
           </div>
@@ -325,7 +392,7 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
         </div>
 
         <div class="panel form-grid">
-          <h2>声音与性格</h2>
+          <h2>声音与性格</h2><p class="muted wide">此处保存角色配置。浏览器试听用于检查语速、音量和话术，不代表已验证云端音色；实际语音服务权限仍须单独核对。</p>
           <p v-if="!isAdmin" class="muted wide">角色声音与性格由管理员维护，教师可以试听并选择课堂使用范围。</p>
           <label>声音提供方<input v-model="voiceForm.provider" :disabled="!isAdmin"></label><label>音色ID<input v-model="voiceForm.voiceId" :disabled="!isAdmin"></label>
           <label>语速 {{ voiceForm.speed.toFixed(1) }}<input v-model.number="voiceForm.speed" type="range" min="0.5" max="2" step="0.1" :disabled="!isAdmin"></label>
@@ -334,19 +401,14 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
           <label class="wide">问候语<textarea v-model="personalityForm.greeting" :disabled="!isAdmin"></textarea></label>
           <label class="wide">鼓励语<textarea v-model="personalityForm.encouragementStyle" :disabled="!isAdmin"></textarea></label>
           <label class="wide">告别语<textarea v-model="personalityForm.goodbyeText" :disabled="!isAdmin"></textarea></label>
-          <div class="button-row"><button class="secondary" @click="previewVoice">试听声音</button><button v-if="isAdmin" class="button" :disabled="saving" @click="saveConfiguration">保存配置</button></div>
+          <div class="button-row"><button class="secondary" @click="previewVoice">试听浏览器声音</button><button v-if="isAdmin" class="button" :disabled="saving" @click="saveConfiguration">保存配置</button></div>
         </div>
 
-        <div class="panel bindings">
-          <h2>课堂使用范围</h2><p v-if="!selectedCanUse" class="notice warning">该角色尚未发布或缺少可用版本，不能绑定课堂。</p>
-            <p v-if="!isAdmin" class="notice">班级数字人由管理员配置，教师直接使用班级形象。</p>
-            <div class="binding-row"><select v-model.number="bindingForm.classId"><option :value="0">选择班级</option><option v-for="item in classes" :key="item.id" :value="item.id">{{ item.name }}</option></select><button class="button" :disabled="!isAdmin || !selectedCanUse || saving" @click="bind('class')">设为班级默认角色</button></div>
-          <div class="binding-row"><select v-model.number="bindingForm.lessonPlanId"><option :value="0">选择教案</option><option v-for="item in plans" :key="item.id" :value="item.id">{{ item.title }}</option></select><button class="button" :disabled="!selectedCanUse || saving" @click="bind('lesson')">设为教案角色</button></div>
-          <div class="binding-row"><span>{{ currentRun ? `当前课堂：${currentRun.lessonTitle}` : '当前没有进行中的课堂' }}</span><button class="button" :disabled="!selectedCanUse || !currentRun || saving" @click="bind('run')">临时用于当前课堂</button></div>
-        </div>
 
         <div v-if="isAdmin" class="panel admin-tools">
-          <h2>管理员发布与审核</h2>
+          <h2>自定义形象：上传、发布与审核</h2>
+          <p class="muted">3D形象需提供真实 GLB / GLTF / VRM 模型。普通图片仅用作预览或2D备用图，不会自动生成3D模型。先创建模型版本，再向该版本上传附属资源。</p>
+          <p class="muted">发布会执行服务端完整性校验；缺少资源时按错误提示补齐。版本发布后，还需“提交审核”与“审核通过”，才能分配给班级。</p>
           <div class="upload-row"><input v-model="versionForm.engineVersion" aria-label="引擎版本"><select v-model="versionForm.modelFormat"><option value="glb">GLB</option><option value="gltf">GLTF</option><option value="vrm">VRM</option></select><input type="file" accept=".glb,.gltf,.vrm" @change="fileChanged($event, 'version')"><button class="button" :disabled="saving" @click="uploadVersion">创建模型版本</button></div>
           <div class="upload-row"><select v-model.number="assetForm.versionId"><option :value="0">选择版本</option><option v-for="item in selected.versions" :key="item.id" :value="item.id">v{{ item.version }} · {{ item.status }}</option></select><select v-model="assetForm.assetType"><option v-for="(label, key) in assetLabels" :key="key" :value="key" :disabled="key === 'model'">{{ label }}</option></select><select v-if="assetForm.assetType === 'animation'" v-model="assetForm.actionName"><option v-for="action in DIGITAL_HUMAN_ACTIONS" :key="action" :value="action">{{ action }}</option></select><input type="file" @change="fileChanged($event, 'asset')"><button class="button" :disabled="saving" @click="uploadAsset">上传版本资源</button></div>
           <div v-for="item in selected.versions" :key="item.id" class="version-row"><span>v{{ item.version }} · {{ item.modelFormat }} · {{ item.status }}</span><span>{{ item.assets.length }}项资源</span><button v-if="item.status === 'draft'" @click="runAdminAction('publish', item)">完整性检查并发布版本</button><button v-if="item.status !== 'disabled'" @click="runAdminAction('disableVersion', item)">停用版本</button></div>
@@ -360,4 +422,13 @@ onBeforeUnmount(() => { selectionGeneration++; revokePreviews(); stopBrowserSpee
 
 <style scoped>
 .page-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.page-head h1{margin:0 0 7px}.toolbar{display:flex;gap:10px;align-items:center;margin:22px 0}.toolbar select,.form-grid input,.form-grid select,.form-grid textarea,.binding-row select,.admin-tools input,.admin-tools select{border:1px solid #ead7c8;border-radius:11px;background:#fff;color:#60483e;padding:9px 11px}.secondary,.action-row button,.version-row button,.button-row button{border:1px solid #e8cbb8;background:#fff;color:#9a6248;border-radius:10px;padding:8px 12px;cursor:pointer}.workspace{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start}.role-list{display:grid;gap:8px;position:sticky;top:20px;max-height:calc(100dvh - 150px);overflow:auto}.role-card{border:0;background:#fff8f0;border-radius:13px;padding:11px;display:flex;gap:10px;text-align:left;color:#634c41;cursor:pointer}.role-card.active{background:#ffe3d0;box-shadow:inset 0 0 0 2px #e9976e}.role-card small{display:block;margin-top:4px;color:#a17f6d}.role-icon{font-size:28px}.detail{display:grid;gap:16px}.preview-grid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(280px,1fr);gap:16px}.stage{min-height:350px}.stage :deep(.digital-human){height:280px;max-width:320px}.action-row{display:flex;gap:5px;flex-wrap:wrap;justify-content:center;margin-top:8px}.action-row button{font-size:11px;padding:5px 8px}.images h2,.form-grid h2,.bindings h2,.admin-tools h2{grid-column:1/-1;margin:0 0 8px}.image-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}.image-pair figure{margin:0}.image-pair img,.placeholder{width:100%;aspect-ratio:1;object-fit:contain;border-radius:12px;background:#fff6eb}.placeholder{display:grid;place-items:center;color:#af8e7c}.image-pair figcaption{text-align:center;margin-top:6px;color:#8b6e5f}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.form-grid label{display:grid;gap:6px;font-size:13px}.form-grid textarea{min-height:74px;resize:vertical}.form-grid .wide,.form-grid .button-row{grid-column:1/-1}.button-row{display:flex;gap:9px;flex-wrap:wrap}.bindings{display:grid;gap:10px}.binding-row,.upload-row,.version-row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.binding-row select{min-width:240px}.version-row{padding:10px 0;border-top:1px solid #f0e2d8}.version-row span:first-child{font-weight:700}.notice{padding:10px 13px;border-radius:11px}.notice.error{background:#ffebeb;color:#a83e3e}.notice.success{background:#e9f7ec;color:#397c50}.notice.warning{background:#fff3dc;color:#93651e}.danger{color:#bd4f4f!important;border-color:#e9b2b2!important}.empty,.empty-main{padding:40px;text-align:center;color:#a38270}.button:disabled,button:disabled{opacity:.5;cursor:not-allowed}@media(max-width:900px){.workspace,.preview-grid{grid-template-columns:1fr}.role-list{position:static;max-height:none}.form-grid{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}}
+.preview-role-name{text-align:center;font-weight:700;color:var(--app-text)}.image-pair .placeholder{box-sizing:border-box;min-height:160px;padding:16px;text-align:center;border:1px dashed var(--app-border);background:var(--app-surface-soft);color:var(--app-muted)}.image-pair img{display:block;max-width:100%}</style>
+
+<style scoped>
+.setup-guide{margin:18px 0}.setup-guide h2{font-size:18px;margin:0}.setup-guide p{line-height:1.7}.create-form{margin:16px 0}.class-avatar-status{padding:12px 16px;background:var(--app-surface-soft,#fff8f0);border:1px solid var(--app-border,#ead7c8);border-radius:12px}.class-avatar-status p{margin:5px 0}.admin-tools p{line-height:1.7}
+</style>
+<style scoped>
+.panel{padding:20px;border:1px solid var(--app-border,#efd8c7);border-radius:20px;background:var(--app-surface,#fffdfa)}
+.button{min-height:40px;padding:9px 16px;border:1px solid var(--app-primary,#eb916b);border-radius:11px;background:var(--app-primary,#eb916b);color:#fff;cursor:pointer;white-space:nowrap}
+.binding-row .button{flex-shrink:0}.class-avatar-status{overflow-wrap:anywhere}.role-list.panel{padding:12px}.setup-guide{padding:18px 22px}.create-form input,.create-form textarea{box-sizing:border-box;max-width:100%}
 </style>

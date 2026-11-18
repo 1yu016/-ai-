@@ -34,16 +34,19 @@ import {
 } from '../src/classroom-runs/classroom-run.types';
 import { ClassroomCommandRecord } from '../src/classroom-runs/entities/classroom-command-record.entity';
 import { ClassroomEvent } from '../src/classroom-runs/entities/classroom-event.entity';
+import { ClassroomRunStepSnapshot } from '../src/classroom-runs/entities/classroom-run-step-snapshot.entity';
+import { LessonStepType } from '../src/lesson-plans/lesson-plan.types';
 import {
   ClassroomRollCallRecord,
   RollCallMode,
 } from '../src/classroom-runs/entities/classroom-roll-call-record.entity';
 import { ClassroomRun } from '../src/classroom-runs/entities/classroom-run.entity';
+import { ClassroomSummaryDraft } from '../src/classroom-runs/entities/classroom-summary-draft.entity';
 import {
   AttendanceChangeSource,
   StudentAttendanceChange,
 } from '../src/classroom-runs/entities/student-attendance-change.entity';
-import { AttendanceStatus } from '../src/classroom-runs/entities/student-attendance-record.entity';
+import { AttendanceStatus, StudentAttendanceRecord } from '../src/classroom-runs/entities/student-attendance-record.entity';
 import { StudentQuestionRecord } from '../src/classroom-runs/entities/student-question-record.entity';
 import { StudentRewardRecord } from '../src/classroom-runs/entities/student-reward-record.entity';
 import { RewardCategory } from '../src/classroom-runs/reward-system.types';
@@ -74,6 +77,7 @@ describe('Classroom record, summary and report (e2e)', () => {
   let app: INestApplication;
   let token: string;
   let otherToken: string;
+  let classPeerToken: string;
   let teacherId: number;
   let classId: number;
   let runId: number;
@@ -146,6 +150,15 @@ describe('Classroom record, summary and report (e2e)', () => {
         schoolId: 'garden-record',
       }),
     );
+    const classPeer = await teachers.save(
+      teachers.create({
+        account: 'record_peer',
+        passwordHash: await bcrypt.hash('Teacher123!', 4),
+        name: '同班教师',
+        role: TeacherRole.Teacher,
+        schoolId: 'garden-record',
+      }),
+    );
     token = (
       await request(app.getHttpServer())
         .post('/auth/login')
@@ -156,6 +169,12 @@ describe('Classroom record, summary and report (e2e)', () => {
       await request(app.getHttpServer())
         .post('/auth/login')
         .send({ account: other.account, password: 'Teacher123!' })
+        .expect(200)
+    ).body.access_token as string;
+    classPeerToken = (
+      await request(app.getHttpServer())
+        .post('/auth/login')
+        .send({ account: classPeer.account, password: 'Teacher123!' })
         .expect(200)
     ).body.access_token as string;
 
@@ -214,6 +233,10 @@ describe('Classroom record, summary and report (e2e)', () => {
         version: 4,
       })
     ).id;
+    await app.get<Repository<ClassroomRunStepSnapshot>>(getRepositoryToken(ClassroomRunStepSnapshot)).save([
+      { classroomRunId: runId, originalStepId: 1, stepIndex: 0, title: '观察', type: LessonStepType.Introduction, content: '观察星空', expectedResponse: null, teacherTip: null, durationSeconds: 10, resourceId: null, actionConfig: null, recoveryPointConfig: null },
+      { classroomRunId: runId, originalStepId: 2, stepIndex: 1, title: '交流', type: LessonStepType.Question, content: '分享发现', expectedResponse: null, teacherTip: null, durationSeconds: 20, resourceId: 9, actionConfig: null, recoveryPointConfig: null },
+    ]);
     await seedTimeline(now);
   });
 
@@ -232,6 +255,17 @@ describe('Classroom record, summary and report (e2e)', () => {
         payload: '{}',
         result: ClassroomEventResult.Success,
         createdAt: new Date(now - 30_000),
+      }),
+      events.create({
+        classroomRunId: runId,
+        eventType: ClassroomEventType.Checkpoint,
+        requestId: 'record-resource-complete-1',
+        operatorType: AuthUserType.Teacher,
+        operatorId: teacherId,
+        deviceId: 1,
+        payload: JSON.stringify({ checkpointType: 'resource_completed', resourceId: 9 }),
+        result: ClassroomEventResult.Success,
+        createdAt: new Date(now - 20_000),
       }),
       events.create({
         classroomRunId: runId,
@@ -316,6 +350,11 @@ describe('Classroom record, summary and report (e2e)', () => {
         requestId: 'record-attendance-1',
         createdAt: new Date(now - 20_000),
       });
+    await app.get<Repository<StudentAttendanceRecord>>(getRepositoryToken(StudentAttendanceRecord)).save({
+      classroomRunId: runId, classId, studentId, status: AttendanceStatus.Present, firstStatus: AttendanceStatus.Present,
+      firstMarkedByTeacherId: teacherId, firstMarkedAt: new Date(now - 20_000), modifiedByTeacherId: teacherId,
+      modifiedAt: new Date(now - 20_000),
+    });
     await app
       .get<Repository<ClassroomRollCallRecord>>(getRepositoryToken(ClassroomRollCallRecord))
       .save({
@@ -366,6 +405,10 @@ describe('Classroom record, summary and report (e2e)', () => {
         questionText: '星星为什么会发光？',
         topic: '星星',
         domain: '科学',
+        answerText: '恒星内部会产生光和热。',
+        answerStatus: 'answered',
+        answerSource: 'teacher',
+        qaSessionId: null,
         isAnonymous: false,
         teacherId,
         requestId: 'record-question-1',
@@ -438,6 +481,22 @@ describe('Classroom record, summary and report (e2e)', () => {
         `${item.source}:${item.type}:${item.requestId}`,
       );
     expect(new Set(requestKeys).size).toBe(requestKeys.length);
+    expect(response.body.analysis).toMatchObject({
+      actualRunSeconds: 30,
+      plannedRunSeconds: 30,
+      metrics: {
+        attendanceRecords: 1,
+        attendanceChanges: 1,
+        rollCalls: 1,
+        activeRewards: 0,
+        childQuestions: 1,
+        answeredQuestions: 1,
+        aiDirectorSuggestions: 1,
+        acceptedAiSuggestions: 1,
+      },
+      completedResources: [expect.objectContaining({ resourceId: 9, completedCount: 1 })],
+    });
+    expect(response.body.analysis.stepTimings.map((step: { actualSeconds: number }) => step.actualSeconds)).toEqual([6, 19]);
   });
 
   it('keeps AI draft separate until teacher edits and confirms it', async () => {
@@ -476,6 +535,33 @@ describe('Classroom record, summary and report (e2e)', () => {
     expect(reopened.body.formalSummary).toMatchObject(content);
   });
 
+  it('restricts summary draft reads and writes to the owning teacher, even within an authorized class', async () => {
+    await app.get<Repository<TeacherClass>>(getRepositoryToken(TeacherClass)).save({
+      teacherId: (await app.get<Repository<Teacher>>(getRepositoryToken(Teacher)).findOneByOrFail({ account: 'record_peer' })).id,
+      classId,
+      role: TeacherClassRole.Teacher,
+    });
+    const peerSummaryAuth = { Authorization: `Bearer ${classPeerToken}` };
+    const draftRepo = app.get<Repository<ClassroomSummaryDraft>>(getRepositoryToken(ClassroomSummaryDraft));
+    const draftCountBefore = await draftRepo.count();
+
+    // 同班教师仍可看课堂时间线，但不可读取或创建本课堂总结草稿。
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/timeline`).set(peerSummaryAuth).expect(200);
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/summary`).set(peerSummaryAuth).expect(403);
+    await request(app.getHttpServer()).post(`/classroom-runs/${runId}/summary/draft`).set(peerSummaryAuth).send({}).expect(403);
+    await request(app.getHttpServer()).post(`/classroom-runs/${runId}/summary/confirm`).set(peerSummaryAuth).send({
+      classroomSummary: '越权提交', participation: '越权提交', interestPoints: [], commonQuestions: [], teachingStrategies: [],
+    }).expect(403);
+    await request(app.getHttpServer()).post(`/classroom-runs/${runId}/summary/discard`).set(peerSummaryAuth).send({ reason: '越权放弃' }).expect(403);
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/report`).set(peerSummaryAuth).expect(403);
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/summary`).expect(401);
+    expect(await draftRepo.count()).toBe(draftCountBefore);
+
+    const ownerDraft = await request(app.getHttpServer()).post(`/classroom-runs/${runId}/summary/draft`).set(auth()).send({}).expect(201);
+    expect(ownerDraft.body.teacherId).toBe(teacherId);
+    await request(app.getHttpServer()).get(`/classroom-runs/${runId}/summary`).set(auth()).expect(200);
+  });
+
   it('blocks unsafe labels, enforces class isolation and exports page-equivalent data', async () => {
     await request(app.getHttpServer())
       .post(`/classroom-runs/${runId}/summary/confirm`)
@@ -491,6 +577,15 @@ describe('Classroom record, summary and report (e2e)', () => {
     await request(app.getHttpServer())
       .get(`/classroom-runs/${runId}/timeline`)
       .set('Authorization', `Bearer ${otherToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`/classroom-runs/${runId}/summary`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/classroom-runs/${runId}/summary/draft`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({})
       .expect(403);
     const report = await request(app.getHttpServer())
       .get(`/classroom-runs/${runId}/report`)

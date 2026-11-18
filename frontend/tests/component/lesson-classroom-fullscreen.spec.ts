@@ -54,7 +54,7 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
     vi.restoreAllMocks()
   })
 
-  async function mountView(opts: { opening?: boolean; rewards?: ReturnType<typeof rec>[] } = {}) {
+  async function mountView(opts: { opening?: boolean; denyOpening?: boolean; rewards?: ReturnType<typeof rec>[] } = {}) {
     let opening = opts.opening ?? false
     const lifecycle = { phase: 'opening', runId: 9, deviceId: 1, bindingId: 2, revision: 1, expiresAt: new Date(Date.now() + 600000).toISOString() }
     vi.spyOn(http, 'post').mockImplementation(async (url) => {
@@ -63,6 +63,7 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
     })
     vi.spyOn(http, 'get').mockImplementation(async (url: string) => {
       const u = String(url)
+      if (u.endsWith('/cockpit')) return { data: { schemaVersion: 1, run: { id: 9, deviceId: 1 }, versions: { runVersion: 2, snapshotVersion: null }, capabilities: { allowedActions: opts.denyOpening ? [] : opening ? ['complete_opening', 'skip_opening'] : runPayload.allowedActions } } } as never
       if (u.startsWith('/classroom-runs/')) {
         if (u.endsWith('/rewards')) {
           const items = opts.rewards ?? []
@@ -93,6 +94,33 @@ describe('LessonClassroomView · 全屏板块 + 开场', () => {
       attachTo: document.body,
     })
   }
+
+  it('revalidates expired capabilities from the opening button without trapping the teacher', async () => {
+    const wrapper = await mountView({ opening: true })
+    await settle()
+    const store = useLessonRunStore()
+    store.stopPolling()
+    store.capabilities = null
+    await settle()
+    expect(wrapper.get('[data-test="opening-enter"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-test="opening-enter"]').trigger('click')
+    await settle()
+    expect(http.get).toHaveBeenCalledWith('/classroom-runs/9/cockpit')
+    expect(http.post).toHaveBeenCalledWith('/classroom-runs/9/opening/complete', expect.any(Object))
+    expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows an opening recovery error and never posts when fresh server policy denies entry', async () => {
+    const wrapper = await mountView({ opening: true, denyOpening: true })
+    await settle()
+    await wrapper.get('[data-test="opening-enter"]').trigger('click')
+    await settle()
+    expect(wrapper.get('[role="alert"]').text()).toContain('重试')
+    expect(http.post).not.toHaveBeenCalledWith('/classroom-runs/9/opening/complete', expect.any(Object))
+    expect(wrapper.find('[data-test="opening-overlay"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
 
   it('#1 榜单全屏：点击「查看本节表现」展开 overlay，默认显示本节课奖励榜', async () => {
     const wrapper = await mountView({ rewards: rewardItems })

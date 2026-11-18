@@ -69,6 +69,8 @@ try {
   const backendEnv = {
     ...testEnv,
     PORT: backendPort,
+    DB_SYNCHRONIZE: 'false',
+    DB_MIGRATIONS_RUN: 'false',
     DATABASE_PATH: resolve(target, 'gate.sqlite'),
     RESOURCE_UPLOAD_ROOT_PATH: resolve(target, 'uploads'),
     RESOURCE_UPLOAD_PATH: resolve(target, 'uploads', 'resources'),
@@ -87,6 +89,10 @@ try {
     DB_SYNCHRONIZE: 'true',
     DB_MIGRATIONS_RUN: 'true',
   }
+  const migration = spawnSync(process.execPath, ['-r', 'ts-node/register/transpile-only', 'scripts/migrate-database.ts'], {
+    cwd: backendRoot, env: backendEnv, stdio: 'inherit',
+  })
+  if (migration.status !== 0) throw new Error('Isolated database migration failed; browser services were not started')
   backendProcess = spawn(process.execPath, [resolve(backendRoot, 'dist', 'main.js')], {
     cwd: backendRoot,
     env: backendEnv,

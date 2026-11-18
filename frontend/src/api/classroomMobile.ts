@@ -1,9 +1,13 @@
 import { http } from './http'
-import type { ClassroomCommandOperation } from '@/services/classroomCommandBus'
+import type { ClassroomCommandOperation, ClassroomCommandResult } from '@/services/classroomCommandBus'
 import type { ClassroomRunPayload } from '@/stores/lessonRun'
 
 export const CLASSROOM_CONTROL_SESSION_HEADER = 'X-Classroom-Control-Session'
 export const CLASSROOM_CONTROL_SESSION_KEY = 'kindergarten-classroom-control-session-v1'
+let freshnessSequence = 0
+// Embedded phone browsers may reuse GET responses across control-session headers.
+// Never put credentials in the URL; use a non-secret, unique cache discriminator.
+export const mobileFreshness = () => `${Date.now()}-${++freshnessSequence}`
 
 export type ClassroomControlSession = {
   id: string
@@ -74,7 +78,18 @@ export type MobileCommandResponse = {
   resumeCursor?: string | null
   deliveryStatus?: 'confirmed' | 'received' | 'failed'
   confirmedAt?: string
-  result?: { classroomState?: ClassroomRunPayload }
+  result?: { classroomState?: ClassroomRunPayload | null }
+}
+
+export type MobileStoredCommand = {
+  requestId: string
+  classroomRunId: number
+  targetDeviceId: number | null
+  source: string
+  operation: string
+  status: string
+  updatedAt: string
+  responsePayload: ClassroomCommandResult | null
 }
 
 function sessionHeaders(token: string) {
@@ -82,11 +97,13 @@ function sessionHeaders(token: string) {
 }
 
 export const classroomMobileApi = {
+  queryCommand: (requestId: string) => http.get<MobileStoredCommand>(`/classroom-commands/${encodeURIComponent(requestId)}`),
   join: (data: { ticket: string; deviceCode: string }) =>
     http.post<MobileJoinResult>('/classroom-mobile/join', data),
   state: (token: string) =>
     http.get<MobileClassroomState>('/classroom-mobile/state', {
-      headers: sessionHeaders(token),
+      params: { _fresh: mobileFreshness() },
+      headers: { ...sessionHeaders(token), 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' },
     }),
   heartbeat: (token: string) =>
     http.post('/classroom-mobile/heartbeat', null, {

@@ -41,6 +41,7 @@ export enum LessonAiDraftStatus {
 }
 
 export enum LessonStepActionType {
+  ChildQa = 'child_qa',
   AvatarAction = 'avatar_action',
   VoiceInstruction = 'voice_instruction',
   Reward = 'reward',

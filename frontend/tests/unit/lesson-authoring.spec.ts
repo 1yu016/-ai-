@@ -33,6 +33,16 @@ describe('manual authoring', () => {
     expect(post.mock.calls[0]![0]).toBe('/lesson-plans/authoring')
     expect((post.mock.calls[0]![1] as { requestId: string }).requestId).toBe((post.mock.calls[1]![1] as { requestId: string }).requestId)
   })
+  it('strips database metadata from actions and recovery points before authoritative authoring', async () => {
+    const loaded = { ...plan, steps: [{ ...plan.steps[0], teacherInstruction:'教师指导', actions:[{...plan.steps[0]!.actions[0],id:10,stepId:4,sortOrder:1,createdAt:'old'}],recoveryPoint:{...plan.steps[0]!.recoveryPoint,id:11,lessonPlanId:2,stepId:4,createdAt:'old',updatedAt:'old'} }] }
+    vi.spyOn(http,'get').mockResolvedValue({data:loaded})
+    const put=vi.spyOn(http,'put').mockResolvedValue({data:loaded})
+    const store=useLessonPlanStore();await store.load(2);await store.save()
+    const payload=put.mock.calls[0]![1] as {steps:Array<{actions:unknown[];recoveryPoint:unknown}>}
+    expect(payload.steps[0]!.actions[0]).not.toHaveProperty('id')
+    expect(payload.steps[0]!.recoveryPoint).not.toHaveProperty('lessonPlanId')
+    expect(payload.steps[0]!.actions[0]).toMatchObject({actionType:'avatar_action',actionName:'wave'})
+  })
   it('loads version history read-only and deep-copies step configuration', async () => {
     vi.spyOn(http, 'get').mockResolvedValueOnce({ data: plan }).mockResolvedValueOnce({ data: [{ id: 1, versionNo: 1, changeSummary: '创建', snapshotJson: '{}' }] })
     const store = useLessonPlanStore(); await store.load(2); store.copyStep(0)

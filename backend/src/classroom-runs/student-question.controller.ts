@@ -1,3 +1,5 @@
+import { ChildQaService } from './child-qa.service';
+import { ChildQaQuestionDto } from './dto/student-question.dto';
 import {
   Body,
   Controller,
@@ -23,7 +25,17 @@ import { StudentQuestionService } from './student-question.service';
 @Controller()
 @UseGuards(AuthGuard)
 export class StudentQuestionController {
-  constructor(private readonly questions: StudentQuestionService) {}
+  constructor(private readonly questions: StudentQuestionService, private readonly childQa: ChildQaService) {}
+
+  @Get('classroom-runs/:runId/child-qa')
+  childQaState(@Param('runId', ParseIntPipe) runId: number, @Req() request: AuthenticatedRequest) {
+    return this.childQa.state(request.user, runId, true);
+  }
+
+  @Post('classroom-runs/:runId/child-qa/questions')
+  childQaQuestion(@Param('runId', ParseIntPipe) runId: number, @Body() dto: ChildQaQuestionDto, @Req() request: AuthenticatedRequest) {
+    return this.childQa.ask(request.user, runId, dto);
+  }
 
   @Post('classroom-runs/:runId/questions')
   create(

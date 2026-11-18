@@ -103,9 +103,16 @@ async function toggleStatus(): Promise<void> {
   }
 }
 
-function openBusiness(name: 'class-rewards' | 'class-questions' | 'class-detail') {
+function openBusiness(name: 'class-rewards' | 'class-questions' | 'class-artworks' | 'class-detail') {
   if (!student.value) return
-  void router.push({ name, params: { classId: student.value.classId } })
+  void router.push({
+    name,
+    params: { classId: student.value.classId },
+    // 儿童问题与儿童作品支持按幼儿筛选，带上 studentId 才不会丢掉学生上下文。
+    ...(name === 'class-questions' || name === 'class-artworks'
+      ? { query: { studentId: String(student.value.id) } }
+      : {}),
+  })
 }
 
 onMounted(load)
@@ -158,6 +165,7 @@ onMounted(load)
           <div class="business-actions">
             <button class="soft" @click="openBusiness('class-rewards')">成长奖励</button>
             <button class="soft" @click="openBusiness('class-questions')">儿童问题</button>
+            <button class="soft" @click="openBusiness('class-artworks')">儿童作品</button>
             <button class="soft" @click="openBusiness('class-detail')">班级与课堂记录</button>
           </div>
         </section>

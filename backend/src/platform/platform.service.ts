@@ -1332,6 +1332,13 @@ export class PlatformService {
         error: number | string | null;
         averageLatencyMs: number | string | null;
       }>();
+    const aiFeatures = await aiBuilder
+      .clone()
+      .select('ai.feature', 'feature')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('ai.feature')
+      .getRawMany<{ feature: string; count: number | string }>();
+    const aiFeatureCounts = new Map(aiFeatures.map((item) => [item.feature, Number(item.count)]));
     const [
       teacherCount,
       classCount,
@@ -1341,6 +1348,8 @@ export class PlatformService {
       abnormalClassrooms,
       resourceStats,
       physicalStorage,
+      completedClassrooms,
+      formalClassroomRecords,
     ] = await Promise.all([
       teachers.getCount(),
       classes.getCount(),
@@ -1356,6 +1365,8 @@ export class PlatformService {
       runs.clone().andWhere("run.status = 'failed'").getCount(),
       this.resourceDashboardStats(schoolId),
       this.storageUsageBytes(),
+      runs.clone().andWhere("run.status = 'completed'").getCount(),
+      this.formalClassroomSummaryCount(schoolId),
     ]);
     const aiTotal = Number(aiStats?.total ?? 0);
     const aiSuccess = Number(aiStats?.success ?? 0);
@@ -1374,6 +1385,7 @@ export class PlatformService {
         today: todayClassrooms,
         active: activeClassrooms,
         abnormal: abnormalClassrooms,
+        completed: completedClassrooms,
       },
       resources: {
         pending: resourceStats.pending,
@@ -1392,12 +1404,35 @@ export class PlatformService {
         averageLatencyMs: Math.round(
           Number(aiStats?.averageLatencyMs ?? 0),
         ),
+        lessonPreparationCalls: (aiFeatureCounts.get('lesson_plan_draft') ?? 0)
+          + (aiFeatureCounts.get('lesson_preparation_candidate') ?? 0),
+        resourceMatchingRequests: aiFeatureCounts.get('resource_matching') ?? 0,
+        classroomSummaryCalls: aiFeatureCounts.get('classroom_summary') ?? 0,
       },
+      classroomRecords: { completedRuns: completedClassrooms, formalSummaries: formalClassroomRecords },
       storage: {
         indexedResourceBytes: resourceStats.bytes,
         physicalBytes: physicalStorage,
       },
     };
+  }
+
+  private async formalClassroomSummaryCount(schoolId: string | null): Promise<number> {
+    const runner = this.dataSource.createQueryRunner();
+    try {
+      if (!(await runner.hasTable('classroom_summary'))) return 0;
+      const rows = await runner.query(
+        `SELECT COUNT(*) AS count
+         FROM "classroom_summary" summary
+         INNER JOIN "classroom_run" run ON run.id = summary.classroom_run_id
+         INNER JOIN "class" summary_class ON summary_class.id = run.class_id
+         ${schoolId ? 'WHERE summary_class.school_id = ?' : ''}`,
+        schoolId ? [schoolId] : [],
+      ) as Array<{ count: number | string }>;
+      return Number(rows[0]?.count ?? 0);
+    } finally {
+      await runner.release();
+    }
   }
 
   private async resourceDashboardStats(
