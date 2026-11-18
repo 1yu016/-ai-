@@ -1,11 +1,12 @@
 import { onScopeDispose, ref, watch } from 'vue'
-import { pauseBrowserSpeech, playExclusiveAudio, resumeBrowserSpeech, stopBrowserSpeech } from '@/services/browserSpeech'
+import { pauseBrowserSpeech, playExclusiveAudio, resumeBrowserSpeech, speakBrowserText, stopBrowserSpeech } from '@/services/browserSpeech'
 
 /** Owns only this teacher's teaching output. Never controls resource media or ASR tracks. */
 export function useTeachingSpeech(deps: {
   identity: () => string
   allowed: () => boolean
   authorize: (text: string) => Promise<unknown>
+  localVoice?: boolean
   requestAudio: (text: string) => Promise<string>
   onSpeaking: (speaking: boolean) => void
   onError: (cause: unknown) => void
@@ -14,13 +15,15 @@ export function useTeachingSpeech(deps: {
   let sequence = 0, control = 0, disposed = false, authorizing = false
   let audio: HTMLAudioElement | null = null
   let owner = ''
+  let localSpeech: AbortController | null = null
   function stop() {
     const wasSpeaking = speaking.value || paused.value
     sequence++; control++; authorizing = false
     const owned = audio; audio = null; owner = ''
+    const ownedSpeech = localSpeech; localSpeech = null; ownedSpeech?.abort()
     const stoppedOwnedAudio = owned ? stopBrowserSpeech(owned) : false
     loading.value = false; speaking.value = false; paused.value = false
-    if (wasSpeaking && stoppedOwnedAudio) deps.onSpeaking(false)
+    if (wasSpeaking && (stoppedOwnedAudio || ownedSpeech)) deps.onSpeaking(false)
   }
   const valid = (id: number, source: string) => !disposed && id === sequence && source === deps.identity() && deps.allowed()
   async function play(text: string) {
@@ -33,6 +36,33 @@ export function useTeachingSpeech(deps: {
       if (id !== sequence) return false
       authorizing = false
       if (!valid(id, source)) { stop(); return false }
+      if (deps.localVoice) {
+        const voice = window.speechSynthesis?.getVoices().find(item => item.localService && /^zh(?:[-_]|$)/i.test(item.lang))
+        if (!voice) throw new Error('没有可用的本地中文音色，请使用「教师自行讲述」。')
+        const controller = new AbortController()
+        localSpeech = controller
+        const finish = () => {
+          if (localSpeech !== controller) return
+          localSpeech = null
+          stop()
+          deps.onSpeaking(false)
+        }
+        const queued = speakBrowserText(text, {
+          signal: controller.signal,
+          voice,
+          lang: voice.lang,
+          onStart: () => { if (valid(id, source) && !paused.value) { speaking.value = true; deps.onSpeaking(true) } },
+          onEnd: finish,
+          onCancel: finish,
+          onError: () => {
+            if (localSpeech !== controller) return
+            finish()
+            deps.onError(new Error('本地语音播放失败，请使用「教师自行讲述」。'))
+          },
+        })
+        if (!queued) throw new Error('浏览器暂时无法使用本地语音。')
+        return valid(id, source)
+      }
       const url = await deps.requestAudio(text)
       if (!valid(id, source)) return false
       if (!url.trim()) throw new Error('语音服务未返回可播放内容')
@@ -56,12 +86,22 @@ export function useTeachingSpeech(deps: {
     } finally { if (id === sequence) loading.value = false }
   }
   function pause() {
+    if (localSpeech && !loading.value) {
+      window.speechSynthesis.pause()
+      speaking.value = false; paused.value = true; deps.onSpeaking(false)
+      return
+    }
     if (!audio || loading.value) { stop(); return }
     control++
     if (!pauseBrowserSpeech(audio)) { stop(); return }
     speaking.value = false; paused.value = true; deps.onSpeaking(false)
   }
   async function resume() {
+    if (localSpeech && paused.value && owner === deps.identity() && deps.allowed() && !disposed) {
+      window.speechSynthesis.resume()
+      paused.value = false; speaking.value = true; deps.onSpeaking(true)
+      return true
+    }
     if (!audio || !paused.value || owner !== deps.identity() || !deps.allowed() || disposed) { stop(); return false }
     const id = sequence, revision = ++control, source = owner, owned = audio
     try {

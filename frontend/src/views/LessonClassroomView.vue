@@ -20,6 +20,7 @@ import FullscreenLeaderboard from '@/components/classroom/FullscreenLeaderboard.
 import ClassroomHeader from '@/components/classroom/ClassroomHeader.vue'
 import ClassroomMobileDrawer from '@/components/classroom/ClassroomMobileDrawer.vue'
 import ClassroomStepSidebar from '@/components/classroom/ClassroomStepSidebar.vue'
+import ClassroomGroupingPanel from '@/components/classroom/ClassroomGroupingPanel.vue'
 import ClassroomQuickActions from '@/components/classroom/ClassroomQuickActions.vue'
 import ClassroomAssistantPanel from '@/components/classroom/ClassroomAssistantPanel.vue'
 import ClassroomDirectorPanel from '@/components/classroom/ClassroomDirectorPanel.vue'
@@ -33,7 +34,9 @@ import { useCourseResourceStore } from '@/stores/courseResource'
 import { useUserStore } from '@/stores/user'
 import { useDigitalHumanStore } from '@/stores/digitalHuman'
 import { useClassroomAvatar } from '@/composables/useClassroomAvatar'
-import { isRecordingSupported, webmToWav, RECORDING_MIME_TYPE } from '@/services/recordingAudio'
+import { isRecordingSupported } from '@/services/recordingAudio'
+import { createChildLocalRecognition } from '@/services/childQaRecognition'
+import { localTeachingDraft, localTeachingMode } from '@/classroom/localTeachingDraft'
 import {
   AI_COMMAND_FAILURE_HINT,
   AI_COMMAND_PENDING_HINT,
@@ -79,6 +82,7 @@ const consoleTab = ref<'interaction' | 'assistant'>('interaction')
 const presentationDrawerOpen = ref(false)
 const lessonDetailsOpen = ref(false)
 const assistantDrawerOpen = ref(false)
+const groupingDrawerOpen = ref(false)
 const voiceDrawerOpen = ref(false)
 const moreDrawerOpen = ref(false)
 const mobileDrawerOpen = ref(false)
@@ -101,12 +105,13 @@ const commandExecutors: CommandRuntimeExecutors = {
 const { run, currentStep, currentResource, resourceResolveState, progress, elapsedSeconds, loading, busy, error, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
 const { draftReply, teacherTip, loading: assistantLoading, attemptCount, requiresTeacherConfirmation } = storeToRefs(assistant)
 const childQaActive = ref(false)
-function onChildQaActive(active:boolean){childQaActive.value=active;if(active){commandRunId.value++;pendingVoiceCommand.value=null;void wakeSpeech?.stop();voiceRecorder.cancel();cancelChildRecording();teacherInstructions.invalidate();assistant.endInteraction();stopAssistantSpeech()}}
+function onChildQaActive(active:boolean){childQaActive.value=active;if(active){commandRunId.value++;pendingVoiceCommand.value=null;void wakeSpeech?.stop();cancelTeacherRecording();cancelChildRecording();teacherInstructions.invalidate();assistant.endInteraction();stopAssistantSpeech()}}
 const teacherPrompt = ref(''); const childReply = ref(''); const assistantEnabled = ref(false)
 const commandInput = ref(''); const commandFeedback = ref(''); const commandRunId = ref(0); const commandBusy = ref(false)
 // Stage 6.5：资源命令（search/open/play）的待确认结果；教师确认/取消前绝不产生播放器副作用。
 const resourceCommandResult = ref<ResourceCommandResult | null>(null)
 const voiceRecState = ref<'idle' | 'recording' | 'recognizing'>('idle'); const voiceFeedback = ref('')
+let localTeacherSpeech: LocalWakeSpeech | null = null
 // 语音唤醒：本地唤醒词检测（不上云）；唤醒后的指令仍走既有 ASR + D-10 指令链路。
 const wakeState = ref<WakeUiState>('off')
 const wakeStatus = ref('语音唤醒未开启，课堂语音只在你点击「语音控制」时采集。')
@@ -231,7 +236,9 @@ watch(()=>run.value?.id,()=>{
 })
 const draftAccepted = ref(false)
 const childRecording = ref(false); const childRequestingMicrophone = ref(false); const childRecognizing = ref(false)
-let childMediaRecorder: MediaRecorder | null = null; let childMediaStream: MediaStream | null = null; let childAudioChunks: Blob[] = []; let childRecordingGeneration = 0; let componentUnmounted = false
+let childRecognition: Awaited<ReturnType<typeof createChildLocalRecognition>> | null = null
+let childRecordingGeneration = 0
+let componentUnmounted = false
 // 左侧环节导航折叠：纯前端状态，禁止调用 backend / 修改 ClassroomRun / snapshot。较窄屏幕默认收起。
 const stepSidebarCollapsed = ref(window.innerWidth < 1280)
 // Stage 7.3：本节课奖励入口（drawer 展示独立 RewardRecord，X 为累计星星数）。
@@ -318,15 +325,15 @@ function refreshLeaderboard() {
   return Promise.resolve()
 }
 const breakTimeText = computed(() => { const total = breakRemainingSeconds.value; return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}` })
-const childVoiceStatus = computed(() => childRequestingMicrophone.value ? '正在请求麦克风权限…' : childRecording.value ? '录音中，请让孩子说话，说完再点一次' : childRecognizing.value ? '正在识别孩子的回答…' : '')
+const childVoiceStatus = computed(() => childRequestingMicrophone.value ? '正在请求麦克风权限…' : childRecording.value ? '本地收听中，请让孩子说完后停顿几秒' : childRecognizing.value ? '正在识别孩子的回答…' : '')
 const typeText: Record<string,string> = { introduction:'导入', teacher_talk:'教师讲述', question:'提问互动', resource:'课程资源', activity:'集体活动', transition:'环节过渡', summary:'课堂总结' }
 const ageGroupMap = { '3-4':'small', '4-5':'middle', '5-6':'large' } as const
 const dhActionLabel: Record<string, string> = { idle:'待机', listen:'倾听', thinking:'思考', talk:'讲述', happy:'高兴', question:'提问', encourage:'鼓励', praise:'表扬', wave:'挥手', goodbye:'再见' }
 const dhActionText = computed(() => dhActionLabel[digitalHuman.action] ?? '待机')
-const micReady = computed(() => isRecordingSupported())
+const micReady = computed(() => localTeachingMode ? Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia) : isRecordingSupported())
 const assistantOnline = computed(() => assistant.active)
 const copilotStatus = computed(() => assistantSpeaking.value ? '正在讲解' : assistantLoading.value ? '正在思考' : voiceRecState.value === 'recording' ? '正在听' : '待命')
-const compactVoiceStatus = computed(() => voiceRecState.value === 'recording' ? '正在听…' : voiceRecState.value === 'recognizing' ? '正在识别…' : commandBusy.value ? '正在执行课堂口令…' : commandFeedback.value || voiceFeedback.value || (micReady.value ? '麦克风已就绪' : '麦克风不可用'))
+const compactVoiceStatus = computed(() => voiceRecState.value === 'recording' ? '正在听…' : voiceRecState.value === 'recognizing' ? '正在识别…' : commandBusy.value ? '正在执行课堂口令…' : voiceFeedback.value || commandFeedback.value || (micReady.value ? '麦克风已就绪' : '麦克风不可用'))
 const nextTeachingStep = computed(() => run.value?.steps.find(step => step.stepIndex > (run.value?.currentStepIndex ?? -1)))
 watch(resourceCommandResult, result => { if (result) voiceDrawerOpen.value = true })
 async function safe(task: () => Promise<unknown> | void, action?: string) { try { if (action) store.requireAction(action); await task() } catch (e) { await store.handleTeacherRejection(e); ElMessage.error(e instanceof Error ? e.message : '操作失败，请检查网络后重试') } }
@@ -511,6 +518,10 @@ async function dispatchVoiceText(text: string, runId: number, requireConfirmatio
     pendingVoiceCommand.value = direct.confirmation ?? null
     return
   }
+  if (localTeachingMode) {
+    voiceFeedback.value = `听到“${text}”。本地模式可识别课堂口令，也可以问“现在讲到哪里了”。`
+    return
+  }
   const outcome = await runAsrTextThroughCommand(
     text,
     runId,
@@ -625,16 +636,77 @@ const voiceRecorder = createClassroomVoiceRecorder({
     voiceFeedback.value = error.message
   },
 })
+function cancelTeacherRecording() {
+  const engine = localTeacherSpeech
+  localTeacherSpeech = null
+  if (engine) void engine.stop()
+  voiceRecorder.cancel()
+  voiceRecState.value = 'idle'
+}
+
+async function startLocalTeacherRecording() {
+  if (!micReady.value) {
+    voiceFeedback.value = '请用电脑 localhost 或 HTTPS 打开课堂，并允许麦克风。'
+    return
+  }
+  const generation = ++commandRunId.value
+  const current = () => localTeacherSpeech === engine && generation === commandRunId.value && !componentUnmounted
+  let receivedText = false
+  const engine = new LocalWakeSpeech({
+    publicTranscription: true,
+    publicSilenceMs: 1800,
+    maxUtteranceMs: 12000,
+    onState: (state, message) => {
+      if (!current()) return
+      if (state === 'loading') voiceFeedback.value = message
+      if (state === 'waiting') voiceFeedback.value = '请说课堂口令，说完停顿两秒。'
+      if (state === 'error' || state === 'off') {
+        localTeacherSpeech = null
+        if (receivedText) return
+        voiceRecState.value = 'idle'
+        voiceFeedback.value = state === 'error' ? message : '没有听清，请再试一次。'
+      }
+    },
+    onPublicUtterance: raw => {
+      if (!current() || childQaActive.value) return
+      const text = canonicalizeSpokenCommand(raw)
+      if (!text) return
+      receivedText = true
+      voiceRecState.value = 'recognizing'
+      voiceFeedback.value = `识别到：“${text}”`
+      void dispatchVoiceText(text, generation, true).catch(error => {
+        if (generation === commandRunId.value && !componentUnmounted)
+          voiceFeedback.value = apiErrorMessage(error, '课堂口令处理失败，请重试。')
+      }).finally(() => {
+        if (generation === commandRunId.value && !componentUnmounted) voiceRecState.value = 'idle'
+      })
+    },
+  })
+  localTeacherSpeech = engine
+  voiceRecState.value = 'recording'
+  await wakeSpeech?.stop()
+  if (current()) await engine.start()
+}
+
 async function toggleVoiceRecording() {
+  cancelChildRecording()
   if(childQaActive.value){ElMessage.warning('儿童问答中公共音频不执行教师命令，请先结束问答或使用教师按钮接管。');return}
   if (voiceRecState.value === 'recording') {
-    voiceRecorder.stop()
+    if (localTeachingMode) {
+      cancelTeacherRecording()
+      voiceFeedback.value = '已取消收听。'
+    } else voiceRecorder.stop()
     return
   }
   // 防重复点击：录音中/识别中/课堂忙时不允许开新 session。
   // 注意：课堂暂停时仍允许发起“继续上课/下一步”等语音命令，故不拦截 paused。
   if (voiceRecState.value !== 'idle' || busy.value) return
   voiceFeedback.value = ''
+  if (localTeachingMode) {
+    stopAssistantSpeech()
+    await startLocalTeacherRecording()
+    return
+  }
   voiceRecState.value = 'recording'
   try {
     await voiceRecorder.start()
@@ -674,6 +746,8 @@ function ensureWakeSpeech(): LocalWakeSpeech {
   return wakeSpeech
 }
 async function toggleWakeListening() {
+  cancelChildRecording()
+  if (voiceRecState.value !== 'idle') cancelTeacherRecording()
   if(childQaActive.value){ElMessage.warning('儿童问答中公共音频不执行教师命令，请先结束问答或使用教师按钮接管。');return}
   if (wakeBusy.value) return
   if (!isActive.value && wakeState.value === 'off') {
@@ -712,7 +786,7 @@ async function processWakeCommand(audioBlob: Blob, localText: string) {
   const localRouted = localCanonical ? routeTeacherVoiceCommand(localCanonical) : null
   if (localRouted) {
     text = ''
-  } else if (!localCanonical && audioBlob.size > 0 && import.meta.env.VITE_CLASSROOM_REAL_ASR === 'true') {
+  } else if (!localTeachingMode && !localCanonical && audioBlob.size > 0 && import.meta.env.VITE_CLASSROOM_REAL_ASR === 'true') {
     try {
       text = await asrRecognizeWav(audioBlob, async (url, body, config) => (await http.post(url, body, config)).data)
     } catch (error) {
@@ -752,13 +826,90 @@ async function processWakeCommand(audioBlob: Blob, localText: string) {
   wakeStatus.value = voiceFeedback.value || '语音指令已处理。'
   if (pendingVoiceCommand.value) wakeStatus.value = `请教师确认：${pendingVoiceCommand.value.label}`
 }
-async function askAssistant(tool?: AssistantTool, useTeacherPrompt = false) { const teacherText = teacherPrompt.value.trim(); const childText = childReply.value.trim(); const text = useTeacherPrompt ? teacherText : childText || currentStep.value?.content || ''; if (!text) return ElMessage.warning(useTeacherPrompt ? '请先输入老师的问题或要求' : '当前没有可用于引导的课堂内容'); try { await assistant.ask(text, useTeacherPrompt || !childText ? 'teacher' : 'child', tool); if (useTeacherPrompt) teacherPrompt.value = ''; else childReply.value = '' } catch (e) { ElMessage.error(e instanceof Error ? e.message : '课堂助教暂时不可用') } }
-function stopChildMediaTracks() { childMediaStream?.getTracks().forEach((track) => track.stop()); childMediaStream = null }
-function cancelChildRecording() { childRecordingGeneration += 1; if (childMediaRecorder?.state === 'recording') childMediaRecorder.stop(); childMediaRecorder = null; childAudioChunks = []; childRecording.value = false; childRequestingMicrophone.value = false; childRecognizing.value = false; stopChildMediaTracks() }
-async function recognizeChildReply(audioBlob: Blob, generation: number) { try { if (!audioBlob.size) throw new Error('没有录到声音，请重新录制。'); childRecognizing.value = true; const wavBlob = await webmToWav(audioBlob); if (generation !== childRecordingGeneration || componentUnmounted) return; const formData = new FormData(); formData.append('file', wavBlob, `child-reply-${Date.now()}.wav`); const { data } = await http.post<{ text: string }>('/ai/asr', formData); if (generation !== childRecordingGeneration || componentUnmounted) return; const text = typeof data.text === 'string' ? data.text.trim() : ''; if (!text) throw new Error('没有识别到孩子的话，请靠近麦克风再试一次。'); childReply.value = text; ElMessage.success('已识别孩子的回答，请选择下方引导方式') } catch (e) { if (generation === childRecordingGeneration && !componentUnmounted) ElMessage.error(apiErrorMessage(e, '语音识别失败，请稍后重试。')) } finally { if (generation === childRecordingGeneration) childRecognizing.value = false } }
-async function startChildRecording() { if (!isRecordingSupported()) throw new Error('当前浏览器不支持麦克风录音，请使用最新版 Chrome 或 Edge。'); childRequestingMicrophone.value = true; const generation = ++childRecordingGeneration; try { const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); if (generation !== childRecordingGeneration || componentUnmounted) { stream.getTracks().forEach((track) => track.stop()); return } const recorder = new MediaRecorder(stream, { mimeType: RECORDING_MIME_TYPE }); childMediaStream = stream; childMediaRecorder = recorder; childAudioChunks = []; recorder.addEventListener('dataavailable', (event: BlobEvent) => { if (event.data.size > 0) childAudioChunks.push(event.data) }); recorder.addEventListener('stop', () => { const audioBlob = new Blob(childAudioChunks, { type: RECORDING_MIME_TYPE }); childAudioChunks = []; childMediaRecorder = null; stopChildMediaTracks(); if (generation === childRecordingGeneration && !componentUnmounted) void recognizeChildReply(audioBlob, generation) }, { once: true }); recorder.addEventListener('error', () => { childRecording.value = false; childMediaRecorder = null; stopChildMediaTracks(); ElMessage.error('录音发生错误，请重新尝试。') }, { once: true }); recorder.start(); childRecording.value = true } catch (e) { stopChildMediaTracks(); if (e instanceof DOMException && e.name === 'NotAllowedError') throw new Error('麦克风权限被拒绝，请在浏览器设置中允许使用麦克风。', { cause: e }); throw e } finally { childRequestingMicrophone.value = false } }
-function stopChildRecording() { if (!childMediaRecorder || childMediaRecorder.state === 'inactive') return; childRecording.value = false; childRecognizing.value = true; childMediaRecorder.stop() }
-async function toggleChildRecording() { if (childRecording.value) return stopChildRecording(); if (childRequestingMicrophone.value || childRecognizing.value || assistantLoading.value) return; try { await startChildRecording() } catch (e) { ElMessage.error(e instanceof Error ? e.message : '无法使用麦克风，请稍后重试。') } }
+async function askAssistant(tool?: AssistantTool, useTeacherPrompt = false) {
+  const teacherText = teacherPrompt.value.trim()
+  const childText = childReply.value.trim()
+  const step = currentStep.value
+  const topic = step?.content?.trim() || step?.title?.trim() || run.value?.lessonTitle?.trim()
+  const text = useTeacherPrompt ? teacherText : childText || topic || ''
+  if (!text) return ElMessage.warning(useTeacherPrompt ? '请先输入老师的问题或要求' : '当前没有可用于引导的课堂内容')
+
+  if (localTeachingMode) {
+    const selectedTool = tool ?? (/总结|回顾/.test(teacherText) ? 'summarize' : /鼓励/.test(teacherText) ? 'encourage' : /提示/.test(teacherText) ? 'give_hint' : 'guided_question')
+    const draft = localTeachingDraft(topic || text, selectedTool, step?.teacherTip, !useTeacherPrompt && Boolean(childText))
+    assistant.endInteraction()
+    assistant.teacherTip = draft.teacherTip
+    assistant.draftReply = draft.reply
+    return
+  }
+
+  try {
+    await assistant.ask(text, useTeacherPrompt || !childText ? 'teacher' : 'child', tool)
+    if (useTeacherPrompt) teacherPrompt.value = ''
+    else childReply.value = ''
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '课堂助教暂时不可用')
+  }
+}
+
+function cancelChildRecording() {
+  childRecordingGeneration += 1
+  const previous = childRecognition
+  childRecognition = null
+  previous?.abort()
+  childRecording.value = false
+  childRequestingMicrophone.value = false
+  childRecognizing.value = false
+}
+
+async function toggleChildRecording() {
+  if (childRecording.value || childRequestingMicrophone.value) return cancelChildRecording()
+  if (assistantLoading.value || childQaActive.value || voiceRecState.value !== 'idle') return
+  stopAssistantSpeech()
+  if (run.value?.status !== 'running' || isBreakActive.value || run.value.manualInterventionRequired) {
+    return ElMessage.warning('请恢复课堂教学后再开始收听。')
+  }
+  const generation = ++childRecordingGeneration
+  childRequestingMicrophone.value = true
+  try {
+    await wakeSpeech?.stop()
+    if (generation !== childRecordingGeneration || componentUnmounted) return
+    const recognition = await createChildLocalRecognition()
+    if (generation !== childRecordingGeneration || componentUnmounted) { recognition.abort(); return }
+    childRecognition = recognition
+    let heardReply = false
+    recognition.onstart = () => {
+      if (childRecognition !== recognition) return
+      childRequestingMicrophone.value = false
+      childRecording.value = true
+    }
+    recognition.onresult = event => {
+      if (childRecognition !== recognition) return
+      const text = event.results[event.resultIndex]?.[0].transcript.trim()
+      if (!text) return
+      heardReply = true
+      childReply.value = text.slice(0, 1000)
+      ElMessage.success('已识别孩子的回答，请检查文字后选择引导方式。')
+    }
+    recognition.onerror = event => {
+      if (childRecognition !== recognition) return
+      cancelChildRecording()
+      ElMessage.error(`本地识别未完成：${event.error}。可直接输入孩子的回答。`)
+    }
+    recognition.onend = () => {
+      if (childRecognition !== recognition) return
+      childRecognition = null
+      childRecording.value = false
+      childRequestingMicrophone.value = false
+      if (!heardReply) ElMessage.warning('未识别到回答，可以重试或直接输入文字。')
+    }
+    recognition.start()
+  } catch (e) {
+    if (generation !== childRecordingGeneration) return
+    cancelChildRecording()
+    ElMessage.error(e instanceof Error ? e.message : '无法使用麦克风，可直接输入孩子的回答。')
+  }
+}
 const canSpeakTeaching = computed(() => !!run.value && run.value.status === 'running' && Number(route.params.runId) === run.value.id && !isBreakActive.value && !run.value.manualInterventionRequired && store.can('tts'))
 watch(voiceRecState, state => {
   if (state === 'recording' && !digitalHuman.renderingPaused) digitalHuman.transition({ type: 'teacher_command', command: 'listen' })
@@ -772,6 +923,7 @@ const teachingSpeech = useTeachingSpeech({
     await store.teacherCommand('speak_text', { text }, 'teacher_panel', run.value?.deviceId)
     await store.refreshCapabilities()
   },
+  localVoice: localTeachingMode,
   requestAudio: async text => (await http.post<{ audioUrl: string }>('/ai/tts', { text })).data.audioUrl,
   onSpeaking: active => digitalHuman.transition({ type: active ? 'tts_start' : 'tts_end' }),
   onError: cause => { digitalHuman.setFallback('语音暂时不可用'); ElMessage.error(apiErrorMessage(cause, '助教语音播放失败，请稍后重试。')) },
@@ -781,7 +933,7 @@ const { loading: assistantSpeechLoading, speaking: assistantSpeaking, paused: as
 watch([assistantSpeaking, () => digitalHuman.isSpeaking, pendingVoiceCommand], ([speaking, avatarSpeaking, confirming]) => {
   wakeSpeech?.setPlaybackActive(Boolean(speaking || avatarSpeaking || confirming))
 })
-function stopListeningOnFocusLoss() {void wakeSpeech?.stop();voiceRecorder.cancel()}
+function stopListeningOnFocusLoss() {void wakeSpeech?.stop();cancelTeacherRecording();cancelChildRecording()}
 function stopListeningOnHidden() {if(document.hidden)stopListeningOnFocusLoss()}
 onMounted(()=>{window.addEventListener('blur',stopListeningOnFocusLoss);document.addEventListener('visibilitychange',stopListeningOnHidden)})
 onBeforeUnmount(()=>{window.removeEventListener('blur',stopListeningOnFocusLoss);document.removeEventListener('visibilitychange',stopListeningOnHidden);companion.clear()})
@@ -799,7 +951,7 @@ function stopAssistantSpeech() { teachingSpeech.stop() }
 function pauseAssistantSpeech() { teachingSpeech.pause() }
 async function resumeAssistantSpeech() { await teachingSpeech.resume() }
 async function playAssistantDraft() {
-  if (requiresTeacherConfirmation.value) return
+  if (requiresTeacherConfirmation.value || childRecording.value || childRequestingMicrophone.value) return
   if (await teachingSpeech.play(draftReply.value.trim())) draftAccepted.value = true
 }
 function acceptDraftAsText() { draftAccepted.value = true; digitalHuman.transition({ type: 'ai_response', emotion: 'encourage' }); ElMessage.success('已由教师确认，可自行讲述给孩子听') }
@@ -817,13 +969,13 @@ watch(currentStep, (step, previous) => {
 })
 watch(() => [run.value?.id, run.value?.deviceId, run.value?.classId, run.value?.currentStepIndex, run.value?.status, store.isBreakActive].join('|'), () => {
   teacherInstructions.invalidate()
+  cancelChildRecording()
   companion.invalidate();teachingSuggestion.value=''
   pendingVoiceCommand.value = null
   resourceCommandResult.value = null
   commandRunId.value++
   commandBusy.value = false
-  voiceRecorder.cancel()
-  voiceRecState.value = 'idle'
+  cancelTeacherRecording()
 })
 // 切换 Run / 课堂结束：立即停止唤醒采集，旧课堂的语音回调不得继续执行。
 // 注意只对「Run 身份/终态」变化反应，轮询刷新同一 Run 不触发关闭。
@@ -841,6 +993,7 @@ watch(
 )
 // 数字人常驻右侧主卡（右栏独立于中央课件，不再需要资源环节缩到角落）。
 // compact 逻辑已废弃：右侧栏在中间媒体区之外，数字人常驻不遮挡 PPT/ResourcePlayer。
+watch([assistantDrawerOpen, assistantEnabled], ([open, enabled]) => { if (!open || !enabled) cancelChildRecording() })
 watch(draftReply, () => { draftAccepted.value = false; stopAssistantSpeech() })
 // Stage 7.3：run 就绪后自动加载本节课奖励汇总（X 计数）。
 watch(run, (current) => {
@@ -875,13 +1028,16 @@ watch(() => route.params.runId, (next, previous) => {
     if (!componentUnmounted && route.params.runId === next) store.startPolling()
   }).catch(() => undefined)
 })
-onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; window.removeEventListener('keydown', handleKeydown); store.stopPolling(); componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); voiceRecorder.cancel(); void wakeSpeech?.stop(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
+onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; window.removeEventListener('keydown', handleKeydown); store.stopPolling(); componentUnmounted = true; window.removeEventListener('beforeunload', beforeUnload); cancelChildRecording(); cancelTeacherRecording(); void wakeSpeech?.stop(); stopAssistantSpeech(); digitalHuman.reset(); assistant.endInteraction() })
 </script>
 
 <template>
   <main class="classroom" :class="{ 'classroom-debug': allowDebugPanel }">
     <!-- Keep the same teacher control surface alive across teaching and break. -->
     <ClassroomMobileDrawer v-if="run && Number(route.params.runId) === run.id" v-model="mobileDrawerOpen" :run="run" />
+    <ElDrawer v-if="run" v-model="groupingDrawerOpen" title="课堂随机分组" size="min(640px, 95vw)">
+      <ClassroomGroupingPanel :run-id="run.id" :active="groupingDrawerOpen" :allowed="!interactionDisabled && store.can('roll_call')" />
+    </ElDrawer>
     <ElDrawer v-if="run" v-model="voiceDrawerOpen" title="课堂语音与口令" size="min(640px, 95vw)">
       <ClassroomVoiceControl
         v-model:command-input="commandInput"
@@ -1031,6 +1187,7 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
               v-model:draft-reply="draftReply"
               :can-speak="canSpeakTeaching"
               :enabled="assistantEnabled"
+              :local-mode="localTeachingMode"
               :child-voice-status="childVoiceStatus"
               :assistant-loading="assistantLoading"
               :child-recording="childRecording"
@@ -1075,7 +1232,7 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
             <button role="tab" :aria-selected="consoleTab === 'assistant'" @click="consoleTab = 'assistant'">AI 助教</button>
           </div>
           <section v-show="consoleTab === 'interaction'" class="console-card" role="tabpanel" aria-label="课堂互动">
-          <ClassroomQuickActions console-mode :can-roll="store.can('roll_call')" :can-reward="store.can('reward')" :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" />
+          <ClassroomQuickActions console-mode :can-roll="store.can('roll_call')" :can-reward="store.can('reward')" :disabled="interactionDisabled" :total-stars="runRewardTotal" @interaction="openFullscreen('interaction')" @reward="openFullscreen('interaction')" @resources="presentationDrawerOpen = true" @assistant="assistantDrawerOpen = true" @leaderboard="openFullscreen('leaderboard')" @grouping="groupingDrawerOpen = true" />
           <ElButton @click="openClassroomTool('classroom-engagement')">考勤与课间设置</ElButton>
           <ElButton @click="openClassroomTool('classroom-insights')">儿童问题与作品</ElButton>
           <ElButton :disabled="rewardsLoading" @click="openRewardDrawer">本节奖励记录（{{ runRewardTotal }}）</ElButton>
@@ -1096,7 +1253,7 @@ onBeforeUnmount(() => { teacherInstructions.invalidate(); commandRunId.value++; 
       </div>
       <footer class="teacher-hint-bar">
         <div class="teacher-hint"><strong>教师提示</strong><span>{{ currentStep.teacherTip || teacherTip || '给小朋友一点观察和表达的时间。' }}</span></div>
-        <button class="voice-status" type="button" :disabled="commandBusy || voiceRecState === 'recognizing' || busy" @click="toggleVoiceRecording">{{ voiceRecState === 'recording' ? '结束录音' : '语音控制' }}</button>
+        <button class="voice-status" type="button" :disabled="commandBusy || voiceRecState === 'recognizing' || busy" @click="toggleVoiceRecording">{{ voiceRecState === 'recording' ? (localTeachingMode ? '取消收听' : '结束录音') : '语音控制' }}</button>
         <button
           class="voice-status wake-status-button"
           :class="{ 'wake-waiting': wakeState === 'waiting', 'wake-awake': wakeState === 'awake' }"

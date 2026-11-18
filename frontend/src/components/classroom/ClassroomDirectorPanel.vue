@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { localDirectorSuggestion, localTeachingMode } from '@/classroom/localTeachingDraft'
+import { useLessonRunStore } from '@/stores/lessonRun'
 import { ElAlert, ElButton, ElInput, ElMessage, ElTag } from 'element-plus'
 import { apiErrorMessage } from '@/api/http'
 import { useClassroomDirectorStore, type DirectorSuggestion } from '@/stores/classroomDirector'
 
 const director = useClassroomDirectorStore()
+const lesson = useLessonRunStore()
+const localSuggestion = ref('')
+const lessonIdentity = computed(() => [lesson.run?.id, lesson.run?.currentStepIndex, lesson.run?.status].join(':'))
+watch(lessonIdentity, () => { localSuggestion.value = '' }, { flush: 'sync' })
 const goal = ref('帮助幼儿理解当前环节，并控制课堂节奏')
 const editingId = ref<number | null>(null)
 const draft = ref('')
@@ -15,6 +21,15 @@ const typeLabel: Record<string, string> = {
 
 async function generate() {
   if (!goal.value.trim()) return ElMessage.warning('请先填写教师当前目标')
+  if (localTeachingMode) {
+    const step = lesson.currentStep
+    if (!step || !lesson.run || !['running', 'paused'].includes(lesson.run.status)) {
+      return ElMessage.warning('请进入有效课堂后再生成建议')
+    }
+    const topic = step.content?.trim() || step.title?.trim() || lesson.run.lessonTitle
+    localSuggestion.value = localDirectorSuggestion(topic, goal.value, step.teacherTip)
+    return
+  }
   try { await director.generate(goal.value) }
   catch (error) { ElMessage.error(apiErrorMessage(error, '生成建议失败')) }
 }
@@ -37,18 +52,23 @@ async function reject(item: DirectorSuggestion) {
 <template>
   <section class="director-panel" data-test="classroom-director-panel">
     <header>
-      <div><strong>AI 课堂导演</strong><p>只生成建议，教师确认后才会执行课堂操作</p></div>
+      <div><strong>AI 课堂导演</strong><p>{{ localTeachingMode ? '本地模式，提供可编辑的教学建议，由教师自行采用' : '只生成建议，教师确认后才会执行课堂操作' }}</p></div>
       <ElButton type="primary" :loading="director.loading" @click="generate">生成建议</ElButton>
     </header>
     <ElInput v-model="goal" maxlength="500" show-word-limit placeholder="教师当前目标" />
+    <article v-if="localSuggestion" class="suggestion">
+      <strong>本地教学建议</strong>
+      <ElInput v-model="localSuggestion" type="textarea" :rows="4" maxlength="600" aria-label="编辑本地教学建议" />
+      <div class="actions"><ElButton @click="localSuggestion = ''">忽略建议</ElButton></div>
+    </article>
     <ElAlert
-      v-if="director.message"
+      v-if="!localTeachingMode && director.message"
       :title="director.message"
       :type="director.status === 'safety_redirect' ? 'warning' : director.status === 'degraded' ? 'error' : 'success'"
       :closable="false"
       show-icon
     />
-    <div class="suggestions">
+    <div v-if="!localTeachingMode" class="suggestions">
       <article v-for="item in director.suggestions" :key="item.id" class="suggestion" :class="item.status">
         <div class="suggestion-head">
           <ElTag>{{ typeLabel[item.type] || item.type }}</ElTag><strong>{{ item.title }}</strong>

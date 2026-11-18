@@ -72,3 +72,10 @@ Thumbs.db
 
 # Local publication scanning evidence (not application data)
 /evidence/p5-publish/
+
+# Private local teaching material and document exports (not public GitHub assets)
+backend/uploads/resource-previews/
+docs/tender/
+docs/avatar-integration-evidence-20261106/
+**/__pycache__/
+**/*.pyc

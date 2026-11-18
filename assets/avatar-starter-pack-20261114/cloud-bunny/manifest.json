@@ -1,0 +1,57 @@
+{
+  "name": "云朵兔老师",
+  "category": "cartoon_animal",
+  "description": "原创简易3D卡通课堂助教，含9种命名动作及简单张嘴效果。",
+  "engineVersion": "avatar-engine-1",
+  "modelFormat": "glb",
+  "model": "model.glb",
+  "assets": [
+    {
+      "file": "texture.png",
+      "assetType": "texture"
+    },
+    {
+      "file": "idle.glb",
+      "assetType": "animation",
+      "actionName": "idle"
+    },
+    {
+      "file": "speak.glb",
+      "assetType": "animation",
+      "actionName": "speak"
+    },
+    {
+      "file": "lip-sync.json",
+      "assetType": "lip_sync"
+    },
+    {
+      "file": "preview.png",
+      "assetType": "preview"
+    },
+    {
+      "file": "fallback.png",
+      "assetType": "fallback_2d"
+    }
+  ],
+  "animations": [
+    "Idle",
+    "Talk",
+    "Listening",
+    "Thinking",
+    "Question",
+    "Happy",
+    "Encourage",
+    "Wave",
+    "Goodbye"
+  ],
+  "meshCount": 26,
+  "sha256": {
+    "model.glb": "08ecee2a9fada9fda28e4b3898a525ac68654949145d9990e15d97d4b86d6ed2",
+    "texture.png": "a560d1d01d998b1985b8210967ced4f99b87fc6a532fe7cb6c56f81729978fd5",
+    "idle.glb": "7014fe3849afd97a96b670810315f8a2ba527560d85530101151bf055a3482b4",
+    "speak.glb": "4f4ebb4b819c013bb63fd9a988d3895c4dd4741f1f664a751a07ce3a85966a19",
+    "lip-sync.json": "996ec6fe69f1193b7cc9b1bf047b1d107f51e7802726a4cca5334f360f22afe9",
+    "preview.png": "543acca14fd324e431d1bbcf03eb395b21377bb36617a6758c71a65525d877a9",
+    "fallback.png": "543acca14fd324e431d1bbcf03eb395b21377bb36617a6758c71a65525d877a9"
+  }
+}

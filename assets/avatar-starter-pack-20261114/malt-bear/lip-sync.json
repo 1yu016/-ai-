@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "mode": "amplitude-demo",
+  "mesh": "Mouth",
+  "morphTarget": "mouthOpen",
+  "visemes": {
+    "rest": 0,
+    "open": 1
+  },
+  "note": "Simple mouth opening only; no phoneme alignment. Existing frontend uses Talk animation and mouthOpen morph."
+}

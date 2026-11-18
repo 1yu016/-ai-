@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ElDialog, ElMessage } from 'element-plus'
+import { ElDialog, ElDrawer, ElMessage } from 'element-plus'
 import { http, apiErrorMessage } from '@/api/http'
 import { platformApi, type Student } from '@/api/platform'
 import { useLessonRunStore, type ClassroomRunPayload, type StartBreakOptions } from '@/stores/lessonRun'
@@ -11,6 +11,7 @@ import {
   QUICK_REWARD_REASONS,
   type Attendance,
 } from '@/services/classroomCheckpoint'
+import ClassroomGroupingPanel from '@/components/classroom/ClassroomGroupingPanel.vue'
 import AttendancePanel from '@/components/classroom/operations/AttendancePanel.vue'
 import type { VoiceAttendanceCandidate } from '@/components/classroom/operations/AttendancePanel.vue'
 import { isRecordingSupported, webmToWav, RECORDING_MIME_TYPE } from '@/services/recordingAudio'
@@ -30,6 +31,8 @@ type RollCallStudentPayload = {
   nickname?: unknown
 }
 
+const groupingOpen = ref(false)
+const groupingStudents = ref<number[]>([])
 const route = useRoute()
 const router = useRouter()
 const tab = computed<Tab>(() =>
@@ -60,6 +63,7 @@ let attendanceChunks: Blob[] = []
 // run 直接复用 store 的 run，保证与 LessonClassroomView/大屏通过 polling 多端同步。
 const store = useLessonRunStore()
 const { run, busy, isBreakActive, breakRemainingSeconds } = storeToRefs(store)
+watch(() => run.value?.id, () => { groupingOpen.value = false; groupingStudents.value = [] })
 watch(() => run.value, () => { if (!store.capabilities || store.capabilities.version !== run.value?.version || Date.now() - store.capabilities.at > 4000) void store.refreshCapabilities() })
 const remoteFeedback = ref('')
 const pendingCommands = ref<string[]>([])
@@ -250,8 +254,11 @@ async function specifiedRoll(student: Student) {
   await executeRoll('specified_roll_call', { studentId: student.id })
 }
 
-async function groupRoll(studentIds: number[]) {
-  await executeRoll('group_roll_call', { studentIds, groupKey: `temporary-${studentIds.join('-')}` })
+function groupRoll(studentIds: number[]) {
+  if (!run.value || !store.can('roll_call')) return
+  if (studentIds.length < 2) return ElMessage.warning('请至少勾选两名幼儿。')
+  groupingStudents.value = [...studentIds]
+  groupingOpen.value = true
 }
 
 async function executeRoll(
@@ -663,6 +670,9 @@ onBeforeUnmount(() => {
       </template>
     </ElDialog>
   </main>
+  <ElDrawer v-if="run" v-model="groupingOpen" title="随机分组" size="min(640px, 95vw)">
+    <ClassroomGroupingPanel :run-id="run.id" :active="groupingOpen" :allowed="!busy && store.can('roll_call')" :student-ids="groupingStudents" />
+  </ElDrawer>
 </template>
 
 <style scoped>

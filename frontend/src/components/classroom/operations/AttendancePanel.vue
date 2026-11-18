@@ -86,7 +86,7 @@ function confirmVoice() {
       </div>
       <div class="head-actions">
         <button class="button" :disabled="canRoll === false" @click="$emit('random-roll')">随机点名</button>
-        <button class="soft" :disabled="canRoll === false || !selectedIds.length" @click="$emit('group-roll', selectedIds)">分组随机</button>
+        <button class="soft" :disabled="canRoll === false || selectedIds.length < 2" @click="$emit('group-roll', selectedIds)">随机分组</button>
       </div>
     </div>
     <div class="batch-bar">

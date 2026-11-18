@@ -365,6 +365,18 @@ describe('ResourcePlayer protected media blob lifecycle', () => {
     await flushPromises()
     expect(mocks.fetchBlob).toHaveBeenCalledWith(21)
     expect(wrapper.get('iframe.stage-document').attributes('src')).toContain('blob:pdf-21#page=1')
+    const firstPageFrame = wrapper.get('iframe.stage-document').element
+    const button = (label: string) => wrapper.findAll('button').find(item => item.text() === label)!
+    await button('下一页').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('iframe.stage-document').attributes('src')).toContain('#page=2')
+    expect(wrapper.get('iframe.stage-document').element).not.toBe(firstPageFrame)
+    const secondPageFrame = wrapper.get('iframe.stage-document').element
+    await button('放大').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('iframe.stage-document').element).not.toBe(secondPageFrame)
+    expect(mocks.fetchBlob).toHaveBeenCalledTimes(1)
+
   })
 
   it('loads converted PPT pages through protected preview assets and revokes on page switch', async () => {

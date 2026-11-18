@@ -1,0 +1,54 @@
+{
+  "generatedAt": "2026-11-14T14:31:20.255Z",
+  "method": "Three GLTFExporter -> GLTFLoader roundtrip -> animation mixer and WebGL render",
+  "characters": [
+    {
+      "name": "麦芽熊老师",
+      "folder": "malt-bear",
+      "animations": [
+        "Idle",
+        "Talk",
+        "Listening",
+        "Thinking",
+        "Question",
+        "Happy",
+        "Encourage",
+        "Wave",
+        "Goodbye"
+      ],
+      "meshCount": 26
+    },
+    {
+      "name": "云朵兔老师",
+      "folder": "cloud-bunny",
+      "animations": [
+        "Idle",
+        "Talk",
+        "Listening",
+        "Thinking",
+        "Question",
+        "Happy",
+        "Encourage",
+        "Wave",
+        "Goodbye"
+      ],
+      "meshCount": 26
+    },
+    {
+      "name": "星橙猫头鹰",
+      "folder": "citrus-owl",
+      "animations": [
+        "Idle",
+        "Talk",
+        "Listening",
+        "Thinking",
+        "Question",
+        "Happy",
+        "Encourage",
+        "Wave",
+        "Goodbye"
+      ],
+      "meshCount": 25
+    }
+  ]
+}

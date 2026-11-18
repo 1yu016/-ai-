@@ -1,0 +1,57 @@
+{
+  "name": "星橙猫头鹰",
+  "category": "cartoon_animal",
+  "description": "原创简易3D卡通课堂助教，含9种命名动作及简单张嘴效果。",
+  "engineVersion": "avatar-engine-1",
+  "modelFormat": "glb",
+  "model": "model.glb",
+  "assets": [
+    {
+      "file": "texture.png",
+      "assetType": "texture"
+    },
+    {
+      "file": "idle.glb",
+      "assetType": "animation",
+      "actionName": "idle"
+    },
+    {
+      "file": "speak.glb",
+      "assetType": "animation",
+      "actionName": "speak"
+    },
+    {
+      "file": "lip-sync.json",
+      "assetType": "lip_sync"
+    },
+    {
+      "file": "preview.png",
+      "assetType": "preview"
+    },
+    {
+      "file": "fallback.png",
+      "assetType": "fallback_2d"
+    }
+  ],
+  "animations": [
+    "Idle",
+    "Talk",
+    "Listening",
+    "Thinking",
+    "Question",
+    "Happy",
+    "Encourage",
+    "Wave",
+    "Goodbye"
+  ],
+  "meshCount": 25,
+  "sha256": {
+    "model.glb": "6cfd5aaa8ac379d5e61e0ca8449bf6c2991ef079809a4d5dd1d2d7f2957a53b5",
+    "texture.png": "54651e42a841c3954c520e6910851ee4d8bf132de5a9b697ecfe033e6b745522",
+    "idle.glb": "eee0d9034ac6e6695fc90b3ce8d97026a8ddc2085651e1b93a0911856fa3f3af",
+    "speak.glb": "85c14c5c5c623f31acbf2af616fbb851173a0553ef86d108c3687d5c95d364e9",
+    "lip-sync.json": "996ec6fe69f1193b7cc9b1bf047b1d107f51e7802726a4cca5334f360f22afe9",
+    "preview.png": "52228b0cd75941ffbf0cf8aa8a77298ed06f7875e832c766a8b22f18368df092",
+    "fallback.png": "52228b0cd75941ffbf0cf8aa8a77298ed06f7875e832c766a8b22f18368df092"
+  }
+}

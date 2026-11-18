@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from 'vue'
+import { apiErrorStatus } from '@/api/http'
 import { ElButton, ElMessage, ElSlider } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import {
@@ -68,7 +69,7 @@ let disposed = false
 let ownedSession = playbackSession.value
 function currentEvent(event: Event) {
   const element = event.currentTarget as HTMLElement
-  return !disposed && element?.dataset.playbackSession === String(playbackSession.value) &&
+  return !disposed && Boolean(mediaSource.value) && element?.dataset.playbackSession === String(playbackSession.value) &&
     element.dataset.playbackSource === mediaSource.value
 }
 function handlePlay(event: Event) { if (currentEvent(event)) playerStore.setStatus('playing') }
@@ -148,11 +149,14 @@ async function loadMediaSource(resource: CourseResource) {
     activeBlobRevoke = revoke
     mediaSource.value = url
     return url
-  } catch {
+  } catch (cause) {
     // 迟到请求的失败也不该误伤当前资源的 blob / 状态。
     if (loadId === mediaLoadSeq) {
       releaseActiveBlob()
-      playerStore.setStatus('error', '资源暂时无法加载，请检查网络后重试。')
+      playerStore.setStatus('error', apiErrorStatus(cause) === 404
+        ? '服务器上的资源文件或预览文件不存在，请在资源库重新上传原文件。'
+        : apiErrorStatus(cause) === 403 ? '当前账号无权读取该资源。'
+        : '资源暂时无法加载，请检查连接或重新登录后重试。')
     }
     return null
   }
@@ -498,7 +502,8 @@ function formatTime(value: number): string {
 
 watch(
   () => [currentResource.value?.id, sourceUrl.value, playbackSession.value] as const,
-  async ([resourceId, resourceSource], [previousResourceId, previousSource]) => {
+  async ([resourceId, resourceSource], previous) => {
+    const [previousResourceId, previousSource] = previous ?? []
     if (!resourceId) return
     const resource = currentResource.value
     if (!resource) return
@@ -532,6 +537,7 @@ watch(
       void play()
     }
   },
+  { immediate: true },
 )
 
 watch(playbackSession, () => {
@@ -716,7 +722,7 @@ defineExpose({
       ></video>
 
       <iframe
-        :key="`${playbackSession}:${mediaSource}`"
+        :key="`${playbackSession}:${documentSource}`"
         :data-playback-session="playbackSession"
         :data-playback-source="mediaSource"
         v-else-if="previewMode === 'pdf'"

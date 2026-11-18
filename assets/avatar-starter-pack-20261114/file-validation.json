@@ -1,0 +1,131 @@
+{
+  "method": "Existing backend validateAvatarFile, offline; no API calls or database connection",
+  "results": [
+    {
+      "character": "麦芽熊老师",
+      "file": "model.glb",
+      "assetType": "model",
+      "valid": true
+    },
+    {
+      "character": "麦芽熊老师",
+      "file": "texture.png",
+      "assetType": "texture",
+      "valid": true
+    },
+    {
+      "character": "麦芽熊老师",
+      "file": "idle.glb",
+      "assetType": "animation",
+      "valid": true
+    },
+    {
+      "character": "麦芽熊老师",
+      "file": "speak.glb",
+      "assetType": "animation",
+      "valid": true
+    },
+    {
+      "character": "麦芽熊老师",
+      "file": "lip-sync.json",
+      "assetType": "lip_sync",
+      "valid": true
+    },
+    {
+      "character": "麦芽熊老师",
+      "file": "preview.png",
+      "assetType": "preview",
+      "valid": true
+    },
+    {
+      "character": "麦芽熊老师",
+      "file": "fallback.png",
+      "assetType": "fallback_2d",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "model.glb",
+      "assetType": "model",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "texture.png",
+      "assetType": "texture",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "idle.glb",
+      "assetType": "animation",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "speak.glb",
+      "assetType": "animation",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "lip-sync.json",
+      "assetType": "lip_sync",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "preview.png",
+      "assetType": "preview",
+      "valid": true
+    },
+    {
+      "character": "云朵兔老师",
+      "file": "fallback.png",
+      "assetType": "fallback_2d",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "model.glb",
+      "assetType": "model",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "texture.png",
+      "assetType": "texture",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "idle.glb",
+      "assetType": "animation",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "speak.glb",
+      "assetType": "animation",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "lip-sync.json",
+      "assetType": "lip_sync",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "preview.png",
+      "assetType": "preview",
+      "valid": true
+    },
+    {
+      "character": "星橙猫头鹰",
+      "file": "fallback.png",
+      "assetType": "fallback_2d",
+      "valid": true
+    }
+  ]
+}

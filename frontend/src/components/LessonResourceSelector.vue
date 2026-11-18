@@ -14,6 +14,8 @@ const loading = ref(false); const loadError = ref(''); const page = ref(1); cons
 let sequence = 0
 const keyword = ref('')
 const resourceType = ref<CourseResourceMediaType | ''>('')
+const statusLabels: Record<string, string> = { draft: '草稿：请到资源详情提交审核', pending_review: '待审核：需管理员审核通过', approved: '已审核，可选择', rejected: '已驳回：请修改后重新提交', archived: '已归档，不能选择' }
+const typeLabels: Record<CourseResourceMediaType, string> = { image: '图片', audio: '音频', video: '视频', pdf: 'PDF', ppt: 'PPT/PPTX', document: '文档', picture_book: '绘本', animation: '动画', nursery_rhyme: '儿歌', question_bank: '题库', experiment: '实验', model_3d: '3D模型' }
 const category = ref('')
 const ageGroup = ref('')
 async function search(reset = true) {
@@ -23,9 +25,9 @@ async function search(reset = true) {
     const { data } = await http.get<{ items: ServerResource[]; total: number }>('/resources', { params: {
       keyword: keyword.value || undefined, resourceType: resourceType.value || undefined,
       category: category.value || undefined, ageGroup: ageGroup.value || undefined,
-      reviewStatus: 'approved', page: page.value, pageSize: 20 } })
+      page: page.value, pageSize: 20 } })
     if (current !== sequence) return
-    sortedResources.value = data.items.map(normalizeServerResource).filter((r): r is CourseResource => !!r && r.reviewStatus === 'approved')
+    sortedResources.value = data.items.map(normalizeServerResource).filter((r): r is CourseResource => !!r)
     total.value = data.total
   } catch (e) { if (current === sequence) loadError.value = apiErrorMessage(e, '资源加载失败，请重试') }
   finally { if (current === sequence) loading.value = false }
@@ -39,19 +41,21 @@ watch(open, (value) => { if (value) void search(); else { sequence++; loading.va
   <ElDialog v-model="open" title="选择课程资源" width="min(920px, 94vw)" destroy-on-close>
     <div class="filters">
       <ElInput v-model="keyword" placeholder="搜索标题、标签" clearable @keyup.enter="search" />
-      <ElSelect v-model="resourceType" placeholder="类型" clearable><ElOption label="图片" value="image" /><ElOption label="音频" value="audio" /><ElOption label="视频" value="video" /><ElOption label="PDF/PPT 课件" value="document" /></ElSelect>
+      <ElSelect v-model="resourceType" placeholder="类型" clearable><ElOption v-for="(label,type) in typeLabels" :key="type" :label="label" :value="type" /></ElSelect>
       <ElInput v-model="category" placeholder="分类" clearable />
       <ElSelect v-model="ageGroup" placeholder="年龄段" clearable><ElOption label="小班" value="small" /><ElOption label="中班" value="middle" /><ElOption label="大班" value="large" /><ElOption label="全年龄" value="all" /></ElSelect>
       <ElButton type="primary" :loading="loading" @click="search()">搜索</ElButton>
     </div>
+    <p>显示你有权查看的资源；只有已审核资源可以绑定教案。旧版不提供文件正文自动解析。</p>
     <p v-if="loadError" class="error">{{ loadError }}</p>
     <div v-else class="resource-grid">
       <article v-for="resource in sortedResources.filter((item) => item.source === 'library')" :key="resource.id" class="resource-card">
         <div class="thumb">{{ resource.mediaType === 'image' ? '🖼️' : resource.mediaType === 'audio' ? '🎵' : resource.mediaType === 'video' ? '🎬' : '📄' }}</div>
         <strong>{{ resource.title }}</strong><small>{{ resource.category }} · {{ resource.tags.join('、') || '无标签' }}</small>
-        <div><ElButton size="small" @click="player.openResource(resource, false)">预览</ElButton><ElButton size="small" type="primary" @click="choose(resource)">选择</ElButton></div>
+        <small>{{ statusLabels[resource.reviewStatus || ''] || '状态未知，不能选择' }}</small>
+        <div><ElButton size="small" @click="player.openResource(resource, false)">预览</ElButton><ElButton size="small" :disabled="resource.reviewStatus !== 'approved'" type="primary" @click="choose(resource)">选择</ElButton></div>
       </article>
-      <p v-if="!loading && !sortedResources.length">没有找到可用资源。</p>
+      <p v-if="!loading && !sortedResources.length">没有找到资源，请核对搜索、分类、年龄段或资源访问范围。</p>
     </div>
     <template #footer><span>第 {{ page }} 页 · 共 {{ total }} 项</span><ElButton :disabled="page <= 1 || loading" @click="page--; search(false)">上一页</ElButton><ElButton :disabled="page * 20 >= total || loading" @click="page++; search(false)">下一页</ElButton><ElButton @click="remove">移除资源引用</ElButton><ElButton @click="open = false">取消</ElButton></template>
   </ElDialog>

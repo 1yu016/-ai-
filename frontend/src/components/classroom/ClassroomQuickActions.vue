@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{ disabled: boolean; totalStars: number; canRoll?: boolean; canReward?: boolean; consoleMode?: boolean }>()
-const emit = defineEmits<{ (event: 'interaction' | 'reward' | 'resources' | 'assistant' | 'leaderboard'): void }>()
+const emit = defineEmits<{ (event: 'interaction' | 'reward' | 'resources' | 'assistant' | 'leaderboard' | 'grouping'): void }>()
 </script>
 
 <template>
@@ -10,6 +10,7 @@ const emit = defineEmits<{ (event: 'interaction' | 'reward' | 'resources' | 'ass
     <button type="button" :disabled="disabled || !canReward" @click="emit('reward')">快速奖励<span class="l-stars">本节 {{ totalStars }} 朵小红花</span></button>
     <button v-if="!consoleMode" type="button" @click="emit('resources')">教学资源<span>调整本节展示内容</span></button>
     <button v-if="!consoleMode" type="button" @click="emit('assistant')">AI教学伙伴<span>提问引导 · 课堂建议</span></button>
+    <button type="button" :disabled="disabled || !canRoll" @click="emit('grouping')">随机分组<span>按人数均衡分配</span></button>
     <button class="secondary" type="button" data-test="open-leaderboard" @click="emit('leaderboard')">本节榜单</button>
   </section>
 </template>

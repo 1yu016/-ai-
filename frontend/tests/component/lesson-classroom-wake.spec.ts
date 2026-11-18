@@ -123,6 +123,47 @@ describe('LessonClassroomView · 语音唤醒接入', () => {
     return wrapper.findAll('.wake-status-button')[0]!
   }
 
+  it('离线语音控制使用本地文字并保留教师确认，取消后忽略迟到识别', async () => {
+    vi.stubEnv('VITE_LOCAL_TEACHING_MODE', 'true')
+    vi.stubGlobal('isSecureContext', true)
+    vi.stubGlobal('navigator', {
+      userAgent: navigator.userAgent,
+      mediaDevices: { getUserMedia: vi.fn() },
+    })
+    const wrapper = await mountView()
+    try {
+      const button = wrapper.find('button.voice-status')
+      await button.trigger('click')
+      await settle()
+      const cancelled = wakeHolders.instance!
+      expect(cancelled.options.publicTranscription).toBe(true)
+      expect(button.text()).toContain('取消收听')
+      await button.trigger('click')
+      expect(cancelled.stopped).toBe(true)
+      const deliver = (engine: FakeWake) => {
+        const callbacks = engine.options as unknown as { onPublicUtterance(text: string): void }
+        callbacks.onPublicUtterance('随机点一位小朋友')
+      }
+      deliver(cancelled)
+      await settle()
+      expect(vi.mocked(http.post).mock.calls).toHaveLength(0)
+
+      await button.trigger('click')
+      await settle()
+      deliver(wakeHolders.instance!)
+      await settle()
+      await wrapper.findAll('.voice-detail')[0]!.trigger('click')
+      await settle()
+      expect(wrapper.text()).toContain('确认执行')
+      const calls = vi.mocked(http.post).mock.calls.map(([url]) => url)
+      expect(calls).not.toContain('/ai/asr')
+      expect(calls).not.toContain('/classroom-commands')
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('开启唤醒后进入等待态；命中唤醒词后提示「我在」；关闭后回到未开启', async () => {
     const wrapper = await mountView()
     expect(footerWakeButton(wrapper).text()).toContain('开启语音唤醒')

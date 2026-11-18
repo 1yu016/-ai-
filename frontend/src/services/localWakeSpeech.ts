@@ -27,6 +27,7 @@ export type WakeSpeechCallbacks = {
 export type WakeSpeechOptions = WakeSpeechCallbacks & {
   /** Public transcription never wakes, buffers command audio or invokes teacher callbacks. */
   publicTranscription?: boolean
+  publicSilenceMs?: number
   onPublicUtterance?: (text: string) => void
   /** 默认 `/vendor/vosk.js`。 */
   scriptUrl?: string
@@ -270,8 +271,9 @@ export class LocalWakeSpeech {
       }
       this.stream = stream
       const audioContext = new AudioContext()
-      await audioContext.resume().catch(() => undefined)
       this.audioContext = audioContext
+      await audioContext.resume().catch(() => undefined)
+      if (this.disposed) return
       this.sampleRate = audioContext.sampleRate
       const recognizer = new model.KaldiRecognizer(audioContext.sampleRate)
       this.recognizer = recognizer
@@ -390,7 +392,7 @@ export class LocalWakeSpeech {
         if (this.publicPauseTimer) clearTimeout(this.publicPauseTimer)
         // Vosk may emit several final segments around child pauses. Wait for a
         // quiet gap before submitting, while the independent 30s cap remains.
-        this.publicPauseTimer = setTimeout(() => this.finishPublicUtterance(), PUBLIC_UTTERANCE_IDLE_MS)
+        this.publicPauseTimer = setTimeout(() => this.finishPublicUtterance(), this.options.publicSilenceMs ?? PUBLIC_UTTERANCE_IDLE_MS)
       }
       return
     }
